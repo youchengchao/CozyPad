@@ -1,0 +1,20 @@
+SSH Dashboard lib drop-in package
+
+Major changes:
+- Linear-style dark UI retained from previous package.
+- GPU backend fix retained: nvidia-smi + batch ps metadata join.
+- Added Dart-native Hermes Harness MVP under hermes/harness/hermes_harness.dart.
+- main.dart now includes part 'hermes/harness/hermes_harness.dart'.
+- hermes/hermes_engine.dart now delegates turns into HermesHarness.
+
+Drop-in usage:
+1. Put this zip into your existing Flutter project's lib/ directory.
+2. Extract and overwrite.
+3. Run:
+   flutter clean
+   flutter pub get
+   flutter analyze
+   flutter run -d windows
+
+lib/HERMES_DART_REBUILD_REMOTE_TMUX.md
+lib/hermes/rebuild/hermes_remote_runtime.dart
