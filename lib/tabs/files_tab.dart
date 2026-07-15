@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Files Tab: remote file browser
@@ -28,7 +28,7 @@ class FilesTab extends StatefulWidget {
 }
 
 class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<FilesTab> {
-  static const int _maxTextPreviewBytes = 512 * 1024;
+  static const int _maxTextPreviewBytes = 2 * 1024 * 1024;
   static const int _maxImagePreviewBytes = 16 * 1024 * 1024;
   static const int _maxVideoPreviewBytes = 80 * 1024 * 1024;
 
@@ -47,18 +47,42 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
   bool editorSaving = false;
   bool _suppressEditorDirty = false;
   RemoteFileItem? editorItem;
+  int _currentOffset = 0;
+  String _originalText = '';
+  bool _showEditorInsteadOfPreview = false;
+  bool _showFindBar = false;
+  bool _showReplace = false;
+  final TextEditingController _findController = TextEditingController();
+  final TextEditingController _replaceController = TextEditingController();
+  final ScrollController _editorScrollController = ScrollController();
+  final ScrollController _lineScrollController = ScrollController();
+  List<int> _findMatchOffsets = [];
+  int _currentMatchIndex = -1;
 
   bool get _canEditCurrentPreview {
     final kind = preview.kind;
-    return editorItem != null &&
-        !preview.truncated &&
-        (kind == RemoteFilePreviewKind.text || kind == RemoteFilePreviewKind.markdown);
+    final item = editorItem;
+    if (item == null || preview.truncated) return false;
+    if (kind == RemoteFilePreviewKind.text || kind == RemoteFilePreviewKind.markdown) return true;
+    if (kind == RemoteFilePreviewKind.spreadsheet) {
+      final ext = _extensionOf(item.name);
+      return ext == 'csv' || ext == 'tsv';
+    }
+    return false;
   }
 
   @override
   void initState() {
     super.initState();
     editorController.addListener(_handleEditorChanged);
+    _findController.addListener(() {
+      _performFind(_findController.text);
+    });
+    _editorScrollController.addListener(() {
+      if (_lineScrollController.hasClients) {
+        _lineScrollController.jumpTo(_editorScrollController.offset);
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) => openPath('~'));
   }
 
@@ -67,32 +91,61 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
     pathController.dispose();
     editorController.removeListener(_handleEditorChanged);
     editorController.dispose();
+    _findController.dispose();
+    _replaceController.dispose();
+    _editorScrollController.dispose();
+    _lineScrollController.dispose();
     super.dispose();
   }
 
   void _handleEditorChanged() {
-    if (_suppressEditorDirty || editorItem == null || editorDirty) return;
-    setState(() {
-      editorDirty = true;
-    });
+    if (_suppressEditorDirty || editorItem == null) return;
+    final isDirty = editorController.text != _originalText;
+    if (editorDirty != isDirty) {
+      setState(() {
+        editorDirty = isDirty;
+      });
+    }
   }
 
   void _setEditorText(RemoteFileItem item, String text) {
     _suppressEditorDirty = true;
     editorController.text = text;
     editorController.selection = const TextSelection.collapsed(offset: 0);
+    _originalText = text;
     _suppressEditorDirty = false;
     editorItem = item;
     editorDirty = false;
+    _showEditorInsteadOfPreview = false;
+    _showFindBar = false;
+    _showReplace = false;
+    _findController.clear();
+    _replaceController.clear();
+    _findMatchOffsets = [];
+    _currentMatchIndex = -1;
+    if (_editorScrollController.hasClients) {
+      _editorScrollController.jumpTo(0);
+    }
   }
 
   void _clearEditorState() {
     _suppressEditorDirty = true;
     editorController.clear();
+    _originalText = '';
     _suppressEditorDirty = false;
     editorItem = null;
     editorDirty = false;
     editorSaving = false;
+    _showEditorInsteadOfPreview = false;
+    _showFindBar = false;
+    _showReplace = false;
+    _findController.clear();
+    _replaceController.clear();
+    _findMatchOffsets = [];
+    _currentMatchIndex = -1;
+    if (_editorScrollController.hasClients) {
+      _editorScrollController.jumpTo(0);
+    }
   }
 
   Future<bool> _confirmDiscardEditorChanges() async {
@@ -117,6 +170,171 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
       },
     );
     return result == true;
+  }
+
+  void _performFind(String query) {
+    if (query.isEmpty) {
+      setState(() {
+        _findMatchOffsets = [];
+        _currentMatchIndex = -1;
+      });
+      return;
+    }
+    final text = editorController.text;
+    final matches = <int>[];
+    var index = text.toLowerCase().indexOf(query.toLowerCase());
+    while (index != -1) {
+      matches.add(index);
+      index = text.toLowerCase().indexOf(query.toLowerCase(), index + query.length);
+    }
+    setState(() {
+      _findMatchOffsets = matches;
+      if (matches.isNotEmpty) {
+        _currentMatchIndex = 0;
+        _selectAndScrollToMatch(matches[0], query.length);
+      } else {
+        _currentMatchIndex = -1;
+      }
+    });
+  }
+
+  void _findNext() {
+    if (_findMatchOffsets.isEmpty) return;
+    setState(() {
+      _currentMatchIndex = (_currentMatchIndex + 1) % _findMatchOffsets.length;
+      _selectAndScrollToMatch(_findMatchOffsets[_currentMatchIndex], _findController.text.length);
+    });
+  }
+
+  void _findPrev() {
+    if (_findMatchOffsets.isEmpty) return;
+    setState(() {
+      _currentMatchIndex = (_currentMatchIndex - 1 + _findMatchOffsets.length) % _findMatchOffsets.length;
+      _selectAndScrollToMatch(_findMatchOffsets[_currentMatchIndex], _findController.text.length);
+    });
+  }
+
+  void _selectAndScrollToMatch(int start, int length) {
+    editorController.selection = TextSelection(
+      baseOffset: start,
+      extentOffset: start + length,
+    );
+  }
+
+  void _performReplace() {
+    if (_findMatchOffsets.isEmpty || _currentMatchIndex == -1) return;
+    final matchOffset = _findMatchOffsets[_currentMatchIndex];
+    final queryLen = _findController.text.length;
+    final replaceText = _replaceController.text;
+    final currentText = editorController.text;
+
+    final newText = currentText.replaceRange(matchOffset, matchOffset + queryLen, replaceText);
+    _suppressEditorDirty = true;
+    editorController.text = newText;
+    _suppressEditorDirty = false;
+    setState(() {
+      editorDirty = (newText != _originalText);
+    });
+
+    _performFind(_findController.text);
+  }
+
+  void _performReplaceAll() {
+    final query = _findController.text;
+    if (query.isEmpty) return;
+    final replaceText = _replaceController.text;
+    final currentText = editorController.text;
+    final newText = currentText.replaceAll(query, replaceText);
+    _suppressEditorDirty = true;
+    editorController.text = newText;
+    _suppressEditorDirty = false;
+    setState(() {
+      editorDirty = (newText != _originalText);
+    });
+    _performFind(query);
+  }
+
+  void _showGoToLineDialog(BuildContext context) {
+    final lineController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Go to Line'),
+          content: TextField(
+            controller: lineController,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'Line number',
+            ),
+            onSubmitted: (val) {
+              final lineNum = int.tryParse(val);
+              if (lineNum != null) {
+                _goToLine(lineNum);
+              }
+              Navigator.pop(context);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final lineNum = int.tryParse(lineController.text);
+                if (lineNum != null) {
+                  _goToLine(lineNum);
+                }
+                Navigator.pop(context);
+              },
+              child: const Text('Go'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _goToLine(int lineNum) {
+    final text = editorController.text;
+    final lines = text.split('\n');
+    if (lineNum < 1 || lineNum > lines.length) return;
+    var offset = 0;
+    for (var i = 0; i < lineNum - 1; i++) {
+      offset += lines[i].length + 1; // +1 for the newline
+    }
+    editorController.selection = TextSelection.collapsed(offset: offset);
+  }
+
+  void _showCommandPaletteDialog() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return _CommandPaletteDialog(
+          commands: [
+            _CommandItem(name: 'File: Save Current File', action: () => _saveCurrentEditor()),
+            _CommandItem(
+              name: 'File: Find Text',
+              action: () => setState(() {
+                _showFindBar = true;
+              }),
+            ),
+            _CommandItem(
+              name: 'File: Find & Replace',
+              action: () => setState(() {
+                _showFindBar = true;
+                _showReplace = true;
+              }),
+            ),
+            _CommandItem(name: 'File: Go to Line...', action: () => _showGoToLineDialog(context)),
+            _CommandItem(name: 'File: Refresh File List', action: () => openPath(listing?.path ?? '~')),
+            _CommandItem(name: 'Editor: Close Current File', action: () => _clearEditorState()),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -160,7 +378,7 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
     }
   }
 
-  Future<void> openFile(RemoteFileItem item) async {
+  Future<void> openFile(RemoteFileItem item, {int offset = 0}) async {
     if (item.isDirectory) {
       await openPath(item.path);
       return;
@@ -173,6 +391,7 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
     setState(() {
       previewLoading = true;
       error = null;
+      _currentOffset = offset;
       preview = RemoteFilePreviewData.binary(
         item: item,
         message: 'Preparing preview...',
@@ -211,6 +430,7 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
         final text = await provider.readRemoteFile(
           item.path,
           maxBytes: _maxTextPreviewBytes,
+          offset: offset,
         );
         next = RemoteFilePreviewData.markdown(
           item: item,
@@ -221,11 +441,46 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
         final text = await provider.readRemoteFile(
           item.path,
           maxBytes: _maxTextPreviewBytes,
+          offset: offset,
         );
         next = RemoteFilePreviewData.text(
           item: item,
           text: text,
           truncated: text.contains('[Preview truncated:'),
+        );
+      } else if (kind == RemoteFilePreviewKind.spreadsheet) {
+        final ext = _extensionOf(item.name);
+        if (ext == 'xlsx' || ext == 'xls') {
+          final bytes = await provider.readRemoteFileBytes(
+            item.path,
+            maxBytes: _maxImagePreviewBytes,
+          );
+          next = RemoteFilePreviewData.spreadsheet(
+            item: item,
+            bytes: bytes,
+          );
+        } else {
+          final text = await provider.readRemoteFile(
+            item.path,
+            maxBytes: _maxTextPreviewBytes,
+            offset: offset,
+          );
+          final bytes = Uint8List.fromList(utf8.encode(text));
+          next = RemoteFilePreviewData.spreadsheet(
+            item: item,
+            bytes: bytes,
+            text: text,
+            truncated: text.contains('[Preview truncated:'),
+          );
+        }
+      } else if (kind == RemoteFilePreviewKind.pdf) {
+        final bytes = await provider.readRemoteFileBytes(
+          item.path,
+          maxBytes: _maxImagePreviewBytes,
+        );
+        next = RemoteFilePreviewData.pdf(
+          item: item,
+          bytes: bytes,
         );
       } else {
         next = RemoteFilePreviewData.binary(
@@ -237,8 +492,17 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
       if (!mounted) return;
       setState(() {
         preview = next;
-        if ((next.kind == RemoteFilePreviewKind.text || next.kind == RemoteFilePreviewKind.markdown) && !next.truncated) {
-          _setEditorText(item, next.text ?? '');
+        final isEditableKind = (next.kind == RemoteFilePreviewKind.text ||
+            next.kind == RemoteFilePreviewKind.markdown ||
+            next.kind == RemoteFilePreviewKind.spreadsheet);
+        if (isEditableKind) {
+          final ext = _extensionOf(item.name);
+          final canEditExt = (ext == 'csv' || ext == 'tsv' || next.kind == RemoteFilePreviewKind.text || next.kind == RemoteFilePreviewKind.markdown);
+          if (canEditExt && next.text != null) {
+            _setEditorText(item, next.text!);
+          } else {
+            _clearEditorState();
+          }
         } else {
           _clearEditorState();
         }
@@ -365,6 +629,17 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
       'mkd',
     };
 
+    const spreadsheet = {
+      'csv',
+      'tsv',
+      'xlsx',
+      'xls',
+    };
+
+    const pdf = {
+      'pdf',
+    };
+
     const text = {
       'txt',
       'log',
@@ -377,8 +652,6 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
       'html',
       'htm',
       'css',
-      'csv',
-      'tsv',
       'ini',
       'conf',
       'cfg',
@@ -412,6 +685,8 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
     if (images.contains(ext)) return RemoteFilePreviewKind.image;
     if (videos.contains(ext)) return RemoteFilePreviewKind.video;
     if (markdown.contains(ext)) return RemoteFilePreviewKind.markdown;
+    if (spreadsheet.contains(ext)) return RemoteFilePreviewKind.spreadsheet;
+    if (pdf.contains(ext)) return RemoteFilePreviewKind.pdf;
     if (text.contains(ext) || name.toLowerCase() == 'dockerfile') {
       return RemoteFilePreviewKind.text;
     }
@@ -472,6 +747,10 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
         return Icons.article_outlined;
       case RemoteFilePreviewKind.text:
         return Icons.description_outlined;
+      case RemoteFilePreviewKind.spreadsheet:
+        return Icons.table_chart_outlined;
+      case RemoteFilePreviewKind.pdf:
+        return Icons.picture_as_pdf_outlined;
       case RemoteFilePreviewKind.binary:
         return Icons.insert_drive_file_outlined;
       case RemoteFilePreviewKind.none:
@@ -908,6 +1187,12 @@ mkdir -p "\$target"
               data: data,
               loading: false,
               onOpenFullscreen: null,
+              showEditor: false,
+              canToggleEditor: false,
+              showFindBar: false,
+              currentMatchIndex: -1,
+              totalMatches: 0,
+              showReplace: false,
             ),
           ),
         );
@@ -922,10 +1207,21 @@ mkdir -p "\$target"
     final items = listing?.items ?? const <RemoteFileItem>[];
     final isWide = MediaQuery.of(context).size.width >= 760;
 
-    return Column(
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyP, control: true, shift: true): () {
+          _showCommandPaletteDialog();
+        },
+        const SingleActivator(LogicalKeyboardKey.f1): () {
+          _showCommandPaletteDialog();
+        },
+      },
+      child: FocusScope(
+        autofocus: true,
+        child: Column(
       children: [
         Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: AppPalette.surface,
             border: Border(bottom: BorderSide(color: AppPalette.border, width: 1)),
           ),
@@ -944,7 +1240,7 @@ mkdir -p "\$target"
                   Expanded(
                     child: TextField(
                       controller: pathController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Remote path',
                         prefixIcon: Icon(Icons.folder_outlined, size: 16, color: AppPalette.accent),
                         border: OutlineInputBorder(),
@@ -1074,7 +1370,7 @@ mkdir -p "\$target"
                                                         const SizedBox(height: 2),
                                                         Text(
                                                           '${item.displayType} · ${item.isDirectory ? '-' : _formatSize(item.sizeBytes)} · ${item.modified}',
-                                                          style: const TextStyle(
+                                                          style: TextStyle(
                                                             color: AppPalette.textMuted,
                                                             fontSize: 11,
                                                           ),
@@ -1117,7 +1413,7 @@ mkdir -p "\$target"
                       Positioned.fill(
                         child: IgnorePointer(
                           child: DecoratedBox(
-                            decoration: BoxDecoration(color: Colors.black.withOpacity(0.08)),
+                            decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.08)),
                           ),
                         ),
                       ),
@@ -1138,6 +1434,43 @@ mkdir -p "\$target"
                     editorSaving: editorSaving,
                     onSave: _saveCurrentEditor,
                     onReload: _reloadCurrentEditor,
+                    showEditor: _showEditorInsteadOfPreview,
+                    canToggleEditor: _canEditCurrentPreview && (preview.kind == RemoteFilePreviewKind.markdown || preview.kind == RemoteFilePreviewKind.spreadsheet),
+                    onToggleEditor: () => setState(() {
+                      _showEditorInsteadOfPreview = !_showEditorInsteadOfPreview;
+                    }),
+                    showFindBar: _showFindBar,
+                    onToggleFindBar: () => setState(() {
+                      _showFindBar = !_showFindBar;
+                      if (!_showFindBar) {
+                        _findController.clear();
+                      }
+                    }),
+                    findController: _findController,
+                    onFindNext: _findNext,
+                    onFindPrev: _findPrev,
+                    currentMatchIndex: _currentMatchIndex,
+                    totalMatches: _findMatchOffsets.length,
+                    editorScrollController: _editorScrollController,
+                    lineScrollController: _lineScrollController,
+                    replaceController: _replaceController,
+                    onReplace: _performReplace,
+                    onReplaceAll: _performReplaceAll,
+                    showReplace: _showReplace,
+                    onToggleReplace: () => setState(() {
+                      _showReplace = !_showReplace;
+                    }),
+                    onGoToLine: () => _showGoToLineDialog(context),
+                    currentOffset: _currentOffset,
+                    onPageChanged: (offset) => openFile(preview.item!, offset: offset),
+                    onSpreadsheetChanged: (newText) {
+                      _suppressEditorDirty = true;
+                      editorController.text = newText;
+                      _suppressEditorDirty = false;
+                      setState(() {
+                        editorDirty = true;
+                      });
+                    },
                   ),
                 ),
             ],
@@ -1156,9 +1489,48 @@ mkdir -p "\$target"
               editorSaving: editorSaving,
               onSave: _saveCurrentEditor,
               onReload: _reloadCurrentEditor,
+              showEditor: _showEditorInsteadOfPreview,
+              canToggleEditor: _canEditCurrentPreview && (preview.kind == RemoteFilePreviewKind.markdown || preview.kind == RemoteFilePreviewKind.spreadsheet),
+              onToggleEditor: () => setState(() {
+                _showEditorInsteadOfPreview = !_showEditorInsteadOfPreview;
+              }),
+              showFindBar: _showFindBar,
+              onToggleFindBar: () => setState(() {
+                _showFindBar = !_showFindBar;
+                if (!_showFindBar) {
+                  _findController.clear();
+                }
+              }),
+              findController: _findController,
+              onFindNext: _findNext,
+              onFindPrev: _findPrev,
+              currentMatchIndex: _currentMatchIndex,
+              totalMatches: _findMatchOffsets.length,
+              editorScrollController: _editorScrollController,
+              lineScrollController: _lineScrollController,
+              replaceController: _replaceController,
+              onReplace: _performReplace,
+              onReplaceAll: _performReplaceAll,
+              showReplace: _showReplace,
+              onToggleReplace: () => setState(() {
+                _showReplace = !_showReplace;
+              }),
+              onGoToLine: () => _showGoToLineDialog(context),
+              currentOffset: _currentOffset,
+              onPageChanged: (offset) => openFile(preview.item!, offset: offset),
+              onSpreadsheetChanged: (newText) {
+                _suppressEditorDirty = true;
+                editorController.text = newText;
+                _suppressEditorDirty = false;
+                setState(() {
+                  editorDirty = true;
+                });
+              },
             ),
           ),
       ],
+        ),
+      ),
     );
   }
 
@@ -1181,7 +1553,7 @@ mkdir -p "\$target"
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
           child: Text(
             rootLabel,
-            style: const TextStyle(
+            style: TextStyle(
               color: AppPalette.textSecondary,
               fontWeight: FontWeight.w500,
               fontSize: 13,
@@ -1204,7 +1576,7 @@ mkdir -p "\$target"
       final target = current;
       
       widgets.add(
-        const Icon(
+        Icon(
           Icons.chevron_right,
           size: 14,
           color: AppPalette.textMuted,
@@ -1219,7 +1591,7 @@ mkdir -p "\$target"
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             child: Text(
               part,
-              style: const TextStyle(
+              style: TextStyle(
                 color: AppPalette.textSecondary,
                 fontWeight: FontWeight.w500,
                 fontSize: 13,
@@ -1233,7 +1605,7 @@ mkdir -p "\$target"
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
-        mainAxisSize: MainAxisSize.min,
+                                        mainAxisSize: MainAxisSize.min,
         children: widgets,
       ),
     );
@@ -1250,6 +1622,27 @@ class _FilePreviewPane extends StatelessWidget {
   final bool editorSaving;
   final VoidCallback? onSave;
   final VoidCallback? onReload;
+  final bool showEditor;
+  final bool canToggleEditor;
+  final VoidCallback? onToggleEditor;
+  final bool showFindBar;
+  final VoidCallback? onToggleFindBar;
+  final TextEditingController? findController;
+  final VoidCallback? onFindNext;
+  final VoidCallback? onFindPrev;
+  final int currentMatchIndex;
+  final int totalMatches;
+  final ScrollController? editorScrollController;
+  final ScrollController? lineScrollController;
+  final TextEditingController? replaceController;
+  final VoidCallback? onReplace;
+  final VoidCallback? onReplaceAll;
+  final bool showReplace;
+  final VoidCallback? onToggleReplace;
+  final VoidCallback? onGoToLine;
+  final int currentOffset;
+  final ValueChanged<int>? onPageChanged;
+  final ValueChanged<String>? onSpreadsheetChanged;
 
   const _FilePreviewPane({
     required this.data,
@@ -1261,12 +1654,34 @@ class _FilePreviewPane extends StatelessWidget {
     this.editorSaving = false,
     this.onSave,
     this.onReload,
+    required this.showEditor,
+    required this.canToggleEditor,
+    this.onToggleEditor,
+    required this.showFindBar,
+    this.onToggleFindBar,
+    this.findController,
+    this.onFindNext,
+    this.onFindPrev,
+    required this.currentMatchIndex,
+    required this.totalMatches,
+    this.editorScrollController,
+    this.lineScrollController,
+    this.replaceController,
+    this.onReplace,
+    this.onReplaceAll,
+    required this.showReplace,
+    this.onToggleReplace,
+    this.onGoToLine,
+    this.currentOffset = 0,
+    this.onPageChanged,
+    this.onSpreadsheetChanged,
   });
 
   @override
   Widget build(BuildContext context) {
     final item = data.item;
-    final titlePrefix = canEdit ? 'Editor' : 'Preview';
+    final effectiveShowEditor = (data.kind == RemoteFilePreviewKind.text) || showEditor;
+    final titlePrefix = effectiveShowEditor ? 'Editor' : 'Preview';
     return Container(
       color: AppPalette.backgroundDeep,
       child: Column(
@@ -1285,7 +1700,19 @@ class _FilePreviewPane extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleSmall,
                   ),
                 ),
-                if (canEdit)
+                if (canEdit && effectiveShowEditor && onToggleFindBar != null)
+                  IconButton(
+                    tooltip: 'Find (Ctrl+F)',
+                    onPressed: onToggleFindBar,
+                    icon: Icon(showFindBar ? Icons.search_off : Icons.search, size: 18),
+                  ),
+                if (canToggleEditor && onToggleEditor != null)
+                  IconButton(
+                    tooltip: effectiveShowEditor ? 'Show Preview' : 'Show Editor',
+                    onPressed: onToggleEditor,
+                    icon: Icon(effectiveShowEditor ? Icons.visibility_outlined : Icons.edit_outlined, size: 18),
+                  ),
+                if (canEdit && effectiveShowEditor)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: Tooltip(
@@ -1297,13 +1724,13 @@ class _FilePreviewPane extends StatelessWidget {
                       ),
                     ),
                   ),
-                if (canEdit)
+                if (canEdit && effectiveShowEditor)
                   IconButton(
                     tooltip: 'Reload from remote',
                     onPressed: editorSaving ? null : onReload,
                     icon: const Icon(Icons.refresh, size: 18),
                   ),
-                if (canEdit)
+                if (canEdit && effectiveShowEditor)
                   FilledButton.tonalIcon(
                     onPressed: editorSaving || !editorDirty ? null : onSave,
                     icon: editorSaving
@@ -1332,12 +1759,26 @@ class _FilePreviewPane extends StatelessWidget {
               ],
             ),
           ),
+          if (item != null && item.sizeBytes > 2 * 1024 * 1024 && (data.kind == RemoteFilePreviewKind.text || data.kind == RemoteFilePreviewKind.markdown || data.kind == RemoteFilePreviewKind.spreadsheet))
+            _buildPager(context, item),
           Expanded(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              child: loading
-                  ? const Center(key: ValueKey('preview-loading'), child: CircularProgressIndicator())
-                  : _buildPreviewBody(context),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 180),
+                    child: loading
+                        ? const Center(key: ValueKey('preview-loading'), child: CircularProgressIndicator())
+                        : _buildPreviewBody(context),
+                  ),
+                ),
+                if (showFindBar && findController != null)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: _buildFindPanel(context),
+                  ),
+              ],
             ),
           ),
         ],
@@ -1345,7 +1786,146 @@ class _FilePreviewPane extends StatelessWidget {
     );
   }
 
+  Widget _buildFindPanel(BuildContext context) {
+    final hasMatches = totalMatches > 0;
+    final matchText = hasMatches
+        ? '${currentMatchIndex + 1} of $totalMatches'
+        : 'No results';
+
+    return Container(
+      width: 320,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppPalette.surfaceElevated,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppPalette.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              IconButton(
+                icon: Icon(showReplace ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right, size: 16),
+                onPressed: onToggleReplace,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                tooltip: 'Toggle Replace',
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: SizedBox(
+                  height: 28,
+                  child: Focus(
+                    onKeyEvent: (node, event) {
+                      if (event.logicalKey == LogicalKeyboardKey.escape && event is KeyDownEvent) {
+                        onToggleFindBar?.call();
+                        return KeyEventResult.handled;
+                      }
+                      return KeyEventResult.ignored;
+                    },
+                    child: TextField(
+                      controller: findController,
+                      autofocus: true,
+                      style: const TextStyle(fontSize: 12),
+                      decoration: const InputDecoration(
+                        hintText: 'Find',
+                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                matchText,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: hasMatches ? AppPalette.textSecondary : AppPalette.textMuted,
+                ),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.arrow_upward, size: 14),
+                onPressed: onFindPrev,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                tooltip: 'Previous match',
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.arrow_downward, size: 14),
+                onPressed: onFindNext,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                tooltip: 'Next match',
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.close, size: 14),
+                onPressed: onToggleFindBar,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                tooltip: 'Close (Esc)',
+              ),
+            ],
+          ),
+          if (showReplace && replaceController != null) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const SizedBox(width: 20),
+                Expanded(
+                  child: SizedBox(
+                    height: 28,
+                    child: TextField(
+                      controller: replaceController,
+                      style: const TextStyle(fontSize: 12),
+                      decoration: const InputDecoration(
+                        hintText: 'Replace',
+                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.find_replace, size: 16),
+                  onPressed: onReplace,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Replace',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.swap_horiz, size: 18),
+                  onPressed: onReplaceAll,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Replace All',
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildPreviewBody(BuildContext context) {
+    final effectiveShowEditor = (data.kind == RemoteFilePreviewKind.text) || showEditor;
     switch (data.kind) {
       case RemoteFilePreviewKind.none:
         return const Center(
@@ -1380,13 +1960,33 @@ class _FilePreviewPane extends StatelessWidget {
           mimeType: data.mimeType ?? 'video/mp4',
         );
       case RemoteFilePreviewKind.markdown:
-        if (canEdit) return _buildTextEditor(context);
-        return _MarkdownLitePreview(
+        if (effectiveShowEditor) return _buildTextEditor(context);
+        return SingleChildScrollView(
           key: ValueKey('markdown-${data.item?.path}'),
-          text: data.text?.isEmpty ?? true ? '[Empty file]' : data.text!,
+          padding: const EdgeInsets.all(16),
+          child: MarkdownBody(
+            data: data.text?.isEmpty ?? true ? '[Empty file]' : data.text!,
+            selectable: true,
+            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+              p: TextStyle(color: AppPalette.textSecondary, fontSize: 13, height: 1.5),
+              h1: TextStyle(color: AppPalette.textPrimary, fontSize: 22, fontWeight: FontWeight.bold, height: 1.4),
+              h2: TextStyle(color: AppPalette.textPrimary, fontSize: 18, fontWeight: FontWeight.bold, height: 1.4),
+              h3: TextStyle(color: AppPalette.textPrimary, fontSize: 15, fontWeight: FontWeight.bold, height: 1.4),
+              code: const TextStyle(fontFamily: 'monospace', fontSize: 12, backgroundColor: Colors.transparent),
+              codeblockDecoration: BoxDecoration(
+                color: AppPalette.surfaceSoft,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: AppPalette.border),
+              ),
+              blockquoteDecoration: BoxDecoration(
+                color: AppPalette.surfaceSoft,
+                border: Border(left: BorderSide(color: AppPalette.accent, width: 4)),
+              ),
+            ),
+          ),
         );
       case RemoteFilePreviewKind.text:
-        if (canEdit) return _buildTextEditor(context);
+        if (effectiveShowEditor) return _buildTextEditor(context);
         return SingleChildScrollView(
           key: ValueKey('text-${data.item?.path}'),
           padding: const EdgeInsets.all(12),
@@ -1394,6 +1994,20 @@ class _FilePreviewPane extends StatelessWidget {
             data.text?.isEmpty ?? true ? '[Empty file]' : data.text!,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.35),
           ),
+        );
+      case RemoteFilePreviewKind.spreadsheet:
+        if (effectiveShowEditor) return _buildTextEditor(context);
+        return _SpreadsheetPreview(
+          key: ValueKey('spreadsheet-${data.item?.path}'),
+          bytes: data.bytes ?? Uint8List(0),
+          fileName: data.item?.name ?? '',
+          text: data.text,
+          onChanged: onSpreadsheetChanged,
+        );
+      case RemoteFilePreviewKind.pdf:
+        return _PdfPreview(
+          key: ValueKey('pdf-${data.item?.path}'),
+          bytes: data.bytes ?? Uint8List(0),
         );
       case RemoteFilePreviewKind.binary:
         return _PreviewMessage(
@@ -1423,31 +2037,191 @@ class _FilePreviewPane extends StatelessWidget {
       );
     }
 
+    final lineCount = '\n'.allMatches(controller.text).length + 1;
+
     return Padding(
       key: ValueKey('editor-${data.item?.path}'),
       padding: const EdgeInsets.all(10),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: AppPalette.backgroundDeep,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppPalette.border),
-        ),
-        child: TextField(
-          controller: controller,
-          expands: true,
-          minLines: null,
-          maxLines: null,
-          keyboardType: TextInputType.multiline,
-          textAlignVertical: TextAlignVertical.top,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.35),
-          decoration: const InputDecoration(
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.all(12),
-            hintText: 'Empty file',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (data.truncated)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.amber.shade900.withValues(alpha: 0.2),
+                border: Border.all(color: Colors.amber.shade700),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.amber.shade300, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'File is too large to edit safely in the sidebar. Showing a read-only preview.',
+                      style: TextStyle(color: Colors.amber.shade100, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: AppPalette.backgroundDeep,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppPalette.border),
+              ),
+              child: CallbackShortcuts(
+                bindings: {
+                  const SingleActivator(LogicalKeyboardKey.tab): () {
+                    if (data.truncated) return; // Ignore tab insertions in read-only
+                    final val = controller.value;
+                    final text = val.text;
+                    final selection = val.selection;
+                    if (selection.isValid) {
+                      final newText = text.replaceRange(selection.start, selection.end, '  ');
+                      final newSelection = TextSelection.collapsed(offset: selection.start + 2);
+                      controller.value = TextEditingValue(
+                        text: newText,
+                        selection: newSelection,
+                      );
+                    }
+                  },
+                  const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
+                    onToggleFindBar?.call();
+                  },
+                  const SingleActivator(LogicalKeyboardKey.keyH, control: true): () {
+                    onToggleReplace?.call();
+                  },
+                  const SingleActivator(LogicalKeyboardKey.keyG, control: true): () {
+                    onGoToLine?.call();
+                  },
+                  const SingleActivator(LogicalKeyboardKey.keyS, control: true): () {
+                    onSave?.call();
+                  },
+                },
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      width: 45,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        border: Border(right: BorderSide(color: AppPalette.border)),
+                      ),
+                      child: SingleChildScrollView(
+                        controller: lineScrollController,
+                        physics: const NeverScrollableScrollPhysics(),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: List.generate(lineCount, (index) {
+                            return SizedBox(
+                              height: 16.2,
+                              width: double.infinity,
+                              child: Text(
+                                '${index + 1}',
+                                textAlign: TextAlign.right,
+                                style: TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                  height: 1.35,
+                                  color: AppPalette.textMuted,
+                                ),
+                              ),
+                            );
+                          }),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        scrollController: editorScrollController,
+                        readOnly: data.truncated,
+                        expands: true,
+                        minLines: null,
+                        maxLines: null,
+                        keyboardType: TextInputType.multiline,
+                        textAlignVertical: TextAlignVertical.top,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.35),
+                        decoration: const InputDecoration(
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          hintText: 'Empty file',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
+  }
+
+  Widget _buildPager(BuildContext context, RemoteFileItem item) {
+    const maxBytes = 2 * 1024 * 1024;
+    final totalSize = item.sizeBytes;
+    final currentPage = (currentOffset / maxBytes).floor() + 1;
+    final totalPages = (totalSize / maxBytes).ceil();
+
+    return Container(
+      color: AppPalette.surfaceSoft,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.first_page, size: 18),
+            onPressed: currentPage <= 1 ? null : () => onPageChanged?.call(0),
+            tooltip: 'First Page',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.chevron_left, size: 18),
+            onPressed: currentPage <= 1 ? null : () => onPageChanged?.call((currentPage - 2) * maxBytes),
+            tooltip: 'Previous Page',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+          const SizedBox(width: 16),
+          Text(
+            'Page $currentPage of $totalPages (showing bytes ${_formatBytes(currentOffset)} - ${_formatBytes(min(currentOffset + maxBytes, totalSize))} of ${_formatBytes(totalSize)})',
+            style: TextStyle(fontSize: 12, color: AppPalette.textSecondary),
+          ),
+          const SizedBox(width: 16),
+          IconButton(
+            icon: const Icon(Icons.chevron_right, size: 18),
+            onPressed: currentPage >= totalPages ? null : () => onPageChanged?.call(currentPage * maxBytes),
+            tooltip: 'Next Page',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.last_page, size: 18),
+            onPressed: currentPage >= totalPages ? null : () => onPageChanged?.call((totalPages - 1) * maxBytes),
+            tooltip: 'Last Page',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
 
@@ -1564,7 +2338,7 @@ class _VideoPreviewState extends State<_VideoPreview> {
           return const Center(child: CircularProgressIndicator());
         }
         if (snapshot.hasError || !controller.value.isInitialized) {
-          return _PreviewMessage(
+          return const _PreviewMessage(
             icon: Icons.movie_filter_outlined,
             title: 'Video cannot be played inline',
             message: 'The app loaded the video bytes, but the current platform/player cannot decode this format.',
@@ -1624,150 +2398,7 @@ class _VideoPreviewState extends State<_VideoPreview> {
   }
 }
 
-class _MarkdownLitePreview extends StatelessWidget {
-  final String text;
 
-  const _MarkdownLitePreview({
-    super.key,
-    required this.text,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final lines = const LineSplitter().convert(text);
-    final widgets = <Widget>[];
-    final codeBuffer = <String>[];
-    bool inCodeBlock = false;
-
-    void flushCodeBlock() {
-      if (codeBuffer.isEmpty) return;
-      widgets.add(
-        Container(
-          width: double.infinity,
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppPalette.surfaceElevated,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppPalette.border),
-          ),
-          child: SelectableText(
-            codeBuffer.join('\n'),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.35),
-          ),
-        ),
-      );
-      codeBuffer.clear();
-    }
-
-    for (final rawLine in lines) {
-      final line = rawLine.replaceAll('\t', '    ');
-      final trimmed = line.trimRight();
-
-      if (trimmed.trimLeft().startsWith('```')) {
-        if (inCodeBlock) {
-          inCodeBlock = false;
-          flushCodeBlock();
-        } else {
-          inCodeBlock = true;
-        }
-        continue;
-      }
-
-      if (inCodeBlock) {
-        codeBuffer.add(line);
-        continue;
-      }
-
-      if (trimmed.trim().isEmpty) {
-        widgets.add(const SizedBox(height: 8));
-        continue;
-      }
-
-      final heading = RegExp(r'^(#{1,6})\s+(.*)$').firstMatch(trimmed);
-      if (heading != null) {
-        final level = heading.group(1)!.length;
-        final content = heading.group(2)!;
-        final size = switch (level) {
-          1 => 26.0,
-          2 => 22.0,
-          3 => 18.0,
-          4 => 16.0,
-          _ => 14.0,
-        };
-        widgets.add(Padding(
-          padding: EdgeInsets.only(top: level <= 2 ? 14 : 10, bottom: 6),
-          child: SelectableText(
-            content,
-            style: TextStyle(fontSize: size, fontWeight: FontWeight.w700, height: 1.2),
-          ),
-        ));
-        continue;
-      }
-
-      final bullet = RegExp(r'^\s*[-*+]\s+(.*)$').firstMatch(trimmed);
-      if (bullet != null) {
-        widgets.add(Padding(
-          padding: const EdgeInsets.only(left: 8, top: 3, bottom: 3),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('•  '),
-              Expanded(child: SelectableText(bullet.group(1)!)),
-            ],
-          ),
-        ));
-        continue;
-      }
-
-      final numbered = RegExp(r'^\s*\d+[.)]\s+(.*)$').firstMatch(trimmed);
-      if (numbered != null) {
-        widgets.add(Padding(
-          padding: const EdgeInsets.only(left: 8, top: 3, bottom: 3),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('•  '),
-              Expanded(child: SelectableText(numbered.group(1)!)),
-            ],
-          ),
-        ));
-        continue;
-      }
-
-      if (trimmed.trimLeft().startsWith('>')) {
-        widgets.add(Container(
-          width: double.infinity,
-          margin: const EdgeInsets.symmetric(vertical: 6),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: AppPalette.surfaceElevated,
-            border: Border(left: BorderSide(color: AppPalette.accent, width: 3)),
-          ),
-          child: SelectableText(trimmed.trimLeft().replaceFirst(RegExp(r'^>\s?'), '')),
-        ));
-        continue;
-      }
-
-      widgets.add(Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: SelectableText(trimmed, style: const TextStyle(height: 1.35)),
-      ));
-    }
-
-    if (inCodeBlock) flushCodeBlock();
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: SelectionArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: widgets,
-        ),
-      ),
-    );
-  }
-}
 
 class _RenameDialog extends StatefulWidget {
   final String initialName;
@@ -1869,5 +2500,735 @@ class _CreateItemDialogState extends State<_CreateItemDialog> {
       ],
     );
   }
+}
+
+class _SpreadsheetPreview extends StatefulWidget {
+  final Uint8List bytes;
+  final String fileName;
+  final String? text;
+  final ValueChanged<String>? onChanged;
+
+  const _SpreadsheetPreview({
+    super.key,
+    required this.bytes,
+    required this.fileName,
+    this.text,
+    this.onChanged,
+  });
+
+  @override
+  State<_SpreadsheetPreview> createState() => _SpreadsheetPreviewState();
+}
+
+class _SpreadsheetPreviewState extends State<_SpreadsheetPreview> {
+  List<List<String>> _allRows = [];
+  List<List<String>> _filteredRows = [];
+  List<int> _filteredRowIndices = [];
+  String _searchQuery = "";
+  bool _loading = true;
+  String? _error;
+
+  int? _editingRow;
+  int? _editingCol;
+  final TextEditingController _cellEditController = TextEditingController();
+  final FocusNode _cellEditFocusNode = FocusNode();
+
+  Point<int>? _selectionStart;
+  Point<int>? _selectionEnd;
+
+  @override
+  void initState() {
+    super.initState();
+    _parseData();
+  }
+
+  @override
+  void dispose() {
+    _cellEditController.dispose();
+    _cellEditFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _parseData() {
+    try {
+      final ext = widget.fileName.split('.').last.toLowerCase();
+      if (ext == 'xlsx' || ext == 'xls') {
+        _allRows = _parseExcel(widget.bytes);
+      } else {
+        final isTsv = ext == 'tsv';
+        final csvText = widget.text ?? utf8.decode(widget.bytes, allowMalformed: true);
+        _allRows = _parseCsv(csvText, separator: isTsv ? '\t' : ',');
+      }
+      _filteredRows = List.from(_allRows);
+      _filteredRowIndices = List.generate(_allRows.length, (i) => i);
+      _loading = false;
+    } catch (e) {
+      _error = e.toString();
+      _loading = false;
+    }
+  }
+
+  List<List<String>> _parseExcel(Uint8List bytes) {
+    try {
+      final excel = excel_pkg.Excel.decodeBytes(bytes);
+      if (excel.tables.isEmpty) return [];
+      final sheetName = excel.tables.keys.first;
+      final table = excel.tables[sheetName];
+      if (table == null) return [];
+
+      final rows = <List<String>>[];
+      for (final row in table.rows) {
+        final rowData = <String>[];
+        for (final cell in row) {
+          if (cell == null) {
+            rowData.add('');
+          } else {
+            rowData.add(cell.value?.toString() ?? '');
+          }
+        }
+        rows.add(rowData);
+      }
+      return rows;
+    } catch (e) {
+      return [['Error parsing Excel file', e.toString()]];
+    }
+  }
+
+  List<List<String>> _parseCsv(String text, {String separator = ','}) {
+    final lines = <List<String>>[];
+    final buffer = StringBuffer();
+    var row = <String>[];
+    var inQuotes = false;
+
+    for (var i = 0; i < text.length; i++) {
+      final char = text[i];
+      if (inQuotes) {
+        if (char == '"') {
+          if (i + 1 < text.length && text[i + 1] == '"') {
+            buffer.write('"');
+            i++; // Skip second quote
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          buffer.write(char);
+        }
+      } else {
+        if (char == '"') {
+          inQuotes = true;
+        } else if (char == separator) {
+          row.add(buffer.toString());
+          buffer.clear();
+        } else if (char == '\n' || char == '\r') {
+          if (char == '\r' && i + 1 < text.length && text[i + 1] == '\n') {
+            i++; // Skip \n
+          }
+          row.add(buffer.toString());
+          buffer.clear();
+          lines.add(row);
+          row = [];
+        } else {
+          buffer.write(char);
+        }
+      }
+    }
+    if (buffer.isNotEmpty || row.isNotEmpty) {
+      row.add(buffer.toString());
+      lines.add(row);
+    }
+    return lines.where((r) => r.isNotEmpty).toList();
+  }
+
+  void _filterRows(String query) {
+    setState(() {
+      _searchQuery = query;
+      if (query.trim().isEmpty) {
+        _filteredRows = List.from(_allRows);
+        _filteredRowIndices = List.generate(_allRows.length, (i) => i);
+      } else {
+        final lowerQuery = query.toLowerCase();
+        if (_allRows.isEmpty) {
+          _filteredRows = [];
+          _filteredRowIndices = [];
+          return;
+        }
+        final header = _allRows.first;
+        final dataRows = _allRows.sublist(1);
+        final filteredData = <List<String>>[];
+        final filteredIndices = <int>[0];
+        for (var i = 0; i < dataRows.length; i++) {
+          final row = dataRows[i];
+          if (row.any((cell) => cell.toLowerCase().contains(lowerQuery))) {
+            filteredData.add(row);
+            filteredIndices.add(i + 1);
+          }
+        }
+        _filteredRows = [header, ...filteredData];
+        _filteredRowIndices = filteredIndices;
+      }
+    });
+  }
+
+  bool _isCellSelected(int rowIndex, int colIndex) {
+    if (_selectionStart == null || _selectionEnd == null) return false;
+    final minR = min(_selectionStart!.x, _selectionEnd!.x);
+    final maxR = max(_selectionStart!.x, _selectionEnd!.x);
+    final minC = min(_selectionStart!.y, _selectionEnd!.y);
+    final maxC = max(_selectionStart!.y, _selectionEnd!.y);
+    return rowIndex >= minR && rowIndex <= maxR && colIndex >= minC && colIndex <= maxC;
+  }
+
+  void _handleCellTap(int rowIndex, int colIndex, String val) {
+    final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+    setState(() {
+      if (isShiftPressed && _selectionStart != null) {
+        _selectionEnd = Point(rowIndex, colIndex);
+      } else {
+        _selectionStart = Point(rowIndex, colIndex);
+        _selectionEnd = Point(rowIndex, colIndex);
+      }
+      if (_editingRow != rowIndex || _editingCol != colIndex) {
+        _editingRow = null;
+        _editingCol = null;
+      }
+    });
+  }
+
+  void _handleRowHeaderTap(int rowIndex, int colCount) {
+    final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+    setState(() {
+      if (isShiftPressed && _selectionStart != null) {
+        _selectionStart = Point(_selectionStart!.x, 0);
+        _selectionEnd = Point(rowIndex, colCount - 1);
+      } else {
+        _selectionStart = Point(rowIndex, 0);
+        _selectionEnd = Point(rowIndex, colCount - 1);
+      }
+      _editingRow = null;
+      _editingCol = null;
+    });
+  }
+
+  void _handleCellDoubleTap(int rowIndex, int colIndex, String val) {
+    final ext = widget.fileName.split('.').last.toLowerCase();
+    if (ext == 'xlsx' || ext == 'xls') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excel files are view-only. Convert to CSV to edit.')),
+      );
+      return;
+    }
+    setState(() {
+      _editingRow = rowIndex;
+      _editingCol = colIndex;
+      _cellEditController.text = val;
+      _cellEditController.selection = TextSelection(baseOffset: 0, extentOffset: val.length);
+      _cellEditFocusNode.requestFocus();
+    });
+  }
+
+  void _submitCellEdit(int rowIndex, int colIndex, String newVal) {
+    if (_editingRow != rowIndex || _editingCol != colIndex) return;
+    setState(() {
+      _editingRow = null;
+      _editingCol = null;
+
+      final realRowIndex = _filteredRowIndices[rowIndex + 1];
+      
+      _allRows[realRowIndex][colIndex] = newVal;
+      if (_searchQuery.trim().isNotEmpty) {
+        _filteredRows[rowIndex + 1][colIndex] = newVal;
+      }
+
+      final ext = widget.fileName.split('.').last.toLowerCase();
+      final isTsv = ext == 'tsv';
+      final newCsvText = _toCsv(_allRows, separator: isTsv ? '\t' : ',');
+      widget.onChanged?.call(newCsvText);
+    });
+  }
+
+  String _toCsv(List<List<String>> rows, {String separator = ','}) {
+    return rows.map((row) {
+      return row.map((cell) {
+        if (cell.contains(separator) || cell.contains('"') || cell.contains('\n') || cell.contains('\r')) {
+          return '"${cell.replaceAll('"', '""')}"';
+        }
+        return cell;
+      }).join(separator);
+    }).join('\n');
+  }
+
+  void _copySelectedRange() {
+    if (_selectionStart == null || _selectionEnd == null) return;
+    final minR = min(_selectionStart!.x, _selectionEnd!.x);
+    final maxR = max(_selectionStart!.x, _selectionEnd!.x);
+    final minC = min(_selectionStart!.y, _selectionEnd!.y);
+    final maxC = max(_selectionStart!.y, _selectionEnd!.y);
+
+    final displayRows = _searchQuery.trim().isEmpty ? _allRows : _filteredRows;
+    final dataRows = displayRows.length > 1 ? displayRows.sublist(1) : <List<String>>[];
+
+    final buffer = StringBuffer();
+    for (var r = minR; r <= maxR; r++) {
+      if (r >= dataRows.length) continue;
+      final rowVals = <String>[];
+      final row = dataRows[r];
+      for (var c = minC; c <= maxC; c++) {
+        if (c >= row.length) continue;
+        rowVals.add(row[c]);
+      }
+      buffer.writeln(rowVals.join('\t'));
+    }
+    Clipboard.setData(ClipboardData(text: buffer.toString().trimRight()));
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied range: (${minR+1},${minC+1}) to (${maxR+1},${maxC+1})'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, color: AppPalette.danger, size: 48),
+              const SizedBox(height: 12),
+              Text('Error rendering spreadsheet:', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              Text(_error!, style: TextStyle(color: AppPalette.textMuted, fontSize: 13), textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_allRows.isEmpty) {
+      return const Center(child: Text('No data found in spreadsheet'));
+    }
+
+    final headers = _allRows.first;
+    final displayRows = _searchQuery.trim().isEmpty ? _allRows : _filteredRows;
+    final headerRow = displayRows.first;
+    final dataRows = displayRows.length > 1 ? displayRows.sublist(1) : <List<String>>[];
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyC, control: true): () {
+          _copySelectedRange();
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              color: AppPalette.surface,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 36,
+                      child: TextField(
+                        onChanged: _filterRows,
+                        decoration: InputDecoration(
+                          hintText: 'Search rows...',
+                          prefixIcon: Icon(Icons.search, size: 16, color: AppPalette.textMuted),
+                          contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 10),
+                          fillColor: AppPalette.backgroundDeep,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(6),
+                            borderSide: BorderSide(color: AppPalette.border),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(6),
+                            borderSide: BorderSide(color: AppPalette.border),
+                          ),
+                        ),
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Text(
+                    'Rows: ${dataRows.length} / ${_allRows.length - 1} | Columns: ${headers.length}',
+                    style: TextStyle(fontSize: 12, color: AppPalette.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Container(
+                color: AppPalette.backgroundDeep,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.vertical,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Theme(
+                      data: Theme.of(context).copyWith(
+                        dividerColor: AppPalette.border,
+                      ),
+                      child: DataTable(
+                        headingRowColor: WidgetStateProperty.all(AppPalette.surface),
+                        dataRowMinHeight: 28,
+                        dataRowMaxHeight: 36,
+                        headingRowHeight: 36,
+                        horizontalMargin: 12,
+                        columnSpacing: 20,
+                        columns: [
+                          DataColumn(
+                            label: GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                    _selectionStart = const Point(0, 0);
+                                    _selectionEnd = Point(dataRows.length - 1, headerRow.length - 1);
+                                });
+                              },
+                              child: Text(
+                                '#',
+                                style: TextStyle(
+                                  color: AppPalette.accent,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ),
+                          ...headerRow.map((h) => DataColumn(
+                            label: Text(
+                              h.isEmpty ? 'Untitled' : h,
+                              style: TextStyle(
+                                color: AppPalette.textPrimary,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          )),
+                        ],
+                        rows: List<DataRow>.generate(dataRows.length, (index) {
+                          final rowData = dataRows[index];
+                          final isEven = index % 2 == 0;
+                          return DataRow(
+                            color: WidgetStateProperty.all(
+                              isEven ? AppPalette.backgroundDeep : AppPalette.surfaceSoft.withValues(alpha: 0.3),
+                            ),
+                            cells: [
+                              DataCell(
+                                GestureDetector(
+                                  onTap: () => _handleRowHeaderTap(index, headerRow.length),
+                                  child: Container(
+                                    alignment: Alignment.center,
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                    color: Colors.transparent,
+                                    child: Text(
+                                      '${index + 1}',
+                                      style: TextStyle(
+                                        color: AppPalette.textMuted,
+                                        fontSize: 11,
+                                        fontFamily: 'monospace',
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              ...List<DataCell>.generate(headerRow.length, (colIndex) {
+                                final val = colIndex < rowData.length ? rowData[colIndex] : '';
+                                final isSelected = _isCellSelected(index, colIndex);
+                                final isEditing = _editingRow == index && _editingCol == colIndex;
+
+                                return DataCell(
+                                  GestureDetector(
+                                    onTap: () => _handleCellTap(index, colIndex, val),
+                                    onDoubleTap: () => _handleCellDoubleTap(index, colIndex, val),
+                                    child: Container(
+                                      alignment: Alignment.centerLeft,
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: isSelected
+                                            ? AppPalette.accent.withValues(alpha: 0.15)
+                                            : isEditing
+                                                ? AppPalette.surface
+                                                : Colors.transparent,
+                                        border: isSelected
+                                            ? Border.all(color: AppPalette.accent, width: 1)
+                                            : isEditing
+                                                ? Border.all(color: AppPalette.accent, width: 2)
+                                                : null,
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                      child: isEditing
+                                          ? SizedBox(
+                                              width: 150,
+                                              child: TextField(
+                                                controller: _cellEditController,
+                                                focusNode: _cellEditFocusNode,
+                                                autofocus: true,
+                                                style: TextStyle(fontSize: 12, color: AppPalette.textPrimary),
+                                                decoration: const InputDecoration(
+                                                  border: InputBorder.none,
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.zero,
+                                                ),
+                                                onSubmitted: (newVal) => _submitCellEdit(index, colIndex, newVal),
+                                                onTapOutside: (_) => _submitCellEdit(index, colIndex, _cellEditController.text),
+                                              ),
+                                            )
+                                          : Text(
+                                              val,
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: AppPalette.textSecondary,
+                                              ),
+                                            ),
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ],
+                          );
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PdfPreview extends StatefulWidget {
+  final Uint8List bytes;
+
+  const _PdfPreview({
+    super.key,
+    required this.bytes,
+  });
+
+  @override
+  State<_PdfPreview> createState() => _PdfPreviewState();
+}
+
+class _PdfPreviewState extends State<_PdfPreview> {
+  late final PdfController _pdfController;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    try {
+      _pdfController = PdfController(
+        document: PdfDocument.openData(widget.bytes),
+      );
+      _loading = false;
+    } catch (e) {
+      _error = e.toString();
+      _loading = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pdfController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, color: AppPalette.danger, size: 48),
+              const SizedBox(height: 12),
+              Text('Error rendering PDF:', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              Text(_error!, style: TextStyle(color: AppPalette.textMuted, fontSize: 13), textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      );
+    }
+    return Container(
+      color: AppPalette.backgroundDeep,
+      child: PdfView(
+        controller: _pdfController,
+        scrollDirection: Axis.vertical,
+      ),
+    );
+  }
+}
+
+class _CommandPaletteDialog extends StatefulWidget {
+  final List<_CommandItem> commands;
+
+  const _CommandPaletteDialog({required this.commands});
+
+  @override
+  State<_CommandPaletteDialog> createState() => _CommandPaletteDialogState();
+}
+
+class _CommandPaletteDialogState extends State<_CommandPaletteDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  List<_CommandItem> _filtered = [];
+  int _selectedIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _filtered = widget.commands;
+    _searchController.addListener(_filter);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _filter() {
+    final query = _searchController.text.toLowerCase().trim();
+    setState(() {
+      if (query.isEmpty) {
+        _filtered = widget.commands;
+      } else {
+        _filtered = widget.commands
+            .where((cmd) => cmd.name.toLowerCase().contains(query))
+            .toList();
+      }
+      _selectedIndex = 0;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppPalette.surfaceElevated,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      alignment: Alignment.topCenter,
+      insetPadding: const EdgeInsets.only(top: 50, left: 40, right: 40),
+      child: Container(
+        width: 500,
+        constraints: const BoxConstraints(maxHeight: 350),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Focus(
+              onKeyEvent: (node, event) {
+                if (event is KeyDownEvent) {
+                  if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                    setState(() {
+                      if (_filtered.isNotEmpty) {
+                        _selectedIndex = (_selectedIndex + 1) % _filtered.length;
+                      }
+                    });
+                    return KeyEventResult.handled;
+                  } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                    setState(() {
+                      if (_filtered.isNotEmpty) {
+                        _selectedIndex = (_selectedIndex - 1 + _filtered.length) % _filtered.length;
+                      }
+                    });
+                    return KeyEventResult.handled;
+                  } else if (event.logicalKey == LogicalKeyboardKey.enter) {
+                    if (_filtered.isNotEmpty && _selectedIndex < _filtered.length) {
+                      final action = _filtered[_selectedIndex].action;
+                      Navigator.pop(context);
+                      action();
+                    }
+                    return KeyEventResult.handled;
+                  } else if (event.logicalKey == LogicalKeyboardKey.escape) {
+                    Navigator.pop(context);
+                    return KeyEventResult.handled;
+                  }
+                }
+                return KeyEventResult.ignored;
+              },
+              child: TextField(
+                controller: _searchController,
+                autofocus: true,
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  hintText: 'Type a command to search...',
+                  contentPadding: EdgeInsets.all(12),
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+            Divider(height: 1, color: AppPalette.border),
+            if (_filtered.isEmpty)
+              Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No commands matching your query.', style: TextStyle(color: AppPalette.textMuted)),
+              )
+            else
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _filtered.length,
+                  itemBuilder: (context, index) {
+                    final item = _filtered[index];
+                    final isSelected = index == _selectedIndex;
+                    return InkWell(
+                      onTap: () {
+                        Navigator.pop(context);
+                        item.action();
+                      },
+                      child: Container(
+                        color: isSelected ? AppPalette.surfaceSoft : Colors.transparent,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.arrow_right,
+                              size: 16,
+                              color: isSelected ? AppPalette.accent : Colors.transparent,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              item.name,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: isSelected ? AppPalette.textPrimary : AppPalette.textSecondary,
+                                fontWeight: isSelected ? FontWeight.w500 : FontWeight.normal,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CommandItem {
+  final String name;
+  final VoidCallback action;
+
+  const _CommandItem({required this.name, required this.action});
 }
 

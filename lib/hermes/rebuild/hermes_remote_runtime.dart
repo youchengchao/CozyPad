@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+﻿part of cozypad;
 
 /* =========================================================
    Hermes Dart Rebuild: remote runtime / tmux control plane

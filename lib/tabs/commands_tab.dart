@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Commands Tab: visible interactive PTY terminal
@@ -796,7 +796,7 @@ class _CommandsTabState extends State<CommandsTab> with AutomaticKeepAliveClient
                 children: [
                   TerminalView(
                     workspace.terminal,
-                    theme: const TerminalTheme(
+                    theme: TerminalTheme(
                       cursor: AppPalette.accent,
                       selection: Color(0x336E8CFF),
                       foreground: AppPalette.textPrimary,
@@ -880,8 +880,8 @@ class _TerminalImeBridge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final borderColor = focused
-        ? AppPalette.accent.withOpacity(0.65)
-        : Colors.white.withOpacity(0.18);
+        ? AppPalette.accent.withValues(alpha: 0.65)
+        : Colors.white.withValues(alpha: 0.18);
     final iconColor = connected
         ? (focused ? AppPalette.accent : Colors.white70)
         : Colors.redAccent;
@@ -890,12 +890,12 @@ class _TerminalImeBridge extends StatelessWidget {
       color: Colors.transparent,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: AppPalette.surface.withOpacity(0.95),
+          color: AppPalette.surface.withValues(alpha: 0.95),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: borderColor),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.45),
+              color: Colors.black.withValues(alpha: 0.45),
               blurRadius: 14,
               offset: const Offset(0, 5),
             ),
@@ -938,8 +938,8 @@ class _TerminalImeBridge extends StatelessWidget {
                         : 'PTY 尚未連線',
                     hintStyle: TextStyle(
                       color: composing
-                          ? AppPalette.accent.withOpacity(0.72)
-                          : Colors.white.withOpacity(0.46),
+                          ? AppPalette.accent.withValues(alpha: 0.72)
+                          : Colors.white.withValues(alpha: 0.46),
                     ),
                     contentPadding: const EdgeInsets.symmetric(vertical: 13),
                   ),

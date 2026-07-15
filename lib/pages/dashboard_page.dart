@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Dashboard Page (Redesigned as unified Project Hub Workspace)
@@ -83,26 +83,82 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
+  void _closeDrawerIfMobile() {
+    if (MediaQuery.of(context).size.width < 760) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<SSHProvider>();
 
-    return Scaffold(
-      body: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 1. LEFT-MOST NAV BAR (width: 72)
-          _buildLeftNav(provider),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 760;
 
-          // 2. MIDDLE CONTEXT SIDEBAR (width: 250)
-          _buildMiddleSidebar(provider),
+        if (isMobile) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text('CozyPad', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+              backgroundColor: AppPalette.backgroundDeep,
+              leading: Builder(
+                builder: (context) => IconButton(
+                  icon: const Icon(Icons.menu, size: 20),
+                  onPressed: () => Scaffold.of(context).openDrawer(),
+                ),
+              ),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.settings, size: 18),
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => const _SettingsDialog(),
+                    );
+                  },
+                ),
+              ],
+            ),
+            drawer: Drawer(
+              width: 322,
+              backgroundColor: AppPalette.background,
+              child: Row(
+                children: [
+                  _buildLeftNav(provider),
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border(left: BorderSide(color: AppPalette.border)),
+                      ),
+                      child: _buildMiddleSidebar(provider),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            body: _buildMainWorkspace(provider),
+          );
+        } else {
+          return Scaffold(
+            body: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 1. LEFT-MOST NAV BAR (width: 72)
+                _buildLeftNav(provider),
 
-          // 3. MAIN WORKSPACE AREA
-          Expanded(
-            child: _buildMainWorkspace(provider),
-          ),
-        ],
-      ),
+                // 2. MIDDLE CONTEXT SIDEBAR (width: 250)
+                _buildMiddleSidebar(provider),
+
+                // 3. MAIN WORKSPACE AREA
+                Expanded(
+                  child: _buildMainWorkspace(provider),
+                ),
+              ],
+            ),
+          );
+        }
+      },
     );
   }
 
@@ -149,7 +205,7 @@ class _DashboardPageState extends State<DashboardPage>
               const SizedBox(width: 10),
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
                   color: AppPalette.textPrimary,
@@ -185,6 +241,18 @@ class _DashboardPageState extends State<DashboardPage>
                   ),
                 ),
               const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.settings, size: 16),
+                color: AppPalette.textMuted,
+                tooltip: 'Settings / 設定',
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) => const _SettingsDialog(),
+                  );
+                },
+              ),
+              const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(Icons.close, size: 16),
                 color: AppPalette.textMuted,
@@ -222,7 +290,7 @@ class _DashboardPageState extends State<DashboardPage>
   Widget _buildLeftNav(SSHProvider provider) {
     return Container(
       width: 72,
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppPalette.backgroundDeep,
         border: Border(
           right: BorderSide(color: AppPalette.border),
@@ -241,13 +309,13 @@ class _DashboardPageState extends State<DashboardPage>
               border: Border.all(color: AppPalette.borderStrong),
               boxShadow: [
                 BoxShadow(
-                  color: AppPalette.accent.withOpacity(0.15),
+                  color: AppPalette.accent.withValues(alpha: 0.15),
                   blurRadius: 10,
                   spreadRadius: 2,
                 )
               ],
             ),
-            child: const Icon(
+            child: Icon(
               Icons.bolt_rounded,
               color: AppPalette.accent,
               size: 24,
@@ -263,10 +331,11 @@ class _DashboardPageState extends State<DashboardPage>
               setState(() {
                 _activeExtensionIndex = null;
               });
+              _closeDrawerIfMobile();
             },
           ),
           const SizedBox(height: 12),
-          const Divider(height: 1, color: AppPalette.border, indent: 16, endIndent: 16),
+          Divider(height: 1, color: AppPalette.border, indent: 16, endIndent: 16),
           const SizedBox(height: 12),
           // Extension buttons (only require SSH connection, not active project)
           _buildNavIconButton(
@@ -277,6 +346,7 @@ class _DashboardPageState extends State<DashboardPage>
               setState(() {
                 _activeExtensionIndex = _activeExtensionIndex == 0 ? null : 0;
               });
+              _closeDrawerIfMobile();
             },
           ),
           _buildNavIconButton(
@@ -287,6 +357,7 @@ class _DashboardPageState extends State<DashboardPage>
               setState(() {
                 _activeExtensionIndex = _activeExtensionIndex == 1 ? null : 1;
               });
+              _closeDrawerIfMobile();
             },
           ),
           _buildNavIconButton(
@@ -297,6 +368,7 @@ class _DashboardPageState extends State<DashboardPage>
               setState(() {
                 _activeExtensionIndex = _activeExtensionIndex == 2 ? null : 2;
               });
+              _closeDrawerIfMobile();
             },
           ),
           const Spacer(),
@@ -306,7 +378,10 @@ class _DashboardPageState extends State<DashboardPage>
               icon: Icons.logout_rounded,
               tooltip: 'Disconnect SSH Connection',
               color: AppPalette.danger,
-              onPressed: () => provider.disconnect(),
+              onPressed: () {
+                provider.disconnect();
+                _closeDrawerIfMobile();
+              },
             ),
           const SizedBox(height: 24),
         ],
@@ -345,7 +420,7 @@ class _DashboardPageState extends State<DashboardPage>
   Widget _buildMiddleSidebar(SSHProvider provider) {
     return Container(
       width: 250,
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppPalette.background,
         border: Border(
           right: BorderSide(color: AppPalette.border),
@@ -359,7 +434,7 @@ class _DashboardPageState extends State<DashboardPage>
             padding: const EdgeInsets.fromLTRB(16, 24, 12, 16),
             child: Row(
               children: [
-                const Text(
+                Text(
                   'PROJECTS',
                   style: TextStyle(
                     fontSize: 12,
@@ -371,7 +446,7 @@ class _DashboardPageState extends State<DashboardPage>
                 const Spacer(),
                 IconButton(
                   tooltip: 'Create New Project',
-                  icon: const Icon(Icons.add, size: 18, color: AppPalette.textSecondary),
+                  icon: Icon(Icons.add, size: 18, color: AppPalette.textSecondary),
                   onPressed: () => _createNewProject(provider),
                 ),
               ],
@@ -413,7 +488,7 @@ class _DashboardPageState extends State<DashboardPage>
                         project.description.isEmpty ? 'Logical Project' : project.description,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                        style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                       ),
                       leading: _buildProjectStatusDot(isCurrentHostActive, isSelected),
                       trailing: isSelected
@@ -421,7 +496,7 @@ class _DashboardPageState extends State<DashboardPage>
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
-                                  icon: const Icon(Icons.info_outline, size: 14, color: AppPalette.textMuted),
+                                  icon: Icon(Icons.info_outline, size: 14, color: AppPalette.textMuted),
                                   onPressed: () {
                                     showDialog(
                                       context: context,
@@ -433,13 +508,16 @@ class _DashboardPageState extends State<DashboardPage>
                                   },
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.settings, size: 14, color: AppPalette.textMuted),
+                                  icon: Icon(Icons.settings, size: 14, color: AppPalette.textMuted),
                                   onPressed: () => _editProject(provider, project),
                                 ),
                               ],
                             )
                           : null,
-                      onTap: () => provider.selectProject(project),
+                      onTap: () {
+                        provider.selectProject(project);
+                        _closeDrawerIfMobile();
+                      },
                     ),
                   ),
                 );
@@ -471,7 +549,7 @@ class _DashboardPageState extends State<DashboardPage>
         boxShadow: isConnected
             ? [
                 BoxShadow(
-                  color: AppPalette.success.withOpacity(0.4),
+                  color: AppPalette.success.withValues(alpha: 0.4),
                   blurRadius: 4,
                   spreadRadius: 1,
                 )
@@ -497,7 +575,7 @@ class _DashboardPageState extends State<DashboardPage>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text(
+          Text(
             'ACTIVE CONNECTION',
             style: TextStyle(
               fontSize: 9,
@@ -518,12 +596,12 @@ class _DashboardPageState extends State<DashboardPage>
               '${activeConn.username}@${activeConn.host}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 10, color: AppPalette.textSecondary),
+              style: TextStyle(fontSize: 10, color: AppPalette.textSecondary),
             ),
             const SizedBox(height: 12),
             FilledButton.tonal(
               style: FilledButton.styleFrom(
-                backgroundColor: AppPalette.danger.withOpacity(0.1),
+                backgroundColor: AppPalette.danger.withValues(alpha: 0.1),
                 foregroundColor: AppPalette.danger,
                 padding: const EdgeInsets.symmetric(vertical: 8),
               ),
@@ -531,7 +609,7 @@ class _DashboardPageState extends State<DashboardPage>
               child: const Text('Disconnect SSH', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
             ),
           ] else ...[
-            const Text(
+            Text(
               'No active host connection',
               style: TextStyle(fontSize: 12, color: AppPalette.textMuted, fontStyle: FontStyle.italic),
             ),
@@ -555,7 +633,7 @@ class _DashboardPageState extends State<DashboardPage>
                     border: OutlineInputBorder(),
                     labelText: 'Quick Connect',
                   ),
-                  style: const TextStyle(fontSize: 12, color: AppPalette.textPrimary),
+                  style: TextStyle(fontSize: 12, color: AppPalette.textPrimary),
                   items: provider.connections.map((c) {
                     return DropdownMenuItem<ConnectionProfile>(
                       value: c,
@@ -586,6 +664,145 @@ class _DashboardPageState extends State<DashboardPage>
   }
 
   Widget _buildWelcomeScreen(SSHProvider provider) {
+    final isMobile = MediaQuery.of(context).size.width < 760;
+
+    final projectsWidget = Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: AppPalette.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppPalette.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.hub_rounded, color: AppPalette.accent),
+                  const SizedBox(width: 8),
+                  Text(
+                    '開發專案 (${provider.projects.length})',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
+              ),
+              IconButton(
+                icon: Icon(Icons.add, color: AppPalette.accent),
+                tooltip: '建立新專案',
+                onPressed: () => _createNewProject(provider),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (provider.projects.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text('目前無專案。請點擊右上角新增。', style: TextStyle(color: AppPalette.textMuted, fontSize: 13)),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: provider.projects.length.clamp(0, 5),
+              itemBuilder: (context, idx) {
+                final proj = provider.projects[idx];
+                return Card(
+                  color: AppPalette.surfaceElevated,
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  child: ListTile(
+                    dense: true,
+                    title: Text(proj.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(
+                      proj.description.isEmpty
+                          ? '已登記在 ${proj.codebaseStates.length} 台機器'
+                          : proj.description,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    trailing: const Icon(Icons.chevron_right, size: 16),
+                    onTap: () {
+                      provider.selectProject(proj);
+                    },
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+
+    final connectionsWidget = Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: AppPalette.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppPalette.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.dns_rounded, color: AppPalette.primary),
+                  const SizedBox(width: 8),
+                  Text(
+                    '遠端連線 (${provider.connections.length})',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
+              ),
+              IconButton(
+                icon: Icon(Icons.add, color: AppPalette.primary),
+                tooltip: '建立新連線',
+                onPressed: () => _createNewConnection(provider),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (provider.connections.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text('目前無連線。請點擊右上角新增。', style: TextStyle(color: AppPalette.textMuted, fontSize: 13)),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: provider.connections.length.clamp(0, 5),
+              itemBuilder: (context, idx) {
+                final conn = provider.connections[idx];
+                return Card(
+                  color: AppPalette.surfaceElevated,
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  child: ListTile(
+                    dense: true,
+                    title: Text(conn.name.isEmpty ? conn.host : conn.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('${conn.username}@${conn.host}', style: const TextStyle(fontSize: 11)),
+                    trailing: provider.isConnected && provider.connectedHost == conn.host
+                        ? Icon(Icons.bolt, color: AppPalette.success, size: 16)
+                        : const Icon(Icons.link, size: 16),
+                    onTap: () async {
+                      await provider.connectWithProfile(conn);
+                    },
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+
     return AppBackdrop(
       child: Center(
         child: SingleChildScrollView(
@@ -596,7 +813,7 @@ class _DashboardPageState extends State<DashboardPage>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
+                  shaderCallback: (bounds) => LinearGradient(
                     colors: [AppPalette.primary, AppPalette.accent],
                   ).createShader(bounds),
                   child: Text(
@@ -609,159 +826,29 @@ class _DashboardPageState extends State<DashboardPage>
                   ),
                 ),
                 const SizedBox(height: 12),
-                const Text(
+                Text(
                   'A project-centric agentic control plane. Select a project from the sidebar to activate the Hermes Agent. Your memories and knowledge bases travel with your projects, decoupled from physical hosts.',
                   style: TextStyle(fontSize: 15, color: AppPalette.textSecondary, height: 1.5),
                 ),
                 const SizedBox(height: 36),
-
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Left Column: Projects
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(24),
-                        decoration: BoxDecoration(
-                          color: AppPalette.surface,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppPalette.border),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Row(
-                                  children: [
-                                    const Icon(Icons.hub_rounded, color: AppPalette.accent),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      '開發專案 (${provider.projects.length})',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                                    ),
-                                  ],
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.add, color: AppPalette.accent),
-                                  tooltip: '建立新專案',
-                                  onPressed: () => _createNewProject(provider),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                            if (provider.projects.isEmpty)
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 24),
-                                child: Center(
-                                  child: Text('目前無專案。請點擊右上角新增。', style: TextStyle(color: AppPalette.textMuted, fontSize: 13)),
-                                ),
-                              )
-                            else
-                              ListView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                itemCount: provider.projects.length.clamp(0, 5),
-                                itemBuilder: (context, idx) {
-                                  final proj = provider.projects[idx];
-                                  return Card(
-                                    color: AppPalette.surfaceElevated,
-                                    margin: const EdgeInsets.symmetric(vertical: 6),
-                                    child: ListTile(
-                                      dense: true,
-                                      title: Text(proj.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                      subtitle: Text(
-                                        proj.description.isEmpty
-                                            ? '已登記在 ${proj.codebaseStates.length} 台機器'
-                                            : proj.description,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 11),
-                                      ),
-                                      trailing: const Icon(Icons.chevron_right, size: 16),
-                                      onTap: () {
-                                        provider.selectProject(proj);
-                                      },
-                                    ),
-                                  );
-                                },
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 24),
-                    // Right Column: Connections
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(24),
-                        decoration: BoxDecoration(
-                          color: AppPalette.surface,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppPalette.border),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Row(
-                                  children: [
-                                    const Icon(Icons.dns_rounded, color: AppPalette.primary),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      '遠端連線 (${provider.connections.length})',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                                    ),
-                                  ],
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.add, color: AppPalette.primary),
-                                  tooltip: '建立新連線',
-                                  onPressed: () => _createNewConnection(provider),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                            if (provider.connections.isEmpty)
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 24),
-                                child: Center(
-                                  child: Text('目前無連線。請點擊右上角新增。', style: TextStyle(color: AppPalette.textMuted, fontSize: 13)),
-                                ),
-                              )
-                            else
-                              ListView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                itemCount: provider.connections.length.clamp(0, 5),
-                                itemBuilder: (context, idx) {
-                                  final conn = provider.connections[idx];
-                                  return Card(
-                                    color: AppPalette.surfaceElevated,
-                                    margin: const EdgeInsets.symmetric(vertical: 6),
-                                    child: ListTile(
-                                      dense: true,
-                                      title: Text(conn.name.isEmpty ? conn.host : conn.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                      subtitle: Text('${conn.username}@${conn.host}', style: const TextStyle(fontSize: 11)),
-                                      trailing: provider.isConnected && provider.connectedHost == conn.host
-                                          ? const Icon(Icons.bolt, color: AppPalette.success, size: 16)
-                                          : const Icon(Icons.link, size: 16),
-                                      onTap: () async {
-                                        await provider.connectWithProfile(conn);
-                                      },
-                                    ),
-                                  );
-                                },
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                if (isMobile)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      projectsWidget,
+                      const SizedBox(height: 24),
+                      connectionsWidget,
+                    ],
+                  )
+                else
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: projectsWidget),
+                      const SizedBox(width: 24),
+                      Expanded(child: connectionsWidget),
+                    ],
+                  ),
               ],
             ),
           ),
@@ -781,7 +868,7 @@ class _DashboardPageState extends State<DashboardPage>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
+                  shaderCallback: (bounds) => LinearGradient(
                     colors: [AppPalette.primary, AppPalette.accent],
                   ).createShader(bounds),
                   child: Text(
@@ -796,13 +883,13 @@ class _DashboardPageState extends State<DashboardPage>
                 const SizedBox(height: 12),
                 Text(
                   '您目前選取了專案「${activeProject.name}」，請在下方選擇或新增一個連線，以開啟遠端開發工作區。',
-                  style: const TextStyle(fontSize: 16, color: AppPalette.textSecondary, height: 1.5),
+                  style: TextStyle(fontSize: 16, color: AppPalette.textSecondary, height: 1.5),
                 ),
                 const SizedBox(height: 32),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
+                    Text(
                       '已儲存的遠端連線',
                       style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
                     ),
@@ -823,7 +910,7 @@ class _DashboardPageState extends State<DashboardPage>
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: AppPalette.border),
                     ),
-                    child: const Center(
+                    child: Center(
                       child: Text('目前沒有已儲存的連線，請點選右上角新增連線。', style: TextStyle(color: AppPalette.textMuted)),
                     ),
                   )
@@ -863,7 +950,7 @@ class _DashboardPageState extends State<DashboardPage>
                                     borderRadius: BorderRadius.circular(10),
                                     border: Border.all(color: AppPalette.borderStrong),
                                   ),
-                                  child: const Icon(Icons.dns, color: AppPalette.textSecondary, size: 20),
+                                  child: Icon(Icons.dns, color: AppPalette.textSecondary, size: 20),
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
@@ -880,7 +967,7 @@ class _DashboardPageState extends State<DashboardPage>
                                       const SizedBox(height: 2),
                                       Text(
                                         '${conn.username}@${conn.host}',
-                                        style: const TextStyle(fontSize: 11, color: AppPalette.textMuted),
+                                        style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
@@ -889,7 +976,7 @@ class _DashboardPageState extends State<DashboardPage>
                                 ),
                                 const SizedBox(width: 8),
                                 IconButton(
-                                  icon: const Icon(Icons.edit, size: 14, color: AppPalette.textMuted),
+                                  icon: Icon(Icons.edit, size: 14, color: AppPalette.textMuted),
                                   onPressed: () => _editConnection(provider, conn),
                                 ),
                               ],
@@ -928,7 +1015,7 @@ class _DashboardPageState extends State<DashboardPage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   ShaderMask(
-                    shaderCallback: (bounds) => const LinearGradient(
+                    shaderCallback: (bounds) => LinearGradient(
                       colors: [AppPalette.primary, AppPalette.accent],
                     ).createShader(bounds),
                     child: Text(
@@ -943,7 +1030,7 @@ class _DashboardPageState extends State<DashboardPage>
                   const SizedBox(height: 12),
                   Text(
                     '專案「${activeProject.name}」在目前連線的機器「${activeConnection.name}」上尚未登記 codebase 狀態。請在下方進行登記或進行 codebase 搬遷。',
-                    style: const TextStyle(fontSize: 14, color: AppPalette.textSecondary, height: 1.5),
+                    style: TextStyle(fontSize: 14, color: AppPalette.textSecondary, height: 1.5),
                   ),
                   const SizedBox(height: 28),
                   TabBar(
@@ -984,7 +1071,7 @@ class _DashboardPageState extends State<DashboardPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           '請輸入此專案在此機器上的遠端 codebase 目錄路徑。Hermes 專案專屬的記憶與知識庫會在此目錄啟動時進行雙向同步與載入。',
           style: TextStyle(fontSize: 13, color: AppPalette.textMuted, height: 1.4),
         ),
@@ -1032,7 +1119,7 @@ class _DashboardPageState extends State<DashboardPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           '您可以從其他登記過此專案的機器中，搬遷 codebase 到目前這台機器上。這會協助建立專案搬遷軌跡，並同步專案記憶與知識庫。',
           style: TextStyle(fontSize: 13, color: AppPalette.textMuted, height: 1.4),
         ),
@@ -1041,7 +1128,7 @@ class _DashboardPageState extends State<DashboardPage>
           children: [
             Expanded(
               child: DropdownButtonFormField<String>(
-                value: _selectedSourceConnectionId,
+                initialValue: _selectedSourceConnectionId,
                 decoration: const InputDecoration(labelText: '來源機器'),
                 items: otherStates.map((entry) {
                   final conn = provider.connections.firstWhere(
@@ -1133,14 +1220,14 @@ class _DashboardPageState extends State<DashboardPage>
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: AppPalette.backgroundDeep.withOpacity(0.85),
+              color: AppPalette.backgroundDeep.withValues(alpha: 0.85),
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: AppPalette.borderStrong),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.folder_shared, size: 14, color: AppPalette.accent),
+                Icon(Icons.folder_shared, size: 14, color: AppPalette.accent),
                 const SizedBox(width: 6),
                 Text(
                   'Codebase: ${codebaseState.remotePath}',
@@ -1159,7 +1246,7 @@ class _DashboardPageState extends State<DashboardPage>
                       ),
                     );
                   },
-                  child: const Text(
+                  child: Text(
                     '狀態與搬遷歷史',
                     style: TextStyle(fontSize: 11, color: AppPalette.accent, fontWeight: FontWeight.bold),
                   ),
@@ -1194,7 +1281,7 @@ class _DashboardPageState extends State<DashboardPage>
                         border: Border.all(color: AppPalette.border),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.6),
+                            color: Colors.black.withValues(alpha: 0.6),
                             blurRadius: 24,
                             spreadRadius: 8,
                           ),
@@ -1243,7 +1330,7 @@ class _DashboardPageState extends State<DashboardPage>
               const SizedBox(width: 10),
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
                   color: AppPalette.textPrimary,
@@ -1279,6 +1366,18 @@ class _DashboardPageState extends State<DashboardPage>
                   ),
                 ),
               const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.settings, size: 16),
+                color: AppPalette.textMuted,
+                tooltip: 'Settings / 設定',
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) => const _SettingsDialog(),
+                  );
+                },
+              ),
+              const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(Icons.close, size: 16),
                 color: AppPalette.textMuted,

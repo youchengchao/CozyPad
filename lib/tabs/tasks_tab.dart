@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+﻿part of cozypad;
 
 /* =========================================================
    Tasks Tab

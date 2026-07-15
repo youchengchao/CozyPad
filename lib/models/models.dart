@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Models
@@ -151,6 +151,8 @@ enum RemoteFilePreviewKind {
   markdown,
   image,
   video,
+  spreadsheet,
+  pdf,
   binary,
   error,
 }
@@ -219,6 +221,28 @@ class RemoteFilePreviewData {
           kind: RemoteFilePreviewKind.video,
           bytes: bytes,
           mimeType: mimeType,
+        );
+
+  const RemoteFilePreviewData.spreadsheet({
+    required RemoteFileItem item,
+    required Uint8List bytes,
+    String? text,
+    bool truncated = false,
+  }) : this._(
+          item: item,
+          kind: RemoteFilePreviewKind.spreadsheet,
+          bytes: bytes,
+          text: text,
+          truncated: truncated,
+        );
+
+  const RemoteFilePreviewData.pdf({
+    required RemoteFileItem item,
+    required Uint8List bytes,
+  }) : this._(
+          item: item,
+          kind: RemoteFilePreviewKind.pdf,
+          bytes: bytes,
         );
 
   const RemoteFilePreviewData.binary({

@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Agents Tab: chat UI backed by hidden PTY terminal
@@ -1325,7 +1325,7 @@ class _AgentSessionTile extends StatelessWidget {
       color: selected ? const Color(0xFF1E293B) : const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: selected ? AppPalette.accent.withOpacity(0.55) : AppPalette.border),
+        side: BorderSide(color: selected ? AppPalette.accent.withValues(alpha: 0.55) : AppPalette.border),
       ),
       child: ListTile(
         dense: true,
@@ -1375,7 +1375,7 @@ class _AgentTaskTile extends StatelessWidget {
       color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: color.withOpacity(0.25)),
+        side: BorderSide(color: color.withValues(alpha: 0.25)),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
@@ -1399,9 +1399,9 @@ class _AgentTaskTile extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: color.withOpacity(0.15),
+                    color: color.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: color.withOpacity(0.35)),
+                    border: Border.all(color: color.withValues(alpha: 0.35)),
                   ),
                   child: Text(
                     task.status,
@@ -1443,7 +1443,7 @@ class _AgentTaskTile extends StatelessWidget {
                 width: double.infinity,
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.35),
+                  color: Colors.black.withValues(alpha: 0.35),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: AppPalette.border),
                 ),
@@ -1701,7 +1701,7 @@ class _TaskQueueDialogState extends State<_TaskQueueDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: launchMode,
+                initialValue: launchMode,
                 decoration: const InputDecoration(
                   labelText: 'Launch mode',
                   border: OutlineInputBorder(),
@@ -1718,7 +1718,7 @@ class _TaskQueueDialogState extends State<_TaskQueueDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<int>(
-                value: targetGpuIndex,
+                initialValue: targetGpuIndex,
                 decoration: const InputDecoration(
                   labelText: 'Target GPU',
                   border: OutlineInputBorder(),
@@ -1874,9 +1874,9 @@ class _AgentToolbar extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.14),
+              color: color.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: color.withOpacity(0.4)),
+              border: Border.all(color: color.withValues(alpha: 0.4)),
             ),
             child: Text(status, style: TextStyle(color: color)),
           ),
@@ -1943,7 +1943,7 @@ class AgentChoicePanel extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppPalette.accent.withOpacity(0.25)),
+        border: Border.all(color: AppPalette.accent.withValues(alpha: 0.25)),
       ),
       child: ListView.separated(
         shrinkWrap: true,
@@ -1998,9 +1998,9 @@ class AgentMessageBlock extends StatelessWidget {
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: isUser ? AppPalette.accent.withOpacity(0.14) : AppPalette.surfaceElevated,
+        color: isUser ? AppPalette.accent.withValues(alpha: 0.14) : AppPalette.surfaceElevated,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: isUser ? AppPalette.accent.withOpacity(0.35) : AppPalette.border),
+        border: Border.all(color: isUser ? AppPalette.accent.withValues(alpha: 0.35) : AppPalette.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 class _HermesMemoryTargetCard extends StatelessWidget {
   final HermesMemoryTargetState state;
@@ -25,7 +25,7 @@ class _HermesMemoryTargetCard extends StatelessWidget {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: AppPalette.border),
+        side: BorderSide(color: AppPalette.border),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -74,17 +74,17 @@ class _HermesMemoryTargetCard extends StatelessWidget {
                         spacing: 8,
                         children: [
                           ActionChip(
-                            avatar: const Icon(Icons.edit, size: 14, color: AppPalette.textSecondary),
+                            avatar: Icon(Icons.edit, size: 14, color: AppPalette.textSecondary),
                             label: const Text('Replace', style: TextStyle(fontSize: 11)),
                             backgroundColor: AppPalette.surfaceSoft,
-                            side: const BorderSide(color: AppPalette.border),
+                            side: BorderSide(color: AppPalette.border),
                             onPressed: () => onReplace(entry),
                           ),
                           ActionChip(
-                            avatar: const Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
-                            label: const Text('Remove', style: TextStyle(fontSize: 11, color: AppPalette.danger)),
+                            avatar: Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
+                            label: Text('Remove', style: TextStyle(fontSize: 11, color: AppPalette.danger)),
                             backgroundColor: AppPalette.surfaceSoft,
-                            side: const BorderSide(color: AppPalette.border),
+                            side: BorderSide(color: AppPalette.border),
                             onPressed: () => onRemove(entry),
                           ),
                         ],
@@ -223,7 +223,7 @@ class _HermesTraceMessageCard extends StatelessWidget {
             ),
             subtitle: Text(
               isResult ? 'Observation captured from runtime' : 'Pending harness security review',
-              style: const TextStyle(color: AppPalette.textMuted, fontSize: 11),
+              style: TextStyle(color: AppPalette.textMuted, fontSize: 11),
             ),
             children: [
               for (final part in message.parts) _HermesMessagePartView(part: part, onApprove: onApprove),
@@ -608,7 +608,7 @@ class _ClarificationBox extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.question_answer, size: 18, color: AppPalette.accent),
+              Icon(Icons.question_answer, size: 18, color: AppPalette.accent),
               const SizedBox(width: 8),
               Text('Hermes clarification request', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900)),
             ],
@@ -628,7 +628,7 @@ class _ClarificationBox extends StatelessWidget {
                 for (var index = 0; index < currentOptions.length; index++)
                   ActionChip(
                     label: Text(currentOptions[index]),
-                    avatar: const Icon(
+                    avatar: Icon(
                       Icons.reply,
                       size: 16,
                       color: AppPalette.accent,
@@ -770,7 +770,7 @@ class _HermesSidebar extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.auto_awesome, color: AppPalette.accent),
+              Icon(Icons.auto_awesome, color: AppPalette.accent),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -786,7 +786,7 @@ class _HermesSidebar extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             'dashboard-native agent kernel · $profile',
-            style: const TextStyle(color: AppPalette.textMuted, fontSize: 11),
+            style: TextStyle(color: AppPalette.textMuted, fontSize: 11),
           ),
           const SizedBox(height: 14),
           _HermesMiniStatus(
@@ -879,7 +879,7 @@ class _HermesTopBar extends StatelessWidget {
               status,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: AppPalette.textMuted, fontSize: 11),
+              style: TextStyle(color: AppPalette.textMuted, fontSize: 11),
             ),
           ),
           IconButton(
@@ -948,7 +948,7 @@ class _HermesPanel extends StatelessWidget {
       color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
-        side: const BorderSide(color: AppPalette.border),
+        side: BorderSide(color: AppPalette.border),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -992,7 +992,7 @@ class _HermesFeatureCard extends StatelessWidget {
       color: const Color(0xFF111827),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: AppPalette.border),
+        side: BorderSide(color: AppPalette.border),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),

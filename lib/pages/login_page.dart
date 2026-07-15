@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Login Page
@@ -98,7 +98,7 @@ class _LoginPageState extends State<LoginPage> {
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(color: AppPalette.borderStrong),
                               ),
-                              child: const Icon(Icons.dns_rounded, color: AppPalette.textPrimary, size: 28),
+                              child: Icon(Icons.dns_rounded, color: AppPalette.textPrimary, size: 28),
                             ),
                             const SizedBox(width: 16),
                             Expanded(
@@ -137,7 +137,7 @@ class _LoginPageState extends State<LoginPage> {
                             children: [
                               Row(
                                 children: [
-                                  const Icon(Icons.link_rounded, color: AppPalette.textSecondary, size: 18),
+                                  Icon(Icons.link_rounded, color: AppPalette.textSecondary, size: 18),
                                   const SizedBox(width: 8),
                                   Text(
                                     'Saved connections',

@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 class HermesNativeTab extends StatefulWidget {
   const HermesNativeTab({super.key});
@@ -1342,15 +1342,15 @@ This skill scans nvidia-smi output for processes using zero memory or running be
     if (!kIsWeb && io.Platform.isWindows) {
       final appData = io.Platform.environment['APPDATA'];
       if (appData != null && appData.trim().isNotEmpty) {
-        return '$appData\\ssh_dashboard_hermes';
+        return '$appData\\cozypad_hermes';
       }
-      return r'%APPDATA%\ssh_dashboard_hermes';
+      return r'%APPDATA%\cozypad_hermes';
     }
     final home = !kIsWeb ? io.Platform.environment['HOME'] : null;
     if (home != null && home.trim().isNotEmpty) {
-      return '$home/.ssh_dashboard_hermes';
+      return '$home/.cozypad_hermes';
     }
-    return '~/.ssh_dashboard_hermes';
+    return '~/.cozypad_hermes';
   }
 
   String _maskedSecret(String value) {
@@ -1425,7 +1425,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
         children: [
           Row(
             children: [
-              const Icon(Icons.auto_awesome, color: AppPalette.accent),
+              Icon(Icons.auto_awesome, color: AppPalette.accent),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -1441,7 +1441,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
           const SizedBox(height: 4),
           Text(
             'profile: ${_settings().profile} · project: ${_settings().project}',
-            style: const TextStyle(color: AppPalette.textMuted, fontSize: 11),
+            style: TextStyle(color: AppPalette.textMuted, fontSize: 11),
           ),
           const SizedBox(height: 8),
           _buildQuickApiSwitcher(provider),
@@ -1482,7 +1482,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                               decoration: BoxDecoration(
                                 color: isCurrent ? AppPalette.surfaceSoft : Colors.transparent,
                                 border: isCurrent
-                                    ? const Border(left: BorderSide(color: AppPalette.accent, width: 3))
+                                    ? Border(left: BorderSide(color: AppPalette.accent, width: 3))
                                     : null,
                                 borderRadius: isCurrent
                                     ? const BorderRadius.only(
@@ -1515,14 +1515,14 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                                   padding: const EdgeInsets.only(top: 2),
                                   child: Text(
                                     sess.updatedAt.toIso8601String().substring(0, 16).replaceAll('T', ' '),
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       color: AppPalette.textMuted,
                                       fontSize: 10,
                                     ),
                                   ),
                                 ),
                                 trailing: IconButton(
-                                  icon: const Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
+                                  icon: Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
                                   onPressed: () => _deleteSession(sess.id),
                                   padding: EdgeInsets.zero,
                                   constraints: const BoxConstraints(),
@@ -1596,14 +1596,14 @@ This skill scans nvidia-smi output for processes using zero memory or running be
             decoration: BoxDecoration(
               color: isSelected ? AppPalette.accent.withOpacity(0.12) : Colors.transparent,
               border: isSelected
-                  ? const Border(left: BorderSide(color: AppPalette.accent, width: 3))
+                  ? Border(left: BorderSide(color: AppPalette.accent, width: 3))
                   : null,
               borderRadius: BorderRadius.circular(4),
             ),
             child: ListTile(
               dense: true,
               visualDensity: VisualDensity.compact,
-              leading: const Icon(Icons.terminal, size: 14, color: AppPalette.accent),
+              leading: Icon(Icons.terminal, size: 14, color: AppPalette.accent),
               title: Text(
                 c['cmd']!,
                 style: TextStyle(
@@ -1614,7 +1614,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
               ),
               trailing: Text(
                 c['desc']!,
-                style: const TextStyle(
+                style: TextStyle(
                   color: AppPalette.textMuted,
                   fontSize: 11,
                 ),
@@ -2048,7 +2048,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
           children: [
             Row(
               children: [
-                const Icon(Icons.folder_shared_outlined, color: AppPalette.accent, size: 16),
+                Icon(Icons.folder_shared_outlined, color: AppPalette.accent, size: 16),
                 const SizedBox(width: 8),
                 Text('Project Memory', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
                 const SizedBox(width: 6),
@@ -2061,7 +2061,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                   ),
                   child: Text(
                     '${memoryStore.profile}/${memoryStore.project}',
-                    style: const TextStyle(fontSize: 9, color: AppPalette.textSecondary),
+                    style: TextStyle(fontSize: 9, color: AppPalette.textSecondary),
                   ),
                 ),
                 const Spacer(),
@@ -2084,7 +2084,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
             const Divider(height: 24),
             Row(
               children: [
-                const Icon(Icons.psychology, color: AppPalette.accent, size: 16),
+                Icon(Icons.psychology, color: AppPalette.accent, size: 16),
                 const SizedBox(width: 8),
                 Text('General Memory', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
                 const Spacer(),
@@ -2107,7 +2107,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
             const Divider(height: 24),
             Row(
               children: [
-                const Icon(Icons.person_outline, color: AppPalette.accent, size: 16),
+                Icon(Icons.person_outline, color: AppPalette.accent, size: 16),
                 const SizedBox(width: 8),
                 Text('User Profile', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
                 const Spacer(),
@@ -2158,7 +2158,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
               ),
               const SizedBox(width: 8),
               IconButton(
-                icon: const Icon(Icons.delete_outline, size: 12, color: AppPalette.danger),
+                icon: Icon(Icons.delete_outline, size: 12, color: AppPalette.danger),
                 onPressed: () => _removeMemoryEntry(target: target, oldText: entry),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
@@ -2200,7 +2200,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
           margin: const EdgeInsets.only(bottom: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: AppPalette.border),
+            side: BorderSide(color: AppPalette.border),
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -2209,7 +2209,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.memory, size: 14, color: AppPalette.accent),
+                    Icon(Icons.memory, size: 14, color: AppPalette.accent),
                     const SizedBox(width: 6),
                     Text(
                       'GPU $index: ${gpu.name}',
@@ -2220,7 +2220,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    const Text('Utilization', style: TextStyle(fontSize: 10, color: AppPalette.textSecondary)),
+                    Text('Utilization', style: TextStyle(fontSize: 10, color: AppPalette.textSecondary)),
                     const Spacer(),
                     Text('${gpu.usage.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                   ],
@@ -2230,7 +2230,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    const Text('VRAM Memory', style: TextStyle(fontSize: 10, color: AppPalette.textSecondary)),
+                    Text('VRAM Memory', style: TextStyle(fontSize: 10, color: AppPalette.textSecondary)),
                     const Spacer(),
                     Text('${memUsed.toStringAsFixed(0)} / ${memTotal.toStringAsFixed(0)} MB', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                   ],
@@ -2333,7 +2333,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
               if (chatRequestRunning && elapsedText.isNotEmpty)
                 Text(
                   'Elapsed: $elapsedText',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 11,
                     color: AppPalette.textSecondary,
@@ -2350,7 +2350,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
               _turnPhase,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11, color: AppPalette.textSecondary, fontStyle: FontStyle.italic),
+              style: TextStyle(fontSize: 11, color: AppPalette.textSecondary, fontStyle: FontStyle.italic),
             ),
           ),
         const Divider(height: 1),
@@ -2390,7 +2390,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 color: Colors.black26,
-                child: const Row(
+                child: Row(
                   children: [
                     Icon(Icons.terminal, size: 12, color: AppPalette.textMuted),
                     SizedBox(width: 6),
@@ -2423,12 +2423,12 @@ This skill scans nvidia-smi output for processes using zero memory or running be
         children: [
           Icon(Icons.auto_awesome, size: 42, color: AppPalette.textMuted.withOpacity(0.3)),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'Ready for execution',
             style: TextStyle(fontWeight: FontWeight.bold, color: AppPalette.textSecondary),
           ),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             'Send a prompt to trigger agent actions.',
             style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
           ),
@@ -2514,7 +2514,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                     step.reason,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                    style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                   ),
                 ],
               ),
@@ -2528,7 +2528,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
   Widget _buildConsoleStepInspector(List<_AgentStepData> steps) {
     final activeIndex = _selectedConsoleStepIndex ?? (steps.isNotEmpty ? steps.length - 1 : null);
     if (activeIndex == null || activeIndex >= steps.length) {
-      return const Center(child: Text('Select a step to inspect details', style: TextStyle(color: AppPalette.textMuted, fontSize: 11)));
+      return Center(child: Text('Select a step to inspect details', style: TextStyle(color: AppPalette.textMuted, fontSize: 11)));
     }
 
     final step = steps[activeIndex];
@@ -2673,7 +2673,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
         children: [
           Row(
             children: [
-              const Icon(Icons.construction, color: AppPalette.accent, size: 24),
+              Icon(Icons.construction, color: AppPalette.accent, size: 24),
               const SizedBox(width: 10),
               Text('Skills Hub', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
               const Spacer(),
@@ -2719,7 +2719,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                             color: AppPalette.surface,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(16),
-                              side: const BorderSide(color: AppPalette.border),
+                              side: BorderSide(color: AppPalette.border),
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(14),
@@ -2728,7 +2728,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                                 children: [
                                   Row(
                                     children: [
-                                      const Icon(Icons.description, color: AppPalette.accent, size: 18),
+                                      Icon(Icons.description, color: AppPalette.accent, size: 18),
                                       const SizedBox(width: 6),
                                       Expanded(
                                         child: Text(
@@ -2759,7 +2759,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                                         label: const Text('Edit', style: TextStyle(fontSize: 11)),
                                       ),
                                       IconButton(
-                                        icon: const Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
+                                        icon: Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
                                         onPressed: () => _deleteSkill(filename),
                                       ),
                                     ],
@@ -2855,7 +2855,7 @@ Write your skill workflow here.
         children: [
           Row(
             children: [
-              const Icon(Icons.splitscreen, color: AppPalette.accent, size: 24),
+              Icon(Icons.splitscreen, color: AppPalette.accent, size: 24),
               const SizedBox(width: 10),
               Text('Task Kanban Board', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
               const Spacer(),
@@ -2922,7 +2922,7 @@ Write your skill workflow here.
                           margin: const EdgeInsets.only(bottom: 10),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
-                            side: const BorderSide(color: AppPalette.border),
+                            side: BorderSide(color: AppPalette.border),
                           ),
                           child: Padding(
                             padding: const EdgeInsets.all(12),
@@ -2950,7 +2950,7 @@ Write your skill workflow here.
                                 const SizedBox(height: 6),
                                 Text(
                                   task.command ?? '',
-                                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: AppPalette.textSecondary),
+                                  style: TextStyle(fontFamily: 'monospace', fontSize: 11, color: AppPalette.textSecondary),
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -2961,8 +2961,8 @@ Write your skill workflow here.
                                     if (task.status == 'running')
                                       TextButton.icon(
                                         onPressed: () => provider.cancelTask(task),
-                                        icon: const Icon(Icons.cancel, size: 14, color: AppPalette.danger),
-                                        label: const Text('Kill', style: TextStyle(fontSize: 11, color: AppPalette.danger)),
+                                        icon: Icon(Icons.cancel, size: 14, color: AppPalette.danger),
+                                        label: Text('Kill', style: TextStyle(fontSize: 11, color: AppPalette.danger)),
                                         style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(50, 30)),
                                       )
                                     else if (task.status == 'pending' || task.status == 'draft')
@@ -2998,7 +2998,7 @@ Write your skill workflow here.
         // Left Sidebar: Files & Categories
         Container(
           width: 250,
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             border: Border(right: BorderSide(color: AppPalette.border)),
             color: AppPalette.backgroundDeep,
           ),
@@ -3054,7 +3054,7 @@ Write your skill workflow here.
                     _buildSidebarSectionHeader(
                       'Obsidian Knowledge Base',
                       trailing: IconButton(
-                        icon: const Icon(Icons.add, size: 16, color: AppPalette.accent),
+                        icon: Icon(Icons.add, size: 16, color: AppPalette.accent),
                         onPressed: _createNewKbFile,
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
@@ -3062,7 +3062,7 @@ Write your skill workflow here.
                       ),
                     ),
                     if (_kbFiles.isEmpty)
-                      const Padding(
+                      Padding(
                         padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         child: Text(
                           'No documents yet.',
@@ -3079,7 +3079,7 @@ Write your skill workflow here.
                           isSelected: isSelected,
                           onTap: () => _selectMemoryFile('kb/$name'),
                           trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
+                            icon: Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
                             onPressed: () => _deleteKbFile(name),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(),
@@ -3113,7 +3113,7 @@ Write your skill workflow here.
         children: [
           Text(
             title.toUpperCase(),
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.bold,
               color: AppPalette.textMuted,
@@ -3143,7 +3143,7 @@ Write your skill workflow here.
           decoration: BoxDecoration(
             color: isSelected ? AppPalette.surfaceSoft : Colors.transparent,
             border: isSelected
-                ? const Border(left: BorderSide(color: AppPalette.accent, width: 3))
+                ? Border(left: BorderSide(color: AppPalette.accent, width: 3))
                 : null,
           ),
           child: Row(
@@ -3166,7 +3166,7 @@ Write your skill workflow here.
                     if (sublabel != null)
                       Text(
                         sublabel,
-                        style: const TextStyle(fontSize: 9, color: AppPalette.textMuted),
+                        style: TextStyle(fontSize: 9, color: AppPalette.textMuted),
                       ),
                   ],
                 ),
@@ -3197,7 +3197,7 @@ Write your skill workflow here.
           children: [
             Row(
               children: [
-                const Icon(Icons.description_outlined, color: AppPalette.accent, size: 22),
+                Icon(Icons.description_outlined, color: AppPalette.accent, size: 22),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -3212,7 +3212,7 @@ Write your skill workflow here.
                       ),
                       Text(
                         description,
-                        style: const TextStyle(fontSize: 11, color: AppPalette.textMuted),
+                        style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
                       ),
                     ],
                   ),
@@ -3245,7 +3245,7 @@ Write your skill workflow here.
                         maxLines: null,
                         expands: true,
                         onChanged: (_) => setState(() {}),
-                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13, height: 1.4, color: AppPalette.textPrimary),
+                        style: TextStyle(fontFamily: 'monospace', fontSize: 13, height: 1.4, color: AppPalette.textPrimary),
                         decoration: const InputDecoration(
                           hintText: 'Start writing markdown...',
                           border: InputBorder.none,
@@ -3348,7 +3348,7 @@ Write your skill workflow here.
                               : (target == 'general'
                                   ? 'general/MEMORY.md: Stores global facts and conventions shared across all projects.'
                                   : 'projects/${memoryStore.profile}/${memoryStore.project}/MEMORY.md: Stores project-specific context and status.'),
-                          style: const TextStyle(fontSize: 11, color: AppPalette.textMuted),
+                          style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
                         ),
                       ],
                     ),
@@ -3375,7 +3375,7 @@ Write your skill workflow here.
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text(
+                        Text(
                           'LLM Prompt Injection Budget',
                           style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
                         ),
@@ -3408,7 +3408,7 @@ Write your skill workflow here.
                           children: [
                             Icon(Icons.notes, size: 48, color: AppPalette.textMuted.withOpacity(0.3)),
                             const SizedBox(height: 10),
-                            const Text(
+                            Text(
                               'No memory entries recorded yet.',
                               style: TextStyle(color: AppPalette.textMuted),
                             ),
@@ -3431,7 +3431,7 @@ Write your skill workflow here.
                             elevation: 0,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
-                              side: const BorderSide(color: AppPalette.border),
+                              side: BorderSide(color: AppPalette.border),
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(12),
@@ -3454,7 +3454,7 @@ Write your skill workflow here.
                                     mainAxisAlignment: MainAxisAlignment.end,
                                     children: [
                                       IconButton(
-                                        icon: const Icon(Icons.edit, size: 14, color: AppPalette.textSecondary),
+                                        icon: Icon(Icons.edit, size: 14, color: AppPalette.textSecondary),
                                         onPressed: () => _showMemoryEditor(target: target, oldText: entry),
                                         padding: EdgeInsets.zero,
                                         constraints: const BoxConstraints(),
@@ -3462,7 +3462,7 @@ Write your skill workflow here.
                                       ),
                                       const SizedBox(width: 12),
                                       IconButton(
-                                        icon: const Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
+                                        icon: Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
                                         onPressed: () => _removeMemoryEntry(target: target, oldText: entry),
                                         padding: EdgeInsets.zero,
                                         constraints: const BoxConstraints(),
@@ -3779,7 +3779,7 @@ Write your skill workflow here.
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(left: 8, bottom: 4),
             child: Text(
               'SELECT OPTION (Use Arrow Keys + Enter):',
@@ -3795,7 +3795,7 @@ Write your skill workflow here.
               decoration: BoxDecoration(
                 color: isSelected ? AppPalette.accent.withOpacity(0.12) : Colors.transparent,
                 border: isSelected
-                    ? const Border(left: BorderSide(color: AppPalette.accent, width: 3))
+                    ? Border(left: BorderSide(color: AppPalette.accent, width: 3))
                     : null,
                 borderRadius: BorderRadius.circular(4),
               ),
@@ -3900,12 +3900,12 @@ if ($img -ne $null) {
         children: [
           Row(
             children: [
-              const Icon(Icons.api_outlined, size: 14, color: AppPalette.accent),
+              Icon(Icons.api_outlined, size: 14, color: AppPalette.accent),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   activeProfile.name,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
                     color: AppPalette.textPrimary,
@@ -3914,7 +3914,7 @@ if ($img -ne $null) {
                 ),
               ),
               PopupMenuButton<String>(
-                icon: const Icon(Icons.swap_horiz, size: 16, color: AppPalette.textMuted),
+                icon: Icon(Icons.swap_horiz, size: 16, color: AppPalette.textMuted),
                 tooltip: 'Switch API Provider',
                 padding: const EdgeInsets.all(4),
                 constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
@@ -3946,7 +3946,7 @@ if ($img -ne $null) {
                                 ),
                                 Text(
                                   '${p.model} · ${p.limitLabel}',
-                                  style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                                  style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                                 ),
                               ],
                             ),
@@ -3977,7 +3977,7 @@ if ($img -ne $null) {
                   child: Row(
                     children: [
                       if (isCurrentModel)
-                        const Icon(Icons.check, size: 14, color: AppPalette.accent)
+                        Icon(Icons.check, size: 14, color: AppPalette.accent)
                       else
                         const SizedBox(width: 14),
                       const SizedBox(width: 8),
@@ -4003,16 +4003,16 @@ if ($img -ne $null) {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.psychology_outlined, size: 13, color: AppPalette.accent),
+                  Icon(Icons.psychology_outlined, size: 13, color: AppPalette.accent),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       activeProfile.model,
-                      style: const TextStyle(fontSize: 10, color: AppPalette.textPrimary, fontWeight: FontWeight.w600),
+                      style: TextStyle(fontSize: 10, color: AppPalette.textPrimary, fontWeight: FontWeight.w600),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  const Icon(Icons.unfold_more, size: 14, color: AppPalette.textSecondary),
+                  Icon(Icons.unfold_more, size: 14, color: AppPalette.textSecondary),
                 ],
               ),
             ),
@@ -4028,7 +4028,7 @@ if ($img -ne $null) {
                 ),
                 child: Text(
                   activeProfile.limitLabel,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 9,
                     color: AppPalette.accent,
                     fontWeight: FontWeight.bold,
@@ -4303,7 +4303,7 @@ if ($img -ne $null) {
         children: [
           Row(
             children: [
-              const Icon(Icons.api, color: AppPalette.accent, size: 24),
+              Icon(Icons.api, color: AppPalette.accent, size: 24),
               const SizedBox(width: 10),
               Text('API Providers', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
               const Spacer(),
@@ -4349,7 +4349,7 @@ if ($img -ne $null) {
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.cloud_queue, color: AppPalette.accent, size: 18),
+                            Icon(Icons.cloud_queue, color: AppPalette.accent, size: 18),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -4392,7 +4392,7 @@ if ($img -ne $null) {
                                 child: Row(
                                   children: [
                                     if (isCurrent)
-                                      const Icon(Icons.check, size: 14, color: AppPalette.accent)
+                                      Icon(Icons.check, size: 14, color: AppPalette.accent)
                                     else
                                       const SizedBox(width: 14),
                                     const SizedBox(width: 8),
@@ -4419,19 +4419,19 @@ if ($img -ne $null) {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Text(
+                                Text(
                                   'Model: ',
                                   style: TextStyle(fontSize: 10, color: AppPalette.textSecondary),
                                 ),
                                 Flexible(
                                   child: Text(
                                     profile.model,
-                                    style: const TextStyle(fontSize: 10, color: AppPalette.textPrimary, fontWeight: FontWeight.bold),
+                                    style: TextStyle(fontSize: 10, color: AppPalette.textPrimary, fontWeight: FontWeight.bold),
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
                                 const SizedBox(width: 4),
-                                const Icon(Icons.unfold_more, size: 14, color: AppPalette.textSecondary),
+                                Icon(Icons.unfold_more, size: 14, color: AppPalette.textSecondary),
                               ],
                             ),
                           ),
@@ -4439,7 +4439,7 @@ if ($img -ne $null) {
                         const SizedBox(height: 4),
                         Text(
                           'URL: ${profile.baseUrl}',
-                          style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                          style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -4454,7 +4454,7 @@ if ($img -ne $null) {
                               ),
                               child: Text(
                                 profile.limitLabel,
-                                style: const TextStyle(fontSize: 10, color: AppPalette.accent, fontWeight: FontWeight.bold),
+                                style: TextStyle(fontSize: 10, color: AppPalette.accent, fontWeight: FontWeight.bold),
                               ),
                             ),
                           ],
@@ -4479,7 +4479,7 @@ if ($img -ne $null) {
                             ),
                             if (profile.id != 'default')
                               IconButton(
-                                icon: const Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
+                                icon: Icon(Icons.delete_outline, size: 14, color: AppPalette.danger),
                                 onPressed: () => _deleteApiProfile(profile.id),
                                 tooltip: 'Delete',
                               ),

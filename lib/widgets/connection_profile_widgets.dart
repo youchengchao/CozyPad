@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 class _ConnectionProfileCard extends StatelessWidget {
   final ConnectionProfile profile;
@@ -60,7 +60,7 @@ class _ConnectionProfileCard extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               else
-                const Icon(Icons.chevron_right, size: 18, color: AppPalette.textMuted),
+                Icon(Icons.chevron_right, size: 18, color: AppPalette.textMuted),
             ],
           ),
         ),
@@ -253,25 +253,25 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> {
             children: [
               TextField(
                 controller: nameController,
-                decoration: const InputDecoration(labelText: '顯示名稱'),
+                decoration: InputDecoration(labelText: '顯示名稱'),
               ),
               TextField(
                 controller: hostController,
-                decoration: const InputDecoration(labelText: 'Host / IP'),
+                decoration: InputDecoration(labelText: 'Host / IP'),
               ),
               TextField(
                 controller: portController,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Port'),
+                decoration: InputDecoration(labelText: 'Port'),
               ),
               TextField(
                 controller: usernameController,
-                decoration: const InputDecoration(labelText: 'Username'),
+                decoration: InputDecoration(labelText: 'Username'),
               ),
               TextField(
                 controller: passwordController,
                 obscureText: true,
-                decoration: const InputDecoration(labelText: 'Password'),
+                decoration: InputDecoration(labelText: 'Password'),
               ),
               SwitchListTile(
                 value: autoLogin,
@@ -347,7 +347,7 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
       description: descController.text.trim(),
       createdAt: widget.project?.createdAt ?? DateTime.now().toIso8601String(),
       codebaseStates: widget.project?.codebaseStates ?? const {},
-      transferHistory: widget.project?.transferHistory ?? const [],
+      transferHistory: widget.project?.transferHistory ?? [],
     );
 
     Navigator.of(context).pop(proj);
@@ -364,13 +364,13 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(labelText: '專案名稱', hintText: '例如: sst_dashboard_win'),
+              decoration: InputDecoration(labelText: '專案名稱', hintText: '例如: sst_dashboard_win'),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: descController,
               maxLines: 3,
-              decoration: const InputDecoration(labelText: '專案描述', hintText: '選填'),
+              decoration: InputDecoration(labelText: '專案描述', hintText: '選填'),
             ),
           ],
         ),
@@ -423,7 +423,7 @@ class ProjectDetailsDialog extends StatelessWidget {
     return AlertDialog(
       title: Row(
         children: [
-          const Icon(Icons.hub_rounded, color: AppPalette.accent, size: 24),
+          Icon(Icons.hub_rounded, color: AppPalette.accent, size: 24),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -453,7 +453,7 @@ class ProjectDetailsDialog extends StatelessWidget {
                   children: [
                     // Codebase States List
                     states.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Text(
                               '此專案尚未登記在任何連線機器上',
                               style: TextStyle(color: AppPalette.textMuted),
@@ -474,12 +474,12 @@ class ProjectDetailsDialog extends StatelessWidget {
                                     children: [
                                       Row(
                                         children: [
-                                          const Icon(Icons.dns, size: 16, color: AppPalette.textSecondary),
+                                          Icon(Icons.dns, size: 16, color: AppPalette.textSecondary),
                                           const SizedBox(width: 6),
                                           Expanded(
                                             child: Text(
                                               connName,
-                                              style: const TextStyle(fontWeight: FontWeight.bold),
+                                              style: TextStyle(fontWeight: FontWeight.bold),
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                             ),
@@ -498,7 +498,7 @@ class ProjectDetailsDialog extends StatelessWidget {
                           ),
                     // Transfer History Timeline
                     history.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Text(
                               '無搬遷歷史記錄',
                               style: TextStyle(color: AppPalette.textMuted),
@@ -519,7 +519,7 @@ class ProjectDetailsDialog extends StatelessWidget {
                                   children: [
                                     Column(
                                       children: [
-                                        const Icon(Icons.circle, size: 12, color: AppPalette.accent),
+                                        Icon(Icons.circle, size: 12, color: AppPalette.accent),
                                         if (index < history.length - 1)
                                           Container(width: 2, height: 40, color: AppPalette.border),
                                       ],
@@ -531,17 +531,17 @@ class ProjectDetailsDialog extends StatelessWidget {
                                         children: [
                                           Text(
                                             '從 $fromName 搬至 $toName',
-                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
                                             '來源路徑: ${record.fromPath}\n目標路徑: ${record.toPath}',
-                                            style: const TextStyle(fontSize: 11, color: AppPalette.textSecondary),
+                                            style: TextStyle(fontSize: 11, color: AppPalette.textSecondary),
                                           ),
                                           const SizedBox(height: 2),
                                           Text(
                                             _formatDate(record.timestamp),
-                                            style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                                            style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                                           ),
                                         ],
                                       ),
@@ -572,9 +572,9 @@ class ProjectDetailsDialog extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
-          Text('$label: ', style: const TextStyle(fontSize: 11, color: AppPalette.textMuted)),
+          Text('$label: ', style: TextStyle(fontSize: 11, color: AppPalette.textMuted)),
           Expanded(
-            child: Text(value.isEmpty ? '-' : value, style: const TextStyle(fontSize: 11)),
+            child: Text(value.isEmpty ? '-' : value, style: TextStyle(fontSize: 11)),
           ),
         ],
       ),

@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Hermes Native Studio
@@ -582,9 +582,9 @@ class HermesSessionStore {
 
   String _defaultRoot() {
     if (!kIsWeb && io.Platform.isWindows) {
-      return '${io.Platform.environment['APPDATA'] ?? '.'}\\ssh_dashboard_hermes';
+      return '${io.Platform.environment['APPDATA'] ?? '.'}\\cozypad_hermes';
     }
-    return '${!kIsWeb ? io.Platform.environment['HOME'] ?? '.' : '.'}/.ssh_dashboard_hermes';
+    return '${!kIsWeb ? io.Platform.environment['HOME'] ?? '.' : '.'}/.cozypad_hermes';
   }
 }
 
@@ -1071,9 +1071,9 @@ class HermesMemoryStore {
 
   String _defaultRoot() {
     if (!kIsWeb && io.Platform.isWindows) {
-      return '${io.Platform.environment['APPDATA'] ?? '.'}\\ssh_dashboard_hermes';
+      return '${io.Platform.environment['APPDATA'] ?? '.'}\\cozypad_hermes';
     }
-    return '${!kIsWeb ? io.Platform.environment['HOME'] ?? '.' : '.'}/.ssh_dashboard_hermes';
+    return '${!kIsWeb ? io.Platform.environment['HOME'] ?? '.' : '.'}/.cozypad_hermes';
   }
 
   String _json(Map<String, dynamic> value) {
@@ -1735,8 +1735,8 @@ class HermesToolGateway {
   String _expandedHermesHome(String raw) {
     var path = raw.trim();
     if (path.isEmpty) {
-      if (!kIsWeb && io.Platform.isWindows) return '${io.Platform.environment['APPDATA'] ?? '.'}\\ssh_dashboard_hermes';
-      return '${!kIsWeb ? io.Platform.environment['HOME'] ?? '.' : '.'}/.ssh_dashboard_hermes';
+      if (!kIsWeb && io.Platform.isWindows) return '${io.Platform.environment['APPDATA'] ?? '.'}\\cozypad_hermes';
+      return '${!kIsWeb ? io.Platform.environment['HOME'] ?? '.' : '.'}/.cozypad_hermes';
     }
     if (path.startsWith('%APPDATA%') && !kIsWeb && io.Platform.isWindows) {
       final appData = io.Platform.environment['APPDATA'];

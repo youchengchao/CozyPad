@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Monitor Tab (Minimalist Vercel / shadcn-style redesign)
@@ -152,7 +152,7 @@ class _MonitorTabState extends State<MonitorTab> {
           const SizedBox(width: 8),
           Text(
             provider.connectedHost ?? 'Disconnected Host',
-            style: const TextStyle(
+            style: TextStyle(
               fontWeight: FontWeight.bold,
               fontSize: 14,
               color: AppPalette.textPrimary,
@@ -171,12 +171,12 @@ class _MonitorTabState extends State<MonitorTab> {
           const Spacer(),
           Text(
             statusText,
-            style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: AppPalette.textMuted),
+            style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: AppPalette.textMuted),
           ),
           const SizedBox(width: 8),
           IconButton(
             icon: provider.isPolling
-                ? const SizedBox(
+                ? SizedBox(
                     width: 12,
                     height: 12,
                     child: CircularProgressIndicator(strokeWidth: 1.5, color: AppPalette.textMuted),
@@ -203,24 +203,24 @@ class _MonitorTabState extends State<MonitorTab> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
+              Text(
                 'CPU TOTAL',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textMuted, letterSpacing: 0.5),
               ),
-              Icon(Icons.memory_rounded, size: 14, color: AppPalette.textMuted.withOpacity(0.8)),
+              Icon(Icons.memory_rounded, size: 14, color: AppPalette.textMuted.withValues(alpha: 0.8)),
             ],
           ),
           const SizedBox(height: 8),
           Text(
             '${cpuUsage.toStringAsFixed(1)}%',
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
           ),
           const SizedBox(height: 4),
           Text(
             busiestSubtitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: AppPalette.textMuted),
+            style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
           ),
           const SizedBox(height: 12),
           _MiniProgressBar(progress: cpuUsage / 100, color: AppPalette.textSecondary),
@@ -242,24 +242,24 @@ class _MonitorTabState extends State<MonitorTab> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
+              Text(
                 'SYSTEM MEMORY',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textMuted, letterSpacing: 0.5),
               ),
-              Icon(Icons.storage_rounded, size: 14, color: AppPalette.textMuted.withOpacity(0.8)),
+              Icon(Icons.storage_rounded, size: 14, color: AppPalette.textMuted.withValues(alpha: 0.8)),
             ],
           ),
           const SizedBox(height: 8),
           Text(
             '${usagePercent.toStringAsFixed(1)}%',
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
           ),
           const SizedBox(height: 4),
           Text(
             '${usedGb.toStringAsFixed(1)} / ${totalGb.toStringAsFixed(1)} GB used',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: AppPalette.textMuted),
+            style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
           ),
           const SizedBox(height: 12),
           _MiniProgressBar(progress: usagePercent / 100, color: AppPalette.textSecondary),
@@ -283,17 +283,17 @@ class _MonitorTabState extends State<MonitorTab> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
+              Text(
                 'GPU CLUSTER',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textMuted, letterSpacing: 0.5),
               ),
-              Icon(Icons.developer_board_outlined, size: 14, color: AppPalette.textMuted.withOpacity(0.8)),
+              Icon(Icons.developer_board_outlined, size: 14, color: AppPalette.textMuted.withValues(alpha: 0.8)),
             ],
           ),
           const SizedBox(height: 8),
           Text(
             gpuCount == 0 ? 'N/A' : '${avgGpuUtil.toStringAsFixed(0)}% avg',
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
           ),
           const SizedBox(height: 4),
           Text(
@@ -302,7 +302,7 @@ class _MonitorTabState extends State<MonitorTab> {
                 : '$gpuCount device${gpuCount == 1 ? '' : 's'} · $activeProcesses proc',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: AppPalette.textMuted),
+            style: TextStyle(fontSize: 11, color: AppPalette.textMuted),
           ),
           const SizedBox(height: 12),
           _MiniProgressBar(progress: avgGpuUtil / 100, color: AppPalette.textSecondary),
@@ -319,7 +319,7 @@ class _MonitorTabState extends State<MonitorTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
+        Padding(
           padding: EdgeInsets.fromLTRB(2, 18, 0, 8),
           child: Text(
             'GPU HARDWARE STATUS',
@@ -337,7 +337,7 @@ class _MonitorTabState extends State<MonitorTab> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: provider.gpus.length,
-            separatorBuilder: (_, __) => const Divider(height: 1, color: AppPalette.border),
+            separatorBuilder: (_, __) => Divider(height: 1, color: AppPalette.border),
             itemBuilder: (context, index) {
               final gpu = provider.gpus[index];
               return Padding(
@@ -355,14 +355,14 @@ class _MonitorTabState extends State<MonitorTab> {
                           ),
                           child: Text(
                             'GPU ${gpu.index}',
-                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textPrimary, fontFamily: 'monospace'),
+                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textPrimary, fontFamily: 'monospace'),
                           ),
                         ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
                             gpu.name,
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppPalette.textPrimary),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -391,8 +391,8 @@ class _MonitorTabState extends State<MonitorTab> {
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  const Text('CORE UTIL', style: TextStyle(fontSize: 9, color: AppPalette.textMuted)),
-                                  Text('${gpu.usage.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textSecondary)),
+                                  Text('CORE UTIL', style: TextStyle(fontSize: 9, color: AppPalette.textMuted)),
+                                  Text('${gpu.usage.toStringAsFixed(0)}%', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textSecondary)),
                                 ],
                               ),
                               const SizedBox(height: 4),
@@ -409,10 +409,10 @@ class _MonitorTabState extends State<MonitorTab> {
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  const Text('VRAM USE', style: TextStyle(fontSize: 9, color: AppPalette.textMuted)),
+                                  Text('VRAM USE', style: TextStyle(fontSize: 9, color: AppPalette.textMuted)),
                                   Text(
                                     '${(gpu.memoryUsedMb / 1024).toStringAsFixed(1)} / ${(gpu.memoryTotalMb / 1024).toStringAsFixed(1)} GB',
-                                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textSecondary, fontFamily: 'monospace'),
+                                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppPalette.textSecondary, fontFamily: 'monospace'),
                                   ),
                                 ],
                               ),
@@ -445,7 +445,7 @@ class _MonitorTabState extends State<MonitorTab> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
+          Padding(
             padding: EdgeInsets.fromLTRB(2, 18, 0, 8),
             child: Text(
               'ACTIVE COMPUTE PROCESSES',
@@ -461,7 +461,7 @@ class _MonitorTabState extends State<MonitorTab> {
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Row(
-                children: const [
+                children: [
                   Icon(Icons.nightlight_round, size: 14, color: AppPalette.textMuted),
                   SizedBox(width: 8),
                   Text(
@@ -479,7 +479,7 @@ class _MonitorTabState extends State<MonitorTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
+        Padding(
           padding: EdgeInsets.fromLTRB(2, 18, 0, 8),
           child: Text(
             'ACTIVE COMPUTE PROCESSES',
@@ -497,7 +497,7 @@ class _MonitorTabState extends State<MonitorTab> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: allProcesses.length,
-            separatorBuilder: (_, __) => const Divider(height: 1, color: AppPalette.border),
+            separatorBuilder: (_, __) => Divider(height: 1, color: AppPalette.border),
             itemBuilder: (context, index) {
               final item = allProcesses[index];
               final proc = item.process;
@@ -519,7 +519,7 @@ class _MonitorTabState extends State<MonitorTab> {
                         ),
                         child: Text(
                           'GPU ${item.gpuIndex}',
-                          style: const TextStyle(fontSize: 9, color: AppPalette.textSecondary, fontFamily: 'monospace'),
+                          style: TextStyle(fontSize: 9, color: AppPalette.textSecondary, fontFamily: 'monospace'),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -528,11 +528,11 @@ class _MonitorTabState extends State<MonitorTab> {
                         children: [
                           Text(
                             'PID ${proc.pid}',
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppPalette.textPrimary, fontFamily: 'monospace'),
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppPalette.textPrimary, fontFamily: 'monospace'),
                           ),
                           Text(
                             proc.username,
-                            style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                            style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                           ),
                         ],
                       ),
@@ -543,12 +543,12 @@ class _MonitorTabState extends State<MonitorTab> {
                           children: [
                             Text(
                               proc.shortName,
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppPalette.textPrimary),
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppPalette.textPrimary),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                             if (hasDetailedCommand)
-                              const Text(
+                              Text(
                                 'Click to view full launch command',
                                 style: TextStyle(fontSize: 9, color: AppPalette.accent),
                               ),
@@ -561,11 +561,11 @@ class _MonitorTabState extends State<MonitorTab> {
                         children: [
                           Text(
                             '${proc.usedMemoryMb.toStringAsFixed(0)} MB',
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppPalette.textPrimary, fontFamily: 'monospace'),
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppPalette.textPrimary, fontFamily: 'monospace'),
                           ),
                           Text(
                             proc.runtimeLabel,
-                            style: const TextStyle(fontSize: 10, color: AppPalette.textMuted),
+                            style: TextStyle(fontSize: 10, color: AppPalette.textMuted),
                           ),
                         ],
                       ),

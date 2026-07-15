@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+part of cozypad;
 
 /* =========================================================
    Provider / SSH Logic
@@ -652,6 +652,7 @@ find . -maxdepth 1 -mindepth 1 -printf '%y\t%f\t%s\t%TY-%Tm-%Td %TH:%TM\n' | sor
   Future<String> readRemoteFile(
     String path, {
     int maxBytes = 262144,
+    int offset = 0,
   }) async {
     final target = _quoteShellArg(path);
     final command = '''
@@ -661,9 +662,9 @@ if [ ! -f "\$target" ]; then
   exit 1
 fi
 size=\$(wc -c < "\$target" 2>/dev/null || echo 0)
-head -c $maxBytes "\$target"
-if [ "\$size" -gt $maxBytes ]; then
-  printf "\n\n[Preview truncated: showing first $maxBytes bytes of %s bytes]" "\$size"
+tail -c +\$((offset + 1)) "\$target" | head -c $maxBytes
+if [ "\$size" -gt \$((offset + maxBytes)) ]; then
+  printf "\n\n[Preview truncated: showing bytes \$((offset + 1)) to \$((offset + maxBytes)) of %s bytes]" "\$size"
 fi
 ''';
     return _run(command, timeout: const Duration(seconds: 8));
@@ -2096,7 +2097,7 @@ if tmux has-session -t "\$session" 2>/dev/null; then
   echo "__ERROR__\tSession already exists: \$session"
   exit 0
 fi
-safe_cmd="cd \"\$cwd\" && { \$cmd; }; exec bash"
+safe_cmd="cd "\$cwd" && { \$cmd; }; exec bash"
 tmux new-session -d -s "\$session" -c "\$cwd" "bash -lc \$(printf %q "\$safe_cmd")" >/dev/null 2>&1
 printf "%s\t%s\n" "\$cwd" "\$cmd" > "\$HOME/.ssh_dashboard/tmux_meta/\$session.tsv"
 created="\$(tmux display-message -p -t "\$session" '#{session_created}' 2>/dev/null || echo '')"
@@ -2167,10 +2168,10 @@ tmux capture-pane -p -J -t ${_quoteShellArg(session)} -S -$clamped
       '''
 if tmux has-session -t ${_quoteShellArg(session)} 2>/dev/null; then
   tmux kill-session -t ${_quoteShellArg(session)}
-  rm -f "\$HOME/.ssh_dashboard/tmux_meta/${session}.tsv" 2>/dev/null || true
-  echo "__OK__\tStopped ${session}"
+  rm -f "\$HOME/.ssh_dashboard/tmux_meta/$session.tsv" 2>/dev/null || true
+  echo "__OK__\tStopped $session"
 else
-  echo "__OK__\tSession not found: ${session}"
+  echo "__OK__\tSession not found: $session"
 fi
 ''',
       timeout: const Duration(seconds: 5),

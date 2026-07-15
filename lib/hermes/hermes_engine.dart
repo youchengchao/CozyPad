@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+﻿part of cozypad;
 
 class HermesPromptBuilder {
   String buildSystemPrompt(HermesSettings settings, {String frozenMemoryPrompt = ''}) {

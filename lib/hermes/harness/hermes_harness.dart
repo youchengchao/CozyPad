@@ -1,4 +1,4 @@
-part of ssh_dashboard;
+﻿part of cozypad;
 
 /// Route A: dashboard-native Hermes harness.
 ///
