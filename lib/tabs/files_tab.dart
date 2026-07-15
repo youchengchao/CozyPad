@@ -1464,7 +1464,7 @@ mkdir -p "\$target"
                                                         Row(
                                                           mainAxisSize: MainAxisSize.min,
                                                           children: [
-                                                            if (!item.isDirectory)
+                                                            if (!item.isDirectory && isWide)
                                                               IconButton(
                                                                 visualDensity: VisualDensity.compact,
                                                                 iconSize: 16,
@@ -1712,6 +1712,7 @@ class _FilePreviewPane extends StatelessWidget {
     final item = data.item;
     final effectiveShowEditor = (data.kind == RemoteFilePreviewKind.text) || showEditor;
     final titlePrefix = effectiveShowEditor ? 'Editor' : 'Preview';
+    final isWide = MediaQuery.of(context).size.width >= 760;
     return Container(
       color: AppPalette.backgroundDeep,
       child: Column(
@@ -1742,56 +1743,73 @@ class _FilePreviewPane extends StatelessWidget {
                 ),
                 if (canEdit && effectiveShowEditor && onToggleFindBar != null)
                   IconButton(
+                    visualDensity: isWide ? null : VisualDensity.compact,
                     tooltip: 'Find (Ctrl+F)',
                     onPressed: onToggleFindBar,
                     icon: Icon(showFindBar ? Icons.search_off : Icons.search, size: 18),
                   ),
                 if (canToggleEditor && onToggleEditor != null)
                   IconButton(
+                    visualDensity: isWide ? null : VisualDensity.compact,
                     tooltip: effectiveShowEditor ? 'Show Preview' : 'Show Editor',
                     onPressed: onToggleEditor,
                     icon: Icon(effectiveShowEditor ? Icons.visibility_outlined : Icons.edit_outlined, size: 18),
                   ),
                 if (canEdit && effectiveShowEditor)
                   Padding(
-                    padding: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.only(right: 4),
                     child: Tooltip(
                       message: editorDirty ? 'Unsaved changes' : 'Saved',
                       child: Icon(
                         editorDirty ? Icons.circle : Icons.check_circle_outline,
-                        size: 14,
+                        size: 13,
                         color: editorDirty ? Colors.amber.shade300 : Colors.greenAccent.shade100,
                       ),
                     ),
                   ),
                 if (canEdit && effectiveShowEditor)
                   IconButton(
+                    visualDensity: isWide ? null : VisualDensity.compact,
                     tooltip: 'Reload from remote',
                     onPressed: editorSaving ? null : onReload,
                     icon: const Icon(Icons.refresh, size: 18),
                   ),
                 if (canEdit && effectiveShowEditor)
-                  FilledButton.tonalIcon(
-                    onPressed: editorSaving || !editorDirty ? null : onSave,
-                    icon: editorSaving
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.save, size: 18),
-                    label: const Text('Save'),
-                  ),
+                  isWide
+                      ? FilledButton.tonalIcon(
+                          onPressed: editorSaving || !editorDirty ? null : onSave,
+                          icon: editorSaving
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.save, size: 18),
+                          label: const Text('Save'),
+                        )
+                      : IconButton(
+                          visualDensity: VisualDensity.compact,
+                          tooltip: 'Save',
+                          onPressed: editorSaving || !editorDirty ? null : onSave,
+                          icon: editorSaving
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.save, size: 18),
+                        ),
                 if (item != null && data.truncated)
                   Padding(
-                    padding: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.only(right: 4),
                     child: Tooltip(
                       message: 'Preview is truncated',
-                      child: Icon(Icons.content_cut, size: 18, color: Colors.amber.shade300),
+                      child: Icon(Icons.content_cut, size: 16, color: Colors.amber.shade300),
                     ),
                   ),
-                if (onOpenFullscreen != null)
+                if (onOpenFullscreen != null && isWide)
                   IconButton(
+                    visualDensity: VisualDensity.compact,
                     tooltip: 'Fullscreen preview',
                     onPressed: onOpenFullscreen,
                     icon: const Icon(Icons.open_in_full, size: 18),

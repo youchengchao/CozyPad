@@ -493,7 +493,7 @@ class SSHProvider extends ChangeNotifier {
   void _startPolling() {
     _pollingTimer?.cancel();
     _pollingTimer = Timer.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 5),
       (_) => refreshAll(silent: true),
     );
   }
