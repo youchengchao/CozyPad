@@ -28,9 +28,9 @@ class FilesTab extends StatefulWidget {
 }
 
 class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<FilesTab> {
-  static const int _maxTextPreviewBytes = 2 * 1024 * 1024;
-  static const int _maxImagePreviewBytes = 16 * 1024 * 1024;
-  static const int _maxVideoPreviewBytes = 80 * 1024 * 1024;
+  int get _maxTextPreviewBytes => (MediaQuery.of(context).size.width < 760) ? 128 * 1024 : 2 * 1024 * 1024;
+  int get _maxImagePreviewBytes => (MediaQuery.of(context).size.width < 760) ? 4 * 1024 * 1024 : 16 * 1024 * 1024;
+  int get _maxVideoPreviewBytes => (MediaQuery.of(context).size.width < 760) ? 15 * 1024 * 1024 : 80 * 1024 * 1024;
 
   final TextEditingController pathController = TextEditingController(text: '~');
   final TextEditingController editorController = TextEditingController();
@@ -893,6 +893,7 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
   Widget _buildClipboardBar(String currentPath) {
     final staged = remoteClipboard;
     if (staged == null) return const SizedBox.shrink();
+    final isWide = MediaQuery.of(context).size.width >= 760;
 
     return Container(
       width: double.infinity,
@@ -915,17 +916,31 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
             ),
           ),
           const SizedBox(width: 8),
-          FilledButton.tonalIcon(
-            onPressed: fileOperationRunning || directoryLoading ? null : _pasteStagedItem,
-            icon: fileOperationRunning
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.content_paste_outlined),
-            label: Text(staged.pasteLabel),
-          ),
+          if (isWide)
+            FilledButton.tonalIcon(
+              onPressed: fileOperationRunning || directoryLoading ? null : _pasteStagedItem,
+              icon: fileOperationRunning
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.content_paste_outlined),
+              label: Text(staged.pasteLabel),
+            )
+          else
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: staged.pasteLabel,
+              onPressed: fileOperationRunning || directoryLoading ? null : _pasteStagedItem,
+              icon: fileOperationRunning
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.content_paste_outlined),
+            ),
           IconButton(
             tooltip: 'Cancel',
             onPressed: fileOperationRunning ? null : () => setState(() => remoteClipboard = null),
@@ -1232,6 +1247,7 @@ mkdir -p "\$target"
               Row(
                 children: [
                   IconButton(
+                    visualDensity: isWide ? null : VisualDensity.compact,
                     tooltip: 'Parent folder',
                     onPressed: directoryLoading ? null : () => openPath(_parentOf(currentPath)),
                     icon: const Icon(Icons.arrow_upward_outlined),
@@ -1240,28 +1256,40 @@ mkdir -p "\$target"
                   Expanded(
                     child: TextField(
                       controller: pathController,
+                      style: const TextStyle(fontSize: 13),
                       decoration: InputDecoration(
                         labelText: 'Remote path',
-                        prefixIcon: Icon(Icons.folder_outlined, size: 16, color: AppPalette.accent),
-                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.folder_outlined, size: 14, color: AppPalette.accent),
+                        border: const OutlineInputBorder(),
                         isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                       ),
                       onSubmitted: openPath,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  FilledButton.tonalIcon(
-                    onPressed: directoryLoading ? null : () => openPath(pathController.text),
-                    icon: const Icon(Icons.folder_open_outlined),
-                    label: const Text('Open'),
-                  ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
+                  if (isWide)
+                    FilledButton.tonalIcon(
+                      onPressed: directoryLoading ? null : () => openPath(pathController.text),
+                      icon: const Icon(Icons.folder_open_outlined),
+                      label: const Text('Open'),
+                    )
+                  else
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Open folder',
+                      onPressed: directoryLoading ? null : () => openPath(pathController.text),
+                      icon: const Icon(Icons.folder_open_outlined),
+                    ),
+                  const SizedBox(width: 4),
                   IconButton(
+                    visualDensity: isWide ? null : VisualDensity.compact,
                     tooltip: 'New File',
                     icon: const Icon(Icons.note_add_outlined),
                     onPressed: directoryLoading ? null : _createNewFile,
                   ),
                   IconButton(
+                    visualDensity: isWide ? null : VisualDensity.compact,
                     tooltip: 'New Folder',
                     icon: const Icon(Icons.create_new_folder_outlined),
                     onPressed: directoryLoading ? null : _createNewFolder,
