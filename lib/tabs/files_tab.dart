@@ -17,7 +17,7 @@ class _RemoteClipboardEntry {
 
   String get actionLabel => mode == _RemoteClipboardMode.copy ? 'Copy' : 'Move';
   String get pasteLabel => mode == _RemoteClipboardMode.copy ? 'Paste copy' : 'Paste move';
-  IconData get icon => mode == _RemoteClipboardMode.copy ? Icons.content_copy : Icons.drive_file_move;
+  IconData get icon => mode == _RemoteClipboardMode.copy ? Icons.content_copy_outlined : Icons.drive_file_move_outlined;
 }
 
 class FilesTab extends StatefulWidget {
@@ -460,23 +460,23 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
   }
 
   IconData _iconFor(RemoteFileItem item) {
-    if (item.isDirectory) return Icons.folder;
-    if (item.isSymlink) return Icons.link;
+    if (item.isDirectory) return Icons.folder_outlined;
+    if (item.isSymlink) return Icons.link_outlined;
 
     switch (_previewKindFor(item.name)) {
       case RemoteFilePreviewKind.image:
-        return Icons.image;
+        return Icons.image_outlined;
       case RemoteFilePreviewKind.video:
-        return Icons.movie;
+        return Icons.movie_outlined;
       case RemoteFilePreviewKind.markdown:
-        return Icons.article;
+        return Icons.article_outlined;
       case RemoteFilePreviewKind.text:
-        return Icons.description;
+        return Icons.description_outlined;
       case RemoteFilePreviewKind.binary:
-        return Icons.insert_drive_file;
+        return Icons.insert_drive_file_outlined;
       case RemoteFilePreviewKind.none:
       case RemoteFilePreviewKind.error:
-        return Icons.insert_drive_file;
+        return Icons.insert_drive_file_outlined;
     }
   }
 
@@ -644,17 +644,13 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.content_paste),
+                : const Icon(Icons.content_paste_outlined),
             label: Text(staged.pasteLabel),
           ),
           IconButton(
-            tooltip: 'Clear staged item',
-            onPressed: fileOperationRunning
-                ? null
-                : () => setState(() {
-                      remoteClipboard = null;
-                    }),
-            icon: const Icon(Icons.close),
+            tooltip: 'Cancel',
+            onPressed: fileOperationRunning ? null : () => setState(() => remoteClipboard = null),
+            icon: const Icon(Icons.close_outlined),
           ),
         ],
       ),
@@ -677,7 +673,7 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
               ),
               const Divider(height: 1),
               ListTile(
-                leading: Icon(item.isDirectory ? Icons.folder_open : Icons.visibility),
+                leading: Icon(item.isDirectory ? Icons.folder_open_outlined : Icons.visibility_outlined),
                 title: Text(item.isDirectory ? 'Open folder' : 'Open / edit file'),
                 onTap: () => Navigator.pop(context, 'open'),
               ),
@@ -687,48 +683,48 @@ class _FilesTabState extends State<FilesTab> with AutomaticKeepAliveClientMixin<
                 onTap: () => Navigator.pop(context, 'rename'),
               ),
               ListTile(
-                leading: const Icon(Icons.content_copy),
+                leading: const Icon(Icons.content_copy_outlined),
                 title: const Text('Copy'),
                 subtitle: const Text('Stage this item, then paste it into another folder'),
                 onTap: () => Navigator.pop(context, 'stageCopy'),
               ),
               ListTile(
-                leading: const Icon(Icons.drive_file_move),
+                leading: const Icon(Icons.drive_file_move_outlined),
                 title: const Text('Move'),
                 subtitle: const Text('Stage this item, then paste it into another folder'),
                 onTap: () => Navigator.pop(context, 'stageMove'),
               ),
               ListTile(
-                leading: const Icon(Icons.copy_all),
+                leading: const Icon(Icons.copy_all_outlined),
                 title: const Text('Duplicate here'),
                 subtitle: const Text('Create a copy in the same folder'),
                 onTap: () => Navigator.pop(context, 'duplicate'),
               ),
               const Divider(height: 1),
               ListTile(
-                leading: const Icon(Icons.copy),
+                leading: const Icon(Icons.content_copy_outlined),
                 title: const Text('Copy name'),
                 onTap: () => Navigator.pop(context, 'copyName'),
               ),
               ListTile(
-                leading: const Icon(Icons.copy_all),
+                leading: const Icon(Icons.copy_all_outlined),
                 title: const Text('Copy abs path'),
                 onTap: () => Navigator.pop(context, 'copyAbs'),
               ),
               ListTile(
-                leading: const Icon(Icons.short_text),
+                leading: const Icon(Icons.notes_outlined),
                 title: const Text('Copy rel path'),
                 onTap: () => Navigator.pop(context, 'copyRel'),
               ),
               ListTile(
-                leading: const Icon(Icons.my_location),
+                leading: const Icon(Icons.my_location_outlined),
                 title: const Text('Set PWD'),
                 subtitle: const Text('Use this folder for new Commands / Agents pages'),
                 onTap: () => Navigator.pop(context, 'setPwd'),
               ),
               const Divider(height: 1),
               ListTile(
-                leading: const Icon(Icons.delete_forever, color: Colors.redAccent),
+                leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
                 title: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
                 subtitle: const Text('Remove this item from the remote host'),
                 onTap: () => Navigator.pop(context, 'delete'),
@@ -929,22 +925,28 @@ mkdir -p "\$target"
     return Column(
       children: [
         Container(
-          color: AppPalette.surface,
+          decoration: const BoxDecoration(
+            color: AppPalette.surface,
+            border: Border(bottom: BorderSide(color: AppPalette.border, width: 1)),
+          ),
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
                   IconButton(
                     tooltip: 'Parent folder',
                     onPressed: directoryLoading ? null : () => openPath(_parentOf(currentPath)),
-                    icon: const Icon(Icons.arrow_upward),
+                    icon: const Icon(Icons.arrow_upward_outlined),
                   ),
+                  const SizedBox(width: 4),
                   Expanded(
                     child: TextField(
                       controller: pathController,
                       decoration: const InputDecoration(
                         labelText: 'Remote path',
+                        prefixIcon: Icon(Icons.folder_outlined, size: 16, color: AppPalette.accent),
                         border: OutlineInputBorder(),
                         isDense: true,
                       ),
@@ -954,7 +956,7 @@ mkdir -p "\$target"
                   const SizedBox(width: 8),
                   FilledButton.tonalIcon(
                     onPressed: directoryLoading ? null : () => openPath(pathController.text),
-                    icon: const Icon(Icons.folder_open),
+                    icon: const Icon(Icons.folder_open_outlined),
                     label: const Text('Open'),
                   ),
                   const SizedBox(width: 8),
@@ -970,15 +972,8 @@ mkdir -p "\$target"
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: _buildBreadcrumbs(currentPath),
-                ),
-              ),
+              const SizedBox(height: 10),
+              _buildBreadcrumbsRow(currentPath),
               _buildClipboardBar(currentPath),
             ],
           ),
@@ -1001,43 +996,120 @@ mkdir -p "\$target"
                             ? const Center(child: Text('Opening folder...'))
                             : items.isEmpty && !directoryLoading
                                 ? const Center(child: Text('No files'))
-                                : ListView.separated(
+                                : ListView.builder(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                                     itemCount: items.length,
-                                    separatorBuilder: (_, __) => const Divider(height: 1),
                                     itemBuilder: (context, index) {
                                       final item = items[index];
                                       final selected = preview.item?.path == item.path;
-                                      return ListTile(
-                                        selected: selected,
-                                        leading: Icon(_iconFor(item)),
-                                        title: Text(
-                                          item.name,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        subtitle: Text(
-                                          '${item.displayType} · ${item.isDirectory ? '-' : _formatSize(item.sizeBytes)} · ${item.modified}',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        trailing: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            if (!item.isDirectory)
-                                              IconButton(
-                                                tooltip: 'Open / edit',
-                                                icon: const Icon(Icons.visibility),
-                                                onPressed: () => openFile(item),
+                                      final iconData = _iconFor(item);
+                                      
+                                      // Premium color-coded icons
+                                      Color iconColor;
+                                      if (item.isDirectory) {
+                                        iconColor = AppPalette.accent; // Blue folders
+                                      } else if (item.isSymlink) {
+                                        iconColor = AppPalette.warning; // Yellow links
+                                      } else {
+                                        final previewKind = _previewKindFor(item.name);
+                                        switch (previewKind) {
+                                          case RemoteFilePreviewKind.image:
+                                            iconColor = const Color(0xFF4EC9B0); // Teal images
+                                            break;
+                                          case RemoteFilePreviewKind.video:
+                                            iconColor = const Color(0xFFCE9178); // Coral videos
+                                            break;
+                                          case RemoteFilePreviewKind.markdown:
+                                            iconColor = const Color(0xFF9CDCFE); // Light blue md
+                                            break;
+                                          case RemoteFilePreviewKind.text:
+                                            iconColor = const Color(0xFFDCDCAA); // Pale yellow text
+                                            break;
+                                          default:
+                                            iconColor = AppPalette.textSecondary; // Grey binaries/other
+                                        }
+                                      }
+
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(vertical: 2),
+                                        child: Material(
+                                          color: selected ? AppPalette.surfaceSoft : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(6),
+                                          child: InkWell(
+                                            borderRadius: BorderRadius.circular(6),
+                                            onTap: () => item.isDirectory ? openPath(item.path) : openFile(item),
+                                            onLongPress: () => _showItemActions(item),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                              decoration: BoxDecoration(
+                                                border: Border(
+                                                  left: BorderSide(
+                                                    color: selected ? AppPalette.accent : Colors.transparent,
+                                                    width: 3,
+                                                  ),
+                                                ),
                                               ),
-                                            IconButton(
-                                              tooltip: 'Actions',
-                                              icon: const Icon(Icons.more_vert),
-                                              onPressed: () => _showItemActions(item),
+                                              child: Row(
+                                                children: [
+                                                  Icon(
+                                                    iconData,
+                                                    size: 18,
+                                                    color: iconColor,
+                                                  ),
+                                                  const SizedBox(width: 10),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        Text(
+                                                          item.name,
+                                                          style: TextStyle(
+                                                            color: selected ? AppPalette.textPrimary : AppPalette.textSecondary,
+                                                            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                                                            fontSize: 13.5,
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                        const SizedBox(height: 2),
+                                                        Text(
+                                                          '${item.displayType} · ${item.isDirectory ? '-' : _formatSize(item.sizeBytes)} · ${item.modified}',
+                                                          style: const TextStyle(
+                                                            color: AppPalette.textMuted,
+                                                            fontSize: 11,
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      if (!item.isDirectory)
+                                                        IconButton(
+                                                          visualDensity: VisualDensity.compact,
+                                                          iconSize: 16,
+                                                          tooltip: 'Open / edit',
+                                                          icon: const Icon(Icons.visibility_outlined),
+                                                          onPressed: () => openFile(item),
+                                                        ),
+                                                      IconButton(
+                                                        visualDensity: VisualDensity.compact,
+                                                        iconSize: 16,
+                                                        tooltip: 'Actions',
+                                                        icon: const Icon(Icons.more_vert_outlined),
+                                                        onPressed: () => _showItemActions(item),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
                                             ),
-                                          ],
+                                          ),
                                         ),
-                                        onTap: () => item.isDirectory ? openPath(item.path) : openFile(item),
-                                        onLongPress: () => _showItemActions(item),
                                       );
                                     },
                                   ),
@@ -1090,25 +1162,81 @@ mkdir -p "\$target"
     );
   }
 
-  List<Widget> _buildBreadcrumbs(String path) {
+  Widget _buildBreadcrumbsRow(String path) {
     final clean = path.trim().isEmpty ? '/' : path.trim();
-    if (clean == '/' || clean == '~') {
-      return [ActionChip(label: Text(clean), onPressed: () => openPath(clean))];
-    }
-
     final parts = clean.split('/').where((e) => e.isNotEmpty).toList();
-    final chips = <Widget>[
-      ActionChip(label: const Text('/'), onPressed: () => openPath('/')),
-    ];
+    
+    final widgets = <Widget>[];
+    
+    // Add root or home
+    final isHome = clean.startsWith('~');
+    final rootLabel = isHome ? '~' : '/';
+    final rootPath = isHome ? '~' : '/';
+    
+    widgets.add(
+      InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: () => openPath(rootPath),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Text(
+            rootLabel,
+            style: const TextStyle(
+              color: AppPalette.textSecondary,
+              fontWeight: FontWeight.w500,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
 
-    var current = '';
+    var current = isHome ? '~' : '';
     for (final part in parts) {
-      current += '/$part';
+      if (current == '~') {
+        current = '~/';
+      }
+      if (current.endsWith('/')) {
+        current += part;
+      } else {
+        current += '/$part';
+      }
       final target = current;
-      chips.add(ActionChip(label: Text(part), onPressed: () => openPath(target)));
+      
+      widgets.add(
+        const Icon(
+          Icons.chevron_right,
+          size: 14,
+          color: AppPalette.textMuted,
+        ),
+      );
+      
+      widgets.add(
+        InkWell(
+          borderRadius: BorderRadius.circular(4),
+          onTap: () => openPath(target),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Text(
+              part,
+              style: const TextStyle(
+                color: AppPalette.textSecondary,
+                fontWeight: FontWeight.w500,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ),
+      );
     }
 
-    return chips;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: widgets,
+      ),
+    );
   }
 }
 
