@@ -1961,26 +1961,28 @@ class _FilePreviewPane extends StatelessWidget {
         );
       case RemoteFilePreviewKind.markdown:
         if (effectiveShowEditor) return _buildTextEditor(context);
-        return SingleChildScrollView(
-          key: ValueKey('markdown-${data.item?.path}'),
-          padding: const EdgeInsets.all(16),
-          child: MarkdownBody(
-            data: data.text?.isEmpty ?? true ? '[Empty file]' : data.text!,
-            selectable: true,
-            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-              p: TextStyle(color: AppPalette.textSecondary, fontSize: 13, height: 1.5),
-              h1: TextStyle(color: AppPalette.textPrimary, fontSize: 22, fontWeight: FontWeight.bold, height: 1.4),
-              h2: TextStyle(color: AppPalette.textPrimary, fontSize: 18, fontWeight: FontWeight.bold, height: 1.4),
-              h3: TextStyle(color: AppPalette.textPrimary, fontSize: 15, fontWeight: FontWeight.bold, height: 1.4),
-              code: const TextStyle(fontFamily: 'monospace', fontSize: 12, backgroundColor: Colors.transparent),
-              codeblockDecoration: BoxDecoration(
-                color: AppPalette.surfaceSoft,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: AppPalette.border),
-              ),
-              blockquoteDecoration: BoxDecoration(
-                color: AppPalette.surfaceSoft,
-                border: Border(left: BorderSide(color: AppPalette.accent, width: 4)),
+        return SelectionArea(
+          child: SingleChildScrollView(
+            key: ValueKey('markdown-${data.item?.path}'),
+            padding: const EdgeInsets.all(16),
+            child: MarkdownBody(
+              data: data.text?.isEmpty ?? true ? '[Empty file]' : data.text!,
+              selectable: false,
+              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                p: TextStyle(color: AppPalette.textSecondary, fontSize: 13, height: 1.5),
+                h1: TextStyle(color: AppPalette.textPrimary, fontSize: 22, fontWeight: FontWeight.bold, height: 1.4),
+                h2: TextStyle(color: AppPalette.textPrimary, fontSize: 18, fontWeight: FontWeight.bold, height: 1.4),
+                h3: TextStyle(color: AppPalette.textPrimary, fontSize: 15, fontWeight: FontWeight.bold, height: 1.4),
+                code: const TextStyle(fontFamily: 'monospace', fontSize: 12, backgroundColor: Colors.transparent),
+                codeblockDecoration: BoxDecoration(
+                  color: AppPalette.surfaceSoft,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppPalette.border),
+                ),
+                blockquoteDecoration: BoxDecoration(
+                  color: AppPalette.surfaceSoft,
+                  border: Border(left: BorderSide(color: AppPalette.accent, width: 4)),
+                ),
               ),
             ),
           ),
