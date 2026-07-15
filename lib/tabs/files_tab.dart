@@ -1280,254 +1280,254 @@ mkdir -p "\$target"
             child: ErrorCard(message: error!),
           ),
         Expanded(
-          child: Row(
-            children: [
-              Expanded(
-                flex: 2,
-                child: Stack(
+          child: (!isWide && preview.item != null)
+              ? _FilePreviewPane(
+                  data: preview,
+                  loading: previewLoading,
+                  onOpenFullscreen: () => _showPreviewDialog(preview),
+                  onClose: () => setState(() {
+                    preview = RemoteFilePreviewData.empty();
+                  }),
+                  editorController: editorController,
+                  canEdit: _canEditCurrentPreview,
+                  editorDirty: editorDirty,
+                  editorSaving: editorSaving,
+                  onSave: _saveCurrentEditor,
+                  onReload: _reloadCurrentEditor,
+                  showEditor: _showEditorInsteadOfPreview,
+                  canToggleEditor: _canEditCurrentPreview && (preview.kind == RemoteFilePreviewKind.markdown || preview.kind == RemoteFilePreviewKind.spreadsheet),
+                  onToggleEditor: () => setState(() {
+                    _showEditorInsteadOfPreview = !_showEditorInsteadOfPreview;
+                  }),
+                  showFindBar: _showFindBar,
+                  onToggleFindBar: () => setState(() {
+                    _showFindBar = !_showFindBar;
+                    if (!_showFindBar) {
+                      _findController.clear();
+                    }
+                  }),
+                  findController: _findController,
+                  onFindNext: _findNext,
+                  onFindPrev: _findPrev,
+                  currentMatchIndex: _currentMatchIndex,
+                  totalMatches: _findMatchOffsets.length,
+                  editorScrollController: _editorScrollController,
+                  lineScrollController: _lineScrollController,
+                  replaceController: _replaceController,
+                  onReplace: _performReplace,
+                  onReplaceAll: _performReplaceAll,
+                  showReplace: _showReplace,
+                  onToggleReplace: () => setState(() {
+                    _showReplace = !_showReplace;
+                  }),
+                  onGoToLine: () => _showGoToLineDialog(context),
+                  currentOffset: _currentOffset,
+                  onPageChanged: (offset) => openFile(preview.item!, offset: offset),
+                  onSpreadsheetChanged: (newText) {
+                    _suppressEditorDirty = true;
+                    editorController.text = newText;
+                    _suppressEditorDirty = false;
+                    setState(() {
+                      editorDirty = true;
+                    });
+                  },
+                )
+              : Row(
                   children: [
-                    listing == null && directoryLoading
-                        ? const Center(child: CircularProgressIndicator())
-                        : listing == null && !initialized
-                            ? const Center(child: Text('Opening folder...'))
-                            : items.isEmpty && !directoryLoading
-                                ? const Center(child: Text('No files'))
-                                : ListView.builder(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                    itemCount: items.length,
-                                    itemBuilder: (context, index) {
-                                      final item = items[index];
-                                      final selected = preview.item?.path == item.path;
-                                      final iconData = _iconFor(item);
-                                      
-                                      // Premium color-coded icons
-                                      Color iconColor;
-                                      if (item.isDirectory) {
-                                        iconColor = AppPalette.accent; // Blue folders
-                                      } else if (item.isSymlink) {
-                                        iconColor = AppPalette.warning; // Yellow links
-                                      } else {
-                                        final previewKind = _previewKindFor(item.name);
-                                        switch (previewKind) {
-                                          case RemoteFilePreviewKind.image:
-                                            iconColor = const Color(0xFF4EC9B0); // Teal images
-                                            break;
-                                          case RemoteFilePreviewKind.video:
-                                            iconColor = const Color(0xFFCE9178); // Coral videos
-                                            break;
-                                          case RemoteFilePreviewKind.markdown:
-                                            iconColor = const Color(0xFF9CDCFE); // Light blue md
-                                            break;
-                                          case RemoteFilePreviewKind.text:
-                                            iconColor = const Color(0xFFDCDCAA); // Pale yellow text
-                                            break;
-                                          default:
-                                            iconColor = AppPalette.textSecondary; // Grey binaries/other
-                                        }
-                                      }
+                    Expanded(
+                      flex: 2,
+                      child: Stack(
+                        children: [
+                          listing == null && directoryLoading
+                              ? const Center(child: CircularProgressIndicator())
+                              : listing == null && !initialized
+                                  ? const Center(child: Text('Opening folder...'))
+                                  : items.isEmpty && !directoryLoading
+                                      ? const Center(child: Text('No files'))
+                                      : ListView.builder(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                          itemCount: items.length,
+                                          itemBuilder: (context, index) {
+                                            final item = items[index];
+                                            final selected = preview.item?.path == item.path;
+                                            final iconData = _iconFor(item);
+                                            
+                                            // Premium color-coded icons
+                                            Color iconColor;
+                                            if (item.isDirectory) {
+                                              iconColor = AppPalette.accent; // Blue folders
+                                            } else if (item.isSymlink) {
+                                              iconColor = AppPalette.warning; // Yellow links
+                                            } else {
+                                              final previewKind = _previewKindFor(item.name);
+                                              switch (previewKind) {
+                                                case RemoteFilePreviewKind.image:
+                                                  iconColor = const Color(0xFF4EC9B0); // Teal images
+                                                  break;
+                                                case RemoteFilePreviewKind.video:
+                                                  iconColor = const Color(0xFFCE9178); // Coral videos
+                                                  break;
+                                                case RemoteFilePreviewKind.markdown:
+                                                  iconColor = const Color(0xFF9CDCFE); // Light blue md
+                                                  break;
+                                                case RemoteFilePreviewKind.text:
+                                                  iconColor = const Color(0xFFDCDCAA); // Pale yellow text
+                                                  break;
+                                                default:
+                                                  iconColor = AppPalette.textSecondary; // Grey binaries/other
+                                              }
+                                            }
 
-                                      return Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 2),
-                                        child: Material(
-                                          color: selected ? AppPalette.surfaceSoft : Colors.transparent,
-                                          borderRadius: BorderRadius.circular(6),
-                                          child: InkWell(
-                                            borderRadius: BorderRadius.circular(6),
-                                            onTap: () => item.isDirectory ? openPath(item.path) : openFile(item),
-                                            onLongPress: () => _showItemActions(item),
-                                            child: Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                              decoration: BoxDecoration(
-                                                border: Border(
-                                                  left: BorderSide(
-                                                    color: selected ? AppPalette.accent : Colors.transparent,
-                                                    width: 3,
-                                                  ),
-                                                ),
-                                              ),
-                                              child: Row(
-                                                children: [
-                                                  Icon(
-                                                    iconData,
-                                                    size: 18,
-                                                    color: iconColor,
-                                                  ),
-                                                  const SizedBox(width: 10),
-                                                  Expanded(
-                                                    child: Column(
-                                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                                      children: [
-                                                        Text(
-                                                          item.name,
-                                                          style: TextStyle(
-                                                            color: selected ? AppPalette.textPrimary : AppPalette.textSecondary,
-                                                            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                                                            fontSize: 13.5,
-                                                          ),
-                                                          maxLines: 1,
-                                                          overflow: TextOverflow.ellipsis,
+                                            return Padding(
+                                              padding: const EdgeInsets.symmetric(vertical: 2),
+                                              child: Material(
+                                                color: selected ? AppPalette.surfaceSoft : Colors.transparent,
+                                                borderRadius: BorderRadius.circular(6),
+                                                child: InkWell(
+                                                  borderRadius: BorderRadius.circular(6),
+                                                  onTap: () => item.isDirectory ? openPath(item.path) : openFile(item),
+                                                  onLongPress: () => _showItemActions(item),
+                                                  child: Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                                    decoration: BoxDecoration(
+                                                      border: Border(
+                                                        left: BorderSide(
+                                                          color: selected ? AppPalette.accent : Colors.transparent,
+                                                          width: 3,
                                                         ),
-                                                        const SizedBox(height: 2),
-                                                        Text(
-                                                          '${item.displayType} · ${item.isDirectory ? '-' : _formatSize(item.sizeBytes)} · ${item.modified}',
-                                                          style: TextStyle(
-                                                            color: AppPalette.textMuted,
-                                                            fontSize: 11,
+                                                      ),
+                                                    ),
+                                                    child: Row(
+                                                      children: [
+                                                        Icon(
+                                                          iconData,
+                                                          size: 18,
+                                                          color: iconColor,
+                                                        ),
+                                                        const SizedBox(width: 10),
+                                                        Expanded(
+                                                          child: Column(
+                                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                                            children: [
+                                                              Text(
+                                                                item.name,
+                                                                style: TextStyle(
+                                                                  color: selected ? AppPalette.textPrimary : AppPalette.textSecondary,
+                                                                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                                                                  fontSize: 13.5,
+                                                                ),
+                                                                maxLines: 1,
+                                                                overflow: TextOverflow.ellipsis,
+                                                              ),
+                                                              const SizedBox(height: 2),
+                                                              Text(
+                                                                '${item.displayType} · ${item.isDirectory ? '-' : _formatSize(item.sizeBytes)} · ${item.modified}',
+                                                                style: TextStyle(
+                                                                  color: AppPalette.textMuted,
+                                                                  fontSize: 11,
+                                                                ),
+                                                                maxLines: 1,
+                                                                overflow: TextOverflow.ellipsis,
+                                                              ),
+                                                            ],
                                                           ),
-                                                          maxLines: 1,
-                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                        const SizedBox(width: 8),
+                                                        Row(
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          children: [
+                                                            if (!item.isDirectory)
+                                                              IconButton(
+                                                                visualDensity: VisualDensity.compact,
+                                                                iconSize: 16,
+                                                                tooltip: 'Open / edit',
+                                                                icon: const Icon(Icons.visibility_outlined),
+                                                                onPressed: () => openFile(item),
+                                                              ),
+                                                            IconButton(
+                                                              visualDensity: VisualDensity.compact,
+                                                              iconSize: 16,
+                                                              tooltip: 'Actions',
+                                                              icon: const Icon(Icons.more_vert_outlined),
+                                                              onPressed: () => _showItemActions(item),
+                                                            ),
+                                                          ],
                                                         ),
                                                       ],
                                                     ),
                                                   ),
-                                                  const SizedBox(width: 8),
-                                                  Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      if (!item.isDirectory)
-                                                        IconButton(
-                                                          visualDensity: VisualDensity.compact,
-                                                          iconSize: 16,
-                                                          tooltip: 'Open / edit',
-                                                          icon: const Icon(Icons.visibility_outlined),
-                                                          onPressed: () => openFile(item),
-                                                        ),
-                                                      IconButton(
-                                                        visualDensity: VisualDensity.compact,
-                                                        iconSize: 16,
-                                                        tooltip: 'Actions',
-                                                        icon: const Icon(Icons.more_vert_outlined),
-                                                        onPressed: () => _showItemActions(item),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ],
+                                                ),
                                               ),
-                                            ),
-                                          ),
+                                            );
+                                          },
                                         ),
-                                      );
-                                    },
-                                  ),
-                    if (directoryLoading && listing != null)
-                      Positioned.fill(
-                        child: IgnorePointer(
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.08)),
-                          ),
+                          if (directoryLoading && listing != null)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.08)),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (isWide) VerticalDivider(width: 1, color: AppPalette.border),
+                    if (isWide)
+                      Expanded(
+                        flex: 3,
+                        child: _FilePreviewPane(
+                          data: preview,
+                          loading: previewLoading,
+                          onOpenFullscreen: preview.item == null ? null : () => _showPreviewDialog(preview),
+                          editorController: editorController,
+                          canEdit: _canEditCurrentPreview,
+                          editorDirty: editorDirty,
+                          editorSaving: editorSaving,
+                          onSave: _saveCurrentEditor,
+                          onReload: _reloadCurrentEditor,
+                          showEditor: _showEditorInsteadOfPreview,
+                          canToggleEditor: _canEditCurrentPreview && (preview.kind == RemoteFilePreviewKind.markdown || preview.kind == RemoteFilePreviewKind.spreadsheet),
+                          onToggleEditor: () => setState(() {
+                            _showEditorInsteadOfPreview = !_showEditorInsteadOfPreview;
+                          }),
+                          showFindBar: _showFindBar,
+                          onToggleFindBar: () => setState(() {
+                            _showFindBar = !_showFindBar;
+                            if (!_showFindBar) {
+                              _findController.clear();
+                            }
+                          }),
+                          findController: _findController,
+                          onFindNext: _findNext,
+                          onFindPrev: _findPrev,
+                          currentMatchIndex: _currentMatchIndex,
+                          totalMatches: _findMatchOffsets.length,
+                          editorScrollController: _editorScrollController,
+                          lineScrollController: _lineScrollController,
+                          replaceController: _replaceController,
+                          onReplace: _performReplace,
+                          onReplaceAll: _performReplaceAll,
+                          showReplace: _showReplace,
+                          onToggleReplace: () => setState(() {
+                            _showReplace = !_showReplace;
+                          }),
+                          onGoToLine: () => _showGoToLineDialog(context),
+                          currentOffset: _currentOffset,
+                          onPageChanged: (offset) => openFile(preview.item!, offset: offset),
+                          onSpreadsheetChanged: (newText) {
+                            _suppressEditorDirty = true;
+                            editorController.text = newText;
+                            _suppressEditorDirty = false;
+                            setState(() {
+                              editorDirty = true;
+                            });
+                          },
                         ),
                       ),
                   ],
                 ),
-              ),
-              if (isWide) VerticalDivider(width: 1, color: AppPalette.border),
-              if (isWide)
-                Expanded(
-                  flex: 3,
-                  child: _FilePreviewPane(
-                    data: preview,
-                    loading: previewLoading,
-                    onOpenFullscreen: preview.item == null ? null : () => _showPreviewDialog(preview),
-                    editorController: editorController,
-                    canEdit: _canEditCurrentPreview,
-                    editorDirty: editorDirty,
-                    editorSaving: editorSaving,
-                    onSave: _saveCurrentEditor,
-                    onReload: _reloadCurrentEditor,
-                    showEditor: _showEditorInsteadOfPreview,
-                    canToggleEditor: _canEditCurrentPreview && (preview.kind == RemoteFilePreviewKind.markdown || preview.kind == RemoteFilePreviewKind.spreadsheet),
-                    onToggleEditor: () => setState(() {
-                      _showEditorInsteadOfPreview = !_showEditorInsteadOfPreview;
-                    }),
-                    showFindBar: _showFindBar,
-                    onToggleFindBar: () => setState(() {
-                      _showFindBar = !_showFindBar;
-                      if (!_showFindBar) {
-                        _findController.clear();
-                      }
-                    }),
-                    findController: _findController,
-                    onFindNext: _findNext,
-                    onFindPrev: _findPrev,
-                    currentMatchIndex: _currentMatchIndex,
-                    totalMatches: _findMatchOffsets.length,
-                    editorScrollController: _editorScrollController,
-                    lineScrollController: _lineScrollController,
-                    replaceController: _replaceController,
-                    onReplace: _performReplace,
-                    onReplaceAll: _performReplaceAll,
-                    showReplace: _showReplace,
-                    onToggleReplace: () => setState(() {
-                      _showReplace = !_showReplace;
-                    }),
-                    onGoToLine: () => _showGoToLineDialog(context),
-                    currentOffset: _currentOffset,
-                    onPageChanged: (offset) => openFile(preview.item!, offset: offset),
-                    onSpreadsheetChanged: (newText) {
-                      _suppressEditorDirty = true;
-                      editorController.text = newText;
-                      _suppressEditorDirty = false;
-                      setState(() {
-                        editorDirty = true;
-                      });
-                    },
-                  ),
-                ),
-            ],
-          ),
         ),
-        if (!isWide && preview.item != null)
-          SizedBox(
-            height: 300,
-            child: _FilePreviewPane(
-              data: preview,
-              loading: previewLoading,
-              onOpenFullscreen: () => _showPreviewDialog(preview),
-              editorController: editorController,
-              canEdit: _canEditCurrentPreview,
-              editorDirty: editorDirty,
-              editorSaving: editorSaving,
-              onSave: _saveCurrentEditor,
-              onReload: _reloadCurrentEditor,
-              showEditor: _showEditorInsteadOfPreview,
-              canToggleEditor: _canEditCurrentPreview && (preview.kind == RemoteFilePreviewKind.markdown || preview.kind == RemoteFilePreviewKind.spreadsheet),
-              onToggleEditor: () => setState(() {
-                _showEditorInsteadOfPreview = !_showEditorInsteadOfPreview;
-              }),
-              showFindBar: _showFindBar,
-              onToggleFindBar: () => setState(() {
-                _showFindBar = !_showFindBar;
-                if (!_showFindBar) {
-                  _findController.clear();
-                }
-              }),
-              findController: _findController,
-              onFindNext: _findNext,
-              onFindPrev: _findPrev,
-              currentMatchIndex: _currentMatchIndex,
-              totalMatches: _findMatchOffsets.length,
-              editorScrollController: _editorScrollController,
-              lineScrollController: _lineScrollController,
-              replaceController: _replaceController,
-              onReplace: _performReplace,
-              onReplaceAll: _performReplaceAll,
-              showReplace: _showReplace,
-              onToggleReplace: () => setState(() {
-                _showReplace = !_showReplace;
-              }),
-              onGoToLine: () => _showGoToLineDialog(context),
-              currentOffset: _currentOffset,
-              onPageChanged: (offset) => openFile(preview.item!, offset: offset),
-              onSpreadsheetChanged: (newText) {
-                _suppressEditorDirty = true;
-                editorController.text = newText;
-                _suppressEditorDirty = false;
-                setState(() {
-                  editorDirty = true;
-                });
-              },
-            ),
-          ),
       ],
         ),
       ),
@@ -1643,6 +1643,7 @@ class _FilePreviewPane extends StatelessWidget {
   final int currentOffset;
   final ValueChanged<int>? onPageChanged;
   final ValueChanged<String>? onSpreadsheetChanged;
+  final VoidCallback? onClose;
 
   const _FilePreviewPane({
     required this.data,
@@ -1675,6 +1676,7 @@ class _FilePreviewPane extends StatelessWidget {
     this.currentOffset = 0,
     this.onPageChanged,
     this.onSpreadsheetChanged,
+    this.onClose,
   });
 
   @override
@@ -1692,6 +1694,16 @@ class _FilePreviewPane extends StatelessWidget {
             color: AppPalette.surface,
             child: Row(
               children: [
+                if (onClose != null)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Back to file list',
+                      onPressed: onClose,
+                      icon: const Icon(Icons.arrow_back, size: 18),
+                    ),
+                  ),
                 Expanded(
                   child: Text(
                     item == null ? 'Preview' : '$titlePrefix: ${item.name}',

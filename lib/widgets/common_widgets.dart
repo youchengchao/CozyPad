@@ -942,6 +942,9 @@ class ResponsiveGrid extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final count = (constraints.maxWidth / minItemWidth).floor().clamp(1, 8).toInt();
+        final effectiveAspectRatio = count == 1
+            ? (childAspectRatio > 1.6 ? 1.6 : childAspectRatio)
+            : childAspectRatio;
 
         return GridView.builder(
           shrinkWrap: true,
@@ -951,7 +954,7 @@ class ResponsiveGrid extends StatelessWidget {
             crossAxisCount: count,
             mainAxisSpacing: 12,
             crossAxisSpacing: 12,
-            childAspectRatio: childAspectRatio,
+            childAspectRatio: effectiveAspectRatio,
           ),
           itemBuilder: itemBuilder,
         );
@@ -1426,11 +1429,12 @@ class _SettingsDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = Provider.of<SettingsNotifier>(context);
     final theme = settings.currentTheme;
+    final isMobile = MediaQuery.of(context).size.width < 760;
 
     return Dialog(
       backgroundColor: Colors.transparent,
       child: Container(
-        width: 520,
+        width: isMobile ? MediaQuery.of(context).size.width * 0.92 : 520,
         constraints: const BoxConstraints(maxHeight: 600),
         decoration: BoxDecoration(
           color: AppPalette.surfaceElevated,
@@ -1558,7 +1562,7 @@ class _SettingsDialog extends StatelessWidget {
                     // ── Theme Section ──
                     _sectionLabel('Color Theme', '配色主題'),
                     const SizedBox(height: 10),
-                    ...appThemes.map((t) => _buildThemeCard(t, t.name == theme.name, settings)),
+                    ...appThemes.map((t) => _buildThemeCard(context, t, t.name == theme.name, settings)),
                   ],
                 ),
               ),
@@ -1604,7 +1608,9 @@ class _SettingsDialog extends StatelessWidget {
     );
   }
 
-  Widget _buildThemeCard(AppThemeData t, bool isSelected, SettingsNotifier settings) {
+  Widget _buildThemeCard(BuildContext context, AppThemeData t, bool isSelected, SettingsNotifier settings) {
+    final isMobile = MediaQuery.of(context).size.width < 760;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: InkWell(
@@ -1664,14 +1670,20 @@ class _SettingsDialog extends StatelessWidget {
                 children: [
                   _swatch(t.backgroundDeep),
                   _swatch(t.surface),
-                  _swatch(t.surfaceElevated),
-                  _swatch(t.border),
-                  const SizedBox(width: 6),
+                  if (!isMobile) ...[
+                    _swatch(t.surfaceElevated),
+                    _swatch(t.border),
+                  ],
+                  const SizedBox(width: 4),
                   _swatch(t.accent),
-                  _swatch(t.accentSoft),
-                  const SizedBox(width: 6),
-                  _swatch(t.success),
-                  _swatch(t.warning),
+                  if (!isMobile) ...[
+                    _swatch(t.accentSoft),
+                  ],
+                  const SizedBox(width: 4),
+                  if (!isMobile) ...[
+                    _swatch(t.success),
+                    _swatch(t.warning),
+                  ],
                   _swatch(t.danger),
                 ],
               ),
