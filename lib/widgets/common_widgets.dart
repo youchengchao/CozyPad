@@ -1331,42 +1331,101 @@ class SettingsNotifier extends ChangeNotifier {
   );
   static const String _themeKey = 'settings_theme';
   static const String _zoomKey = 'settings_zoom';
+  static const String _googleApiKey = 'settings_google_api_key';
+  static const String _googleBaseUrlKey = 'settings_google_base_url';
+  static const String _googleModelKey = 'settings_google_model';
 
   double _zoom = 1.0;
   AppThemeData _currentTheme = appThemes.first;
+  String _googleApiKeyVal = '';
+  String _googleBaseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+  String _googleModel = 'gemini-3.5-flash';
 
   double get zoom => _zoom;
   AppThemeData get currentTheme => _currentTheme;
+
+  String get googleApiKey => _googleApiKeyVal;
+  String get googleBaseUrl => _googleBaseUrl;
+  String get googleModel => _googleModel;
+
+  Future<void> setGoogleApiKey(String value) async {
+    _googleApiKeyVal = value.trim();
+    notifyListeners();
+    try {
+      await _storage.write(key: _googleApiKey, value: _googleApiKeyVal);
+    } catch (_) {}
+  }
+
+  Future<void> setGoogleBaseUrl(String value) async {
+    _googleBaseUrl = value.trim();
+    notifyListeners();
+    try {
+      await _storage.write(key: _googleBaseUrlKey, value: _googleBaseUrl);
+    } catch (_) {}
+  }
+
+  Future<void> setGoogleModel(String value) async {
+    _googleModel = value.trim();
+    notifyListeners();
+    try {
+      await _storage.write(key: _googleModelKey, value: _googleModel);
+    } catch (_) {}
+  }
 
   SettingsNotifier() {
     _loadFromDisk();
   }
 
   Future<void> _loadFromDisk() async {
-    final savedTheme = await _storage.read(key: _themeKey);
-    final savedZoom = await _storage.read(key: _zoomKey);
+    try {
+      final savedTheme = await _storage.read(key: _themeKey);
+      final savedZoom = await _storage.read(key: _zoomKey);
 
-    if (savedTheme != null && savedTheme.isNotEmpty) {
-      final match = appThemes.where((t) => t.name == savedTheme);
-      if (match.isNotEmpty) {
-        _currentTheme = match.first;
-        _applyThemeToPalette(_currentTheme);
+      if (savedTheme != null && savedTheme.isNotEmpty) {
+        final match = appThemes.where((t) => t.name == savedTheme);
+        if (match.isNotEmpty) {
+          _currentTheme = match.first;
+          _applyThemeToPalette(_currentTheme);
+        }
       }
+
+      if (savedZoom != null && savedZoom.isNotEmpty) {
+        final parsed = double.tryParse(savedZoom);
+        if (parsed != null) {
+          _zoom = parsed.clamp(0.5, 2.0);
+        }
+      }
+    } catch (e) {
+      // theme and zoom defaults remain
     }
 
-    if (savedZoom != null && savedZoom.isNotEmpty) {
-      final parsed = double.tryParse(savedZoom);
-      if (parsed != null) {
-        _zoom = parsed.clamp(0.5, 2.0);
+    try {
+      final savedApiKey = await _storage.read(key: _googleApiKey);
+      if (savedApiKey != null) {
+        _googleApiKeyVal = savedApiKey.trim();
       }
+      final savedBaseUrl = await _storage.read(key: _googleBaseUrlKey);
+      if (savedBaseUrl != null && savedBaseUrl.isNotEmpty) {
+        _googleBaseUrl = savedBaseUrl.trim();
+      }
+      final savedModel = await _storage.read(key: _googleModelKey);
+      if (savedModel != null && savedModel.isNotEmpty) {
+        _googleModel = savedModel.trim();
+      }
+    } catch (e) {
+      _googleApiKeyVal = '';
+      _googleBaseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+      _googleModel = 'gemini-3.5-flash';
     }
 
     notifyListeners();
   }
 
   Future<void> _saveToDisk() async {
-    await _storage.write(key: _themeKey, value: _currentTheme.name);
-    await _storage.write(key: _zoomKey, value: _zoom.toString());
+    try {
+      await _storage.write(key: _themeKey, value: _currentTheme.name);
+      await _storage.write(key: _zoomKey, value: _zoom.toString());
+    } catch (_) {}
   }
 
   void zoomIn() {
@@ -1422,8 +1481,35 @@ class SettingsNotifier extends ChangeNotifier {
   }
 }
 
-class _SettingsDialog extends StatelessWidget {
+class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog();
+
+  @override
+  State<_SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<_SettingsDialog> {
+  late TextEditingController _apiKeyController;
+  late TextEditingController _baseUrlController;
+  late TextEditingController _modelController;
+  bool _obscureApiKey = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = Provider.of<SettingsNotifier>(context, listen: false);
+    _apiKeyController = TextEditingController(text: settings.googleApiKey);
+    _baseUrlController = TextEditingController(text: settings.googleBaseUrl);
+    _modelController = TextEditingController(text: settings.googleModel);
+  }
+
+  @override
+  void dispose() {
+    _apiKeyController.dispose();
+    _baseUrlController.dispose();
+    _modelController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1435,7 +1521,7 @@ class _SettingsDialog extends StatelessWidget {
       backgroundColor: Colors.transparent,
       child: Container(
         width: isMobile ? MediaQuery.of(context).size.width * 0.92 : 520,
-        constraints: const BoxConstraints(maxHeight: 600),
+        constraints: const BoxConstraints(maxHeight: 650),
         decoration: BoxDecoration(
           color: AppPalette.surfaceElevated,
           borderRadius: BorderRadius.circular(14),
@@ -1559,7 +1645,64 @@ class _SettingsDialog extends StatelessWidget {
 
                     const SizedBox(height: 24),
 
-                    // ── Theme Section ──
+                    // ── Agent Settings / LLM 設定 Section ──
+                    _sectionLabel('Agent Settings', 'LLM 設定'),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _apiKeyController,
+                      obscureText: _obscureApiKey,
+                      style: TextStyle(color: AppPalette.textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        labelText: 'Google API Key',
+                        labelStyle: TextStyle(color: AppPalette.textSecondary, fontSize: 12),
+                        hintText: 'Enter API Key',
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscureApiKey ? Icons.visibility : Icons.visibility_off,
+                            size: 18,
+                            color: AppPalette.textSecondary,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _obscureApiKey = !_obscureApiKey;
+                            });
+                          },
+                        ),
+                      ),
+                      onChanged: (val) => settings.setGoogleApiKey(val.trim()),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _baseUrlController,
+                      style: TextStyle(color: AppPalette.textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        labelText: 'Google Base URL',
+                        labelStyle: TextStyle(color: AppPalette.textSecondary, fontSize: 12),
+                        hintText: 'https://generativelanguage.googleapis.com/v1beta',
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      onChanged: (val) => settings.setGoogleBaseUrl(val.trim()),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _modelController,
+                      style: TextStyle(color: AppPalette.textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        labelText: 'Google Model',
+                        labelStyle: TextStyle(color: AppPalette.textSecondary, fontSize: 12),
+                        hintText: 'gemini-3.5-flash',
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      onChanged: (val) => settings.setGoogleModel(val.trim()),
+                    ),
+
+                    const SizedBox(height: 24),
+
+                    // ── Color Theme Section ──
                     _sectionLabel('Color Theme', '配色主題'),
                     const SizedBox(height: 10),
                     ...appThemes.map((t) => _buildThemeCard(context, t, t.name == theme.name, settings)),

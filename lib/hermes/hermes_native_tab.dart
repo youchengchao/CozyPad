@@ -288,10 +288,15 @@ class _HermesNativeTabState extends State<HermesNativeTab>
   }
 
   HermesSettings _settings() {
+    final globalSettings = Provider.of<SettingsNotifier>(context, listen: false);
+    final modelVal = modelController.text.trim();
+    final baseUrlVal = baseUrlController.text.trim();
+    final apiKeyVal = apiKeyController.text.trim();
+
     return HermesSettings(
-      model: modelController.text.trim().isEmpty ? _defaultGoogleModel : modelController.text.trim(),
-      baseUrl: baseUrlController.text.trim().isEmpty ? _defaultGoogleBaseUrl : baseUrlController.text.trim(),
-      apiKey: apiKeyController.text,
+      model: modelVal.isEmpty ? globalSettings.googleModel : modelVal,
+      baseUrl: baseUrlVal.isEmpty ? globalSettings.googleBaseUrl : baseUrlVal,
+      apiKey: apiKeyVal.isEmpty ? globalSettings.googleApiKey : apiKeyVal,
       hermesHome: hermesHomeController.text.trim(),
       soul: soulController.text,
       profile: profileController.text.trim().isEmpty ? 'default' : profileController.text.trim(),
@@ -313,7 +318,10 @@ class _HermesNativeTabState extends State<HermesNativeTab>
       decoded = <String, dynamic>{};
     }
 
-    final legacyRaw = await _secureStorage.read(key: _legacyHermesSettingsKey);
+    String? legacyRaw;
+    try {
+      legacyRaw = await _secureStorage.read(key: _legacyHermesSettingsKey);
+    } catch (_) {}
     if (legacyRaw != null && legacyRaw.trim().isNotEmpty) {
       try {
         final legacy = jsonDecode(legacyRaw);
@@ -436,19 +444,29 @@ class _HermesNativeTabState extends State<HermesNativeTab>
     activeApiProfileId = decoded['activeApiProfileId']?.toString() ?? 'default';
 
     // Migrate legacy key if exists
-    final secureApiKey = await _secureStorage.read(key: _hermesApiKeyKey);
+    String? secureApiKey;
+    try {
+      secureApiKey = await _secureStorage.read(key: _hermesApiKeyKey);
+    } catch (_) {}
     final legacyApiKey = legacyDecoded['apiKey']?.toString() ?? '';
     final primaryKey = secureApiKey?.trim().isNotEmpty == true ? secureApiKey! : legacyApiKey;
     if (primaryKey.isNotEmpty && secureApiKey == null) {
-      await _secureStorage.write(key: _hermesApiKeyKey, value: primaryKey);
+      try {
+        await _secureStorage.write(key: _hermesApiKeyKey, value: primaryKey);
+      } catch (_) {}
     }
 
     for (final profile in apiProfiles) {
       final key = 'ssh_dashboard_hermes_api_key_${profile.id}';
-      var apiKey = await _secureStorage.read(key: key);
+      String? apiKey;
+      try {
+        apiKey = await _secureStorage.read(key: key);
+      } catch (_) {}
       if (profile.id == 'default' && (apiKey == null || apiKey.trim().isEmpty) && primaryKey.isNotEmpty) {
         apiKey = primaryKey;
-        await _secureStorage.write(key: key, value: apiKey);
+        try {
+          await _secureStorage.write(key: key, value: apiKey);
+        } catch (_) {}
       }
       profileApiKeys[profile.id] = apiKey ?? '';
     }
@@ -459,8 +477,12 @@ class _HermesNativeTabState extends State<HermesNativeTab>
     apiKeyController.text = profileApiKeys[activeProfile.id] ?? '';
 
     if (legacyDecoded.isNotEmpty) {
-      await _writeHermesSettingsFile(decoded);
-      await _secureStorage.delete(key: _legacyHermesSettingsKey);
+      try {
+        await _writeHermesSettingsFile(decoded);
+      } catch (_) {}
+      try {
+        await _secureStorage.delete(key: _legacyHermesSettingsKey);
+      } catch (_) {}
     }
 
     sessionStore = HermesSessionStore(homePath: hermesHomeController.text.trim());
@@ -516,23 +538,29 @@ class _HermesNativeTabState extends State<HermesNativeTab>
       'apiProfiles': apiProfiles.map((e) => e.toJson()).toList(),
     };
 
-    await _writeHermesSettingsFile(nonSecretSettings);
+    try {
+      await _writeHermesSettingsFile(nonSecretSettings);
+    } catch (_) {}
     final cleanApiKey = settings.apiKey.trim();
     
     profileApiKeys[activeApiProfileId] = cleanApiKey;
     final secureProfileKey = 'ssh_dashboard_hermes_api_key_$activeApiProfileId';
-    if (cleanApiKey.isEmpty) {
-      await _secureStorage.delete(key: secureProfileKey);
-      if (activeApiProfileId == 'default') {
-        await _secureStorage.delete(key: _hermesApiKeyKey);
+    try {
+      if (cleanApiKey.isEmpty) {
+        await _secureStorage.delete(key: secureProfileKey);
+        if (activeApiProfileId == 'default') {
+          await _secureStorage.delete(key: _hermesApiKeyKey);
+        }
+      } else {
+        await _secureStorage.write(key: secureProfileKey, value: cleanApiKey);
+        if (activeApiProfileId == 'default') {
+          await _secureStorage.write(key: _hermesApiKeyKey, value: cleanApiKey);
+        }
       }
-    } else {
-      await _secureStorage.write(key: secureProfileKey, value: cleanApiKey);
-      if (activeApiProfileId == 'default') {
-        await _secureStorage.write(key: _hermesApiKeyKey, value: cleanApiKey);
-      }
-    }
-    await _secureStorage.delete(key: _legacyHermesSettingsKey);
+    } catch (_) {}
+    try {
+      await _secureStorage.delete(key: _legacyHermesSettingsKey);
+    } catch (_) {}
 
     sessionStore.homePath = settings.hermesHome;
     memoryStore.homePath = settings.hermesHome;
@@ -726,7 +754,10 @@ class _HermesNativeTabState extends State<HermesNativeTab>
 
   Future<Map<String, dynamic>> _readHermesSettingsFile() async {
     if (kIsWeb) {
-      final raw = await _secureStorage.read(key: '${_legacyHermesSettingsKey}_non_secret');
+      String? raw;
+      try {
+        raw = await _secureStorage.read(key: '${_legacyHermesSettingsKey}_non_secret');
+      } catch (_) {}
       if (raw == null || raw.trim().isEmpty) return <String, dynamic>{};
       final decoded = jsonDecode(raw);
       return decoded is Map ? Map<String, dynamic>.from(decoded) : <String, dynamic>{};
@@ -743,7 +774,9 @@ class _HermesNativeTabState extends State<HermesNativeTab>
     final clean = Map<String, dynamic>.from(settings)..remove('apiKey');
     const encoder = JsonEncoder.withIndent('  ');
     if (kIsWeb) {
-      await _secureStorage.write(key: '${_legacyHermesSettingsKey}_non_secret', value: encoder.convert(clean));
+      try {
+        await _secureStorage.write(key: '${_legacyHermesSettingsKey}_non_secret', value: encoder.convert(clean));
+      } catch (_) {}
       return;
     }
     final file = _hermesSettingsFile();
@@ -1161,10 +1194,15 @@ This skill scans nvidia-smi output for processes using zero memory or running be
       lastStatus = 'Testing Google AI Studio model configuration.';
     });
     try {
+      final globalSettings = Provider.of<SettingsNotifier>(context, listen: false);
+      final apiKeyVal = apiKeyController.text.trim().isEmpty ? globalSettings.googleApiKey : apiKeyController.text.trim();
+      final baseUrlVal = baseUrlController.text.trim().isEmpty ? globalSettings.googleBaseUrl : baseUrlController.text.trim();
+      final modelVal = modelController.text.trim().isEmpty ? globalSettings.googleModel : modelController.text.trim();
+
       final reply = await llmClient.generate(
-        apiKey: apiKeyController.text,
-        baseUrl: baseUrlController.text,
-        model: modelController.text,
+        apiKey: apiKeyVal,
+        baseUrl: baseUrlVal,
+        model: modelVal,
         systemPrompt: 'Reply with one concise sentence. You are only testing connectivity.',
         userPrompt: 'Say that the SSH Dashboard Hermes Google AI Studio path is reachable.',
       );
@@ -1722,6 +1760,8 @@ This skill scans nvidia-smi output for processes using zero memory or running be
   }
 
   Widget _buildSettings() {
+    final globalSettings = Provider.of<SettingsNotifier>(context);
+
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
@@ -1741,14 +1781,24 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                   Expanded(
                     child: TextField(
                       controller: modelController,
-                      decoration: const InputDecoration(labelText: 'Google model', border: OutlineInputBorder(), isDense: true),
+                      decoration: InputDecoration(
+                        labelText: 'Google model',
+                        hintText: 'Global default: ${globalSettings.googleModel}',
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: TextField(
                       controller: baseUrlController,
-                      decoration: const InputDecoration(labelText: 'Gemini API base URL', border: OutlineInputBorder(), isDense: true),
+                      decoration: InputDecoration(
+                        labelText: 'Gemini API base URL',
+                        hintText: 'Global default: ${globalSettings.googleBaseUrl}',
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
                     ),
                   ),
                 ],
@@ -1759,6 +1809,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                 obscureText: hideSecrets,
                 decoration: InputDecoration(
                   labelText: 'Google AI Studio API key',
+                  hintText: globalSettings.googleApiKey.isNotEmpty ? 'Inherited from global' : 'Enter API Key',
                   border: const OutlineInputBorder(),
                   isDense: true,
                   suffixIcon: IconButton(
@@ -1773,7 +1824,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _HermesPill(icon: Icons.lock, label: 'API key: ${_maskedSecret(apiKeyController.text)}'),
+                  _HermesPill(icon: Icons.lock, label: 'API key: ${_maskedSecret(apiKeyController.text.isEmpty ? globalSettings.googleApiKey : apiKeyController.text)}'),
                   const _HermesPill(icon: Icons.cloud, label: 'Google AI Studio only'),
                   const _HermesPill(icon: Icons.integration_instructions, label: 'No OpenAI-compatible provider zoo'),
                   const _HermesPill(icon: Icons.storage, label: 'Non-secret settings in local JSON'),
@@ -4079,10 +4130,15 @@ if ($img -ne $null) {
     });
 
     try {
+      final globalSettings = Provider.of<SettingsNotifier>(context, listen: false);
+      final apiKeyVal = apiKey.trim().isEmpty ? globalSettings.googleApiKey : apiKey.trim();
+      final baseUrlVal = profile.baseUrl.trim().isEmpty ? globalSettings.googleBaseUrl : profile.baseUrl.trim();
+      final modelVal = profile.model.trim().isEmpty ? globalSettings.googleModel : profile.model.trim();
+
       final reply = await llmClient.generate(
-        apiKey: apiKey,
-        baseUrl: profile.baseUrl,
-        model: profile.model,
+        apiKey: apiKeyVal,
+        baseUrl: baseUrlVal,
+        model: modelVal,
         systemPrompt: 'Reply with "OK" if reachable.',
         userPrompt: 'Hello. Connection check.',
       );
@@ -4110,6 +4166,8 @@ if ($img -ne $null) {
 
   Future<void> _showApiProfileEditor([HermesApiProfile? profile]) async {
     final isEdit = profile != null;
+    final globalSettings = Provider.of<SettingsNotifier>(context, listen: false);
+
     final nameController = TextEditingController(text: profile?.name ?? '');
     final baseUrlController = TextEditingController(text: profile?.baseUrl ?? '');
     final modelController = TextEditingController(text: profile?.model ?? '');
@@ -4140,12 +4198,22 @@ if ($img -ne $null) {
                       const SizedBox(height: 12),
                       TextField(
                         controller: baseUrlController,
-                        decoration: const InputDecoration(labelText: 'Base URL', hintText: 'https://api.openai.com/v1', border: OutlineInputBorder(), isDense: true),
+                        decoration: InputDecoration(
+                          labelText: 'Base URL (optional)',
+                          hintText: 'Inherited: ${globalSettings.googleBaseUrl}',
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: modelController,
-                        decoration: const InputDecoration(labelText: 'Active Model Name', hintText: 'gpt-4o', border: OutlineInputBorder(), isDense: true),
+                        decoration: InputDecoration(
+                          labelText: 'Active Model Name (optional)',
+                          hintText: 'Inherited: ${globalSettings.googleModel}',
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
@@ -4167,7 +4235,8 @@ if ($img -ne $null) {
                         controller: keyController,
                         obscureText: isObscured,
                         decoration: InputDecoration(
-                          labelText: 'API Key (optional for local)',
+                          labelText: 'API Key (optional)',
+                          hintText: globalSettings.googleApiKey.isNotEmpty ? 'Inherited: global key set' : 'Inherited: none',
                           border: const OutlineInputBorder(),
                           isDense: true,
                           suffixIcon: IconButton(
@@ -4198,9 +4267,9 @@ if ($img -ne $null) {
       final supportedRaw = supportedModelsController.text.trim();
       final key = keyController.text.trim();
 
-      if (name.isEmpty || baseUrl.isEmpty || model.isEmpty) {
+      if (name.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Name, Base URL, and Model Name cannot be empty.')),
+          const SnackBar(content: Text('Name cannot be empty.')),
         );
         return;
       }
@@ -4209,8 +4278,8 @@ if ($img -ne $null) {
           ? supportedRaw.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList()
           : <String>[];
 
-      // Ensure active model is in the supported models list
-      if (supported.isNotEmpty && !supported.contains(model)) {
+      // Ensure active model is in the supported models list (if not empty)
+      if (model.isNotEmpty && supported.isNotEmpty && !supported.contains(model)) {
         supported.insert(0, model);
       }
 
@@ -4237,11 +4306,13 @@ if ($img -ne $null) {
       });
 
       final secureProfileKey = 'ssh_dashboard_hermes_api_key_$id';
-      if (key.isEmpty) {
-        await _secureStorage.delete(key: secureProfileKey);
-      } else {
-        await _secureStorage.write(key: secureProfileKey, value: key);
-      }
+      try {
+        if (key.isEmpty) {
+          await _secureStorage.delete(key: secureProfileKey);
+        } else {
+          await _secureStorage.write(key: secureProfileKey, value: key);
+        }
+      } catch (_) {}
 
       if (id == activeApiProfileId) {
         setState(() {
@@ -4291,7 +4362,9 @@ if ($img -ne $null) {
       }
     });
 
-    await _secureStorage.delete(key: 'ssh_dashboard_hermes_api_key_$profileId');
+    try {
+      await _secureStorage.delete(key: 'ssh_dashboard_hermes_api_key_$profileId');
+    } catch (_) {}
     await _saveHermesSettings();
   }
 
