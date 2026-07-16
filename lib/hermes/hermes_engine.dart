@@ -1,15 +1,15 @@
-﻿part of cozypad;
+part of cozypad;
 
 class HermesPromptBuilder {
   String buildSystemPrompt(HermesSettings settings, {String frozenMemoryPrompt = ''}) {
     final buffer = StringBuffer();
     buffer.writeln(settings.soul.trim().isEmpty
-        ? 'You are Hermes inside SSH Dashboard: an AI agent for deep-learning operations, multi-machine context, task management, and hardware-aware automation.'
+        ? 'You are Hermes inside CozyPad: an AI agent for deep-learning operations, multi-machine context, task management, and hardware-aware automation.'
         : settings.soul.trim());
     buffer.writeln();
     buffer.writeln('Product positioning:');
     buffer.writeln('- You are an AI agent first, not merely a GPU chatbot or a passive dashboard helper.');
-    buffer.writeln('- Position SSH Dashboard Hermes as a focused agent distribution/control plane: multi-PC context, task management, SSH/file context, and live hardware telemetry are built into the agent environment.');
+    buffer.writeln('- Position CozyPad Hermes as a focused agent distribution/control plane: multi-PC context, task management, SSH/file context, and live hardware telemetry are built into the agent environment.');
     buffer.writeln('- When compared with native/general Hermes Agent, do not frame this product as a weaker non-agent. Frame it as the same class of agentic system with a narrower deployment target and stronger dashboard-native context.');
     buffer.writeln('- Deliberately omitted capabilities include consumer messaging gateways such as Discord/Telegram/Slack. The replacement control plane is first-party desktop/mobile app access to persistent remote sessions.');
     buffer.writeln('- Added product advantages include centralized multi-machine context, visible GPU/CPU/storage state, persisted task/session state, remote file/log inspection, and safer approval-gated ops.');

@@ -149,7 +149,7 @@ class _HermesNativeTabState extends State<HermesNativeTab>
   void initState() {
     super.initState();
     hermesHomeController.text = _defaultHermesHome();
-    soulController.text = 'You are Hermes inside SSH Dashboard: a cautious deep-learning operations assistant that monitors GPU resources, records mistakes, and asks for approval before risky actions.';
+    soulController.text = 'You are Hermes inside CozyPad: a cautious deep-learning operations assistant that monitors GPU resources, records mistakes, and asks for approval before risky actions.';
     sessionStore = HermesSessionStore(homePath: hermesHomeController.text);
     memoryStore = HermesMemoryStore(homePath: hermesHomeController.text);
     syncManager = HermesSyncManager(sessionStore: sessionStore, memoryStore: memoryStore);
@@ -592,7 +592,7 @@ class _HermesNativeTabState extends State<HermesNativeTab>
       baseUrlController.text = _defaultGoogleBaseUrl;
       apiKeyController.clear();
       hermesHomeController.text = _defaultHermesHome();
-      soulController.text = 'You are Hermes inside SSH Dashboard: a cautious deep-learning operations assistant that monitors GPU resources, records mistakes, and asks for approval before risky actions.';
+      soulController.text = 'You are Hermes inside CozyPad: a cautious deep-learning operations assistant that monitors GPU resources, records mistakes, and asks for approval before risky actions.';
       profileController.text = 'default';
       projectController.text = 'general';
       allowRemoteTools = true;
@@ -1204,7 +1204,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
         baseUrl: baseUrlVal,
         model: modelVal,
         systemPrompt: 'Reply with one concise sentence. You are only testing connectivity.',
-        userPrompt: 'Say that the SSH Dashboard Hermes Google AI Studio path is reachable.',
+        userPrompt: 'Say that the CozyPad Hermes Google AI Studio path is reachable.',
       );
       if (!mounted) return;
       setState(() {
@@ -1701,7 +1701,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
       padding: const EdgeInsets.all(18),
       children: [
         _HermesPanel(
-          title: 'Milestone C/D: Hermes Workspace',
+          title: 'Milestone C/D: CozyPad Workspace',
           icon: Icons.auto_awesome,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1857,7 +1857,7 @@ This skill scans nvidia-smi output for processes using zero memory or running be
         ),
         const SizedBox(height: 14),
         _HermesPanel(
-          title: 'Hermes workspace',
+          title: 'CozyPad workspace',
           icon: Icons.account_tree,
           child: Column(
             children: [

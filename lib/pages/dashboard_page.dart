@@ -817,7 +817,7 @@ class _DashboardPageState extends State<DashboardPage>
                     colors: [AppPalette.primary, AppPalette.accent],
                   ).createShader(bounds),
                   child: Text(
-                    'Hermes Workspace Hub',
+                    'CozyPad',
                     style: Theme.of(context).textTheme.headlineLarge?.copyWith(
                           fontWeight: FontWeight.w900,
                           letterSpacing: -1.0,
