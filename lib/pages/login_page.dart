@@ -194,13 +194,15 @@ class _LoginPageState extends State<LoginPage> {
                                       connecting: provider.isConnecting,
                                       onTap: () => provider.connectWithProfile(profile),
                                       onEdit: () async {
-                                        final result = await showDialog<ConnectionProfile>(
+                                        final result = await showDialog<dynamic>(
                                           context: context,
                                           builder: (_) => ProfileEditorDialog(
                                             profile: profile,
                                           ),
                                         );
-                                        if (result != null) {
+                                        if (result == 'delete') {
+                                          await provider.deleteProfile(profile.id);
+                                        } else if (result is ConnectionProfile) {
                                           await provider.upsertProfile(result);
                                         }
                                       },

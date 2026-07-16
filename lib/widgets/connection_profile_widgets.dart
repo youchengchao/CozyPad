@@ -288,6 +288,39 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> {
         ),
       ),
       actions: [
+        if (widget.profile != null)
+          TextButton(
+            onPressed: () async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('刪除連線'),
+                  content: Text('確定要刪除「${widget.profile!.name.isEmpty ? widget.profile!.host : widget.profile!.name}」嗎？'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.of(context).pop(true),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppPalette.danger,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('刪除'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                if (context.mounted) {
+                  Navigator.of(context).pop('delete');
+                }
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: AppPalette.danger),
+            child: const Text('刪除連線'),
+          ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('取消'),

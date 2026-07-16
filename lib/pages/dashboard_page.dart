@@ -71,11 +71,13 @@ class _DashboardPageState extends State<DashboardPage>
   }
 
   void _editConnection(SSHProvider provider, ConnectionProfile profile) async {
-    final result = await showDialog<ConnectionProfile>(
+    final result = await showDialog<dynamic>(
       context: context,
       builder: (_) => ProfileEditorDialog(profile: profile),
     );
-    if (result != null) {
+    if (result == 'delete') {
+      await provider.deleteProfile(profile.id);
+    } else if (result is ConnectionProfile) {
       await provider.upsertProfile(result);
       if (provider.activeConnection?.id == profile.id) {
         provider.selectConnection(result);
@@ -241,18 +243,7 @@ class _DashboardPageState extends State<DashboardPage>
                   ),
                 ),
               const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.settings, size: 16),
-                color: AppPalette.textMuted,
-                tooltip: 'Settings / 設定',
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (context) => const _SettingsDialog(),
-                  );
-                },
-              ),
-              const SizedBox(width: 8),
+
               IconButton(
                 icon: const Icon(Icons.close, size: 16),
                 color: AppPalette.textMuted,
@@ -372,6 +363,17 @@ class _DashboardPageState extends State<DashboardPage>
             },
           ),
           const Spacer(),
+          // Settings button in Left Nav (Global)
+          _buildNavIconButton(
+            icon: Icons.settings,
+            tooltip: 'Settings / 設定',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => const _SettingsDialog(),
+              );
+            },
+          ),
           // Connection Status indicator button
           if (provider.isConnected)
             _buildNavIconButton(
@@ -886,6 +888,21 @@ class _DashboardPageState extends State<DashboardPage>
                   style: TextStyle(fontSize: 16, color: AppPalette.textSecondary, height: 1.5),
                 ),
                 const SizedBox(height: 32),
+                if (provider.isConnecting) ...[
+                  const LinearProgressIndicator(),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: Text(
+                      '正在連線至遠端主機...',
+                      style: TextStyle(fontSize: 12, color: AppPalette.textMuted),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+                if (provider.errorMessage != null) ...[
+                  ErrorCard(message: provider.errorMessage!),
+                  const SizedBox(height: 24),
+                ],
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -975,9 +992,45 @@ class _DashboardPageState extends State<DashboardPage>
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                IconButton(
-                                  icon: Icon(Icons.edit, size: 14, color: AppPalette.textMuted),
-                                  onPressed: () => _editConnection(provider, conn),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: Icon(Icons.edit, size: 14, color: AppPalette.textMuted),
+                                      tooltip: '編輯連線',
+                                      onPressed: () => _editConnection(provider, conn),
+                                    ),
+                                    IconButton(
+                                      icon: Icon(Icons.delete, size: 14, color: AppPalette.danger),
+                                      tooltip: '刪除連線',
+                                      onPressed: () async {
+                                        final confirm = await showDialog<bool>(
+                                          context: context,
+                                          builder: (context) => AlertDialog(
+                                            title: const Text('刪除連線'),
+                                            content: Text('確定要刪除「${conn.name.isEmpty ? conn.host : conn.name}」嗎？'),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () => Navigator.of(context).pop(false),
+                                                child: const Text('取消'),
+                                              ),
+                                              FilledButton(
+                                                onPressed: () => Navigator.of(context).pop(true),
+                                                style: FilledButton.styleFrom(
+                                                  backgroundColor: AppPalette.danger,
+                                                  foregroundColor: Colors.white,
+                                                ),
+                                                child: const Text('刪除'),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                        if (confirm == true) {
+                                          await provider.deleteProfile(conn.id);
+                                        }
+                                      },
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -1366,18 +1419,7 @@ class _DashboardPageState extends State<DashboardPage>
                   ),
                 ),
               const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.settings, size: 16),
-                color: AppPalette.textMuted,
-                tooltip: 'Settings / 設定',
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (context) => const _SettingsDialog(),
-                  );
-                },
-              ),
-              const SizedBox(width: 8),
+
               IconButton(
                 icon: const Icon(Icons.close, size: 16),
                 color: AppPalette.textMuted,
