@@ -1,4 +1,4 @@
-package com.example.ssh_dashboard
+package com.example.cozypad
 
 import io.flutter.embedding.android.FlutterActivity
 
