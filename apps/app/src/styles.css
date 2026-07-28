@@ -1,0 +1,122 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #101014;
+  color: #e6e6e6;
+  font-family: 'Segoe UI', 'Noto Sans TC', system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: #17171c;
+  border-bottom: 1px solid #26262e;
+}
+
+.brand {
+  font-weight: 700;
+  color: #ffb454;
+}
+
+.profile {
+  color: #9a9aa5;
+}
+
+.bridge-kind {
+  color: #5c5c66;
+  font-size: 12px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.status {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: #26262e;
+}
+
+.status-connected {
+  background: #143d2b;
+  color: #4ade80;
+}
+
+.status-connecting {
+  background: #3d3414;
+  color: #facc15;
+}
+
+.status-error {
+  background: #3d1414;
+  color: #f87171;
+}
+
+.topbar button {
+  background: #ffb454;
+  color: #1a1205;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.topbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.error-banner {
+  background: #3d1414;
+  color: #f87171;
+  padding: 6px 14px;
+}
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.placeholder {
+  margin: auto;
+  text-align: center;
+  color: #9a9aa5;
+}
+
+.placeholder .hint {
+  font-size: 12px;
+  color: #5c5c66;
+}
+
+.terminal-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  background: #101014;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+}

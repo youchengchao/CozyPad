@@ -1,0 +1,21 @@
+{
+  "name": "cozypad",
+  "private": true,
+  "version": "3.0.0-alpha.0",
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "dev": "pnpm --filter @cozypad/app dev",
+    "dev:desktop": "concurrently -k \"pnpm --filter @cozypad/app dev\" \"pnpm --filter @cozypad/desktop dev\"",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.4",
+    "eslint": "^10.8.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
+  }
+}
