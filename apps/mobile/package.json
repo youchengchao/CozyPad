@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "scripts": {
     "sync": "pnpm --filter @cozypad/app build && cap sync android",
-    "apk": "pnpm run sync && cd android && gradlew.bat assembleDebug"
+    "apk": "pnpm run sync && cd android && .\\gradlew.bat assembleDebug"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
