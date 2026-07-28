@@ -85,7 +85,7 @@ export function TerminalView({ profileId, onExit }: TerminalViewProps) {
         term.write(`\r\nfailed to open terminal: ${String(error)}\r\n`);
       });
 
-    const observer = new ResizeObserver(() => fit.fit());
+    const observer = new ResizeObserver(() => requestAnimationFrame(() => fit.fit()));
     observer.observe(container);
 
     return () => {
