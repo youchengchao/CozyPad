@@ -81,11 +81,33 @@ export const UsageItemSchema = z.object({
 });
 export type UsageItem = z.infer<typeof UsageItemSchema>;
 
+export const QuestionOptionSchema = z.object({
+  label: z.string().min(1),
+  description: z.string().optional(),
+});
+export type QuestionOption = z.infer<typeof QuestionOptionSchema>;
+
+/** Agent 問答機制：agent 丟出選項，使用者點選後回傳（類 Claude AskUserQuestion）。 */
+export const QuestionItemSchema = z.object({
+  ...chatItemBase,
+  kind: z.literal('question'),
+  prompt: z.string().min(1),
+  options: z.array(QuestionOptionSchema).min(2).max(6),
+  selectedIndex: z.number().int().min(0).nullable().default(null),
+});
+export type QuestionItem = z.infer<typeof QuestionItemSchema>;
+
 export const ChatItemSchema = z.discriminatedUnion('kind', [
   ChatMessageItemSchema,
   ToolCallItemSchema,
   FileDiffItemSchema,
   ApprovalItemSchema,
   UsageItemSchema,
+  QuestionItemSchema,
 ]);
 export type ChatItem = z.infer<typeof ChatItemSchema>;
+
+export interface SlashCommand {
+  name: string;
+  description: string;
+}

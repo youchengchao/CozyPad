@@ -5,15 +5,24 @@ import '@xterm/xterm/css/xterm.css';
 import { base64ToBytes, textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 
+export interface TerminalHandle {
+  paste(text: string): void;
+  run(command: string): void;
+  focus(): void;
+}
+
 interface TerminalViewProps {
   profileId: string;
   onExit?: () => void;
+  onHandle?: (handle: TerminalHandle | null) => void;
 }
 
-export function TerminalView({ profileId, onExit }: TerminalViewProps) {
+export function TerminalView({ profileId, onExit, onHandle }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onHandleRef = useRef(onHandle);
+  onHandleRef.current = onHandle;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -80,6 +89,16 @@ export function TerminalView({ profileId, onExit }: TerminalViewProps) {
         }
         terminalId = opened.terminalId;
         term.focus();
+        const paste = (text: string) => {
+          if (terminalId) {
+            bridge.writeTerminal({ terminalId, dataBase64: textToBase64(text) });
+          }
+        };
+        onHandleRef.current?.({
+          paste,
+          run: (command) => paste(command + '\r'),
+          focus: () => term.focus(),
+        });
       })
       .catch((error: unknown) => {
         term.write(`\r\nfailed to open terminal: ${String(error)}\r\n`);
@@ -90,6 +109,7 @@ export function TerminalView({ profileId, onExit }: TerminalViewProps) {
 
     return () => {
       disposed = true;
+      onHandleRef.current?.(null);
       observer.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();

@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   ConnectRequestSchema,
+  ConnectionProfileDraftSchema,
   ConnectionStateChangedSchema,
+  DeleteProfileRequestSchema,
   IpcChannels,
   TerminalCloseRequestSchema,
   TerminalClosedEventSchema,
@@ -36,6 +38,18 @@ const bridge: PlatformBridge = {
   kind: 'electron',
 
   listProfiles: () => ipcRenderer.invoke(IpcChannels.listProfiles),
+
+  saveProfile: (draft) =>
+    ipcRenderer.invoke(
+      IpcChannels.saveProfile,
+      ConnectionProfileDraftSchema.parse(draft),
+    ),
+
+  deleteProfile: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.deleteProfile,
+      DeleteProfileRequestSchema.parse(request),
+    ),
 
   connect: (request) =>
     ipcRenderer.invoke(IpcChannels.connect, ConnectRequestSchema.parse(request)),

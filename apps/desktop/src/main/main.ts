@@ -1,8 +1,9 @@
 import path from 'node:path';
-import { BrowserWindow, app, session } from 'electron';
-import type { ConnectionProfile } from '@cozypad/contracts';
+import { BrowserWindow, app, safeStorage, session } from 'electron';
 import { registerIpc } from './ipc';
-import { MockTransport } from './transport/mockTransport';
+import { MemoryProfileStore, ProfileStore } from './profileStore';
+import type { ProfileCrypto, ProfileStorePort } from './profileStore';
+import { MOCK_PROFILE, MockTransport } from './transport/mockTransport';
 import { Ssh2Transport } from './transport/ssh2Transport';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -22,27 +23,39 @@ const CSP = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-/**
- * 正式 profile 儲存（secure storage）在 Phase 3 才落地；
- * 在那之前可用環境變數指定一台真實主機做手動驗證。
- */
-function createTransport(): TransportPort {
+const electronProfileCrypto: ProfileCrypto = {
+  isAvailable: () => safeStorage.isEncryptionAvailable(),
+  encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
+  decrypt: (encrypted) => safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
+};
+
+async function createProfileStore(): Promise<ProfileStorePort> {
+  if (USE_MOCK) return new MemoryProfileStore([MOCK_PROFILE]);
+  const store = new ProfileStore(
+    path.join(app.getPath('userData'), 'profiles.json'),
+    electronProfileCrypto,
+  );
+  await store.load();
+
+  const envHost = process.env.COZYPAD_SSH_HOST;
+  if (envHost && store.list().length === 0) {
+    await store.save({
+      name: `env:${envHost}`,
+      host: envHost,
+      port: Number(process.env.COZYPAD_SSH_PORT ?? 22),
+      username: process.env.COZYPAD_SSH_USER ?? 'root',
+      password: process.env.COZYPAD_SSH_PASSWORD ?? undefined,
+      rememberPassword: false,
+    });
+  }
+  return store;
+}
+
+function createTransport(profileStore: ProfileStorePort): TransportPort {
   if (USE_MOCK) return new MockTransport();
-  const host = process.env.COZYPAD_SSH_HOST;
-  const profiles: ConnectionProfile[] = host
-    ? [
-        {
-          id: 'env-ssh',
-          name: `env:${host}`,
-          host,
-          port: Number(process.env.COZYPAD_SSH_PORT ?? 22),
-          username: process.env.COZYPAD_SSH_USER ?? 'root',
-        },
-      ]
-    : [];
   return new Ssh2Transport({
-    profiles,
-    getPassword: () => process.env.COZYPAD_SSH_PASSWORD ?? null,
+    getProfile: (profileId) => profileStore.get(profileId),
+    getPassword: (profileId) => profileStore.getPassword(profileId),
   });
 }
 
@@ -127,7 +140,7 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!DEV_URL) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       callback({
@@ -139,9 +152,10 @@ app.whenReady().then(() => {
     });
   }
 
-  const transport = createTransport();
+  const profileStore = await createProfileStore();
+  const transport = createTransport(profileStore);
   const win = createWindow();
-  registerIpc(transport, win);
+  registerIpc(transport, profileStore, win);
   win.on('closed', () => transport.dispose());
 
   if (SMOKE_TEST) void runSmokeTest(win);

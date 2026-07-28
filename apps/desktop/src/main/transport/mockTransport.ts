@@ -6,7 +6,7 @@ import type {
 import { MockPtyEngine } from '@cozypad/test-fixtures';
 import type { TransportEvents, TransportPort } from './TransportPort';
 
-const MOCK_PROFILE: ConnectionProfile = {
+export const MOCK_PROFILE: ConnectionProfile = {
   id: 'mock-electron',
   name: 'Mock Host (electron)',
   host: 'mock.local',
@@ -27,10 +27,6 @@ export class MockTransport implements TransportPort {
 
   setEvents(events: TransportEvents): void {
     this.events = events;
-  }
-
-  listProfiles(): Promise<ConnectionProfile[]> {
-    return Promise.resolve([MOCK_PROFILE]);
   }
 
   async connect(profileId: string): Promise<void> {

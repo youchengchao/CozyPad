@@ -1,4 +1,9 @@
-import type { AgentKind, AgentSessionSummary, ChatItem } from '@cozypad/contracts';
+import type {
+  AgentKind,
+  AgentSessionSummary,
+  ChatItem,
+  SlashCommand,
+} from '@cozypad/contracts';
 
 /** Agents workspace 的 UI 開發 fixtures；正式 adapter（Phase 2+）落地後由真實事件取代。 */
 
@@ -146,6 +151,18 @@ export const mockAgentTimelines: Record<string, ChatItem[]> = {
       status: 'running',
       timestamp: '2026-07-29T13:02:00+08:00',
     },
+    {
+      kind: 'question',
+      id: 'c2-4',
+      prompt: '前處理 worker 要用哪種並行架構？這會影響 checkpoint 的相容性。',
+      options: [
+        { label: 'multiprocessing spawn', description: '隔離最乾淨，Windows/Linux 行為一致（推薦）' },
+        { label: 'threads', description: '共享記憶體省 RAM，但受 GIL 限制' },
+        { label: 'asyncio', description: '適合 IO-bound，前處理是 CPU-bound 不建議' },
+      ],
+      selectedIndex: null,
+      timestamp: '2026-07-29T13:02:30+08:00',
+    },
   ],
   'claude-s3': [
     {
@@ -209,4 +226,23 @@ export const mockAgentInstallState: Record<AgentKind, 'installed' | 'not_detecte
   claude: 'installed',
   codex: 'installed',
   agy: 'not_detected',
+};
+
+export const mockSlashCommands: Record<AgentKind, SlashCommand[]> = {
+  claude: [
+    { name: 'clear', description: '清空目前對話' },
+    { name: 'compact', description: '壓縮歷史保留重點' },
+    { name: 'help', description: '列出可用指令' },
+    { name: 'model', description: '切換模型' },
+    { name: 'resume', description: '接續既有 session' },
+    { name: 'init', description: '初始化 CLAUDE.md' },
+    { name: 'review', description: '審查目前變更' },
+  ],
+  codex: [
+    { name: 'clear', description: '清空目前對話' },
+    { name: 'diff', description: '顯示工作區變更' },
+    { name: 'help', description: '列出可用指令' },
+    { name: 'model', description: '切換模型' },
+  ],
+  agy: [{ name: 'help', description: '列出可用指令' }],
 };

@@ -29,13 +29,14 @@ export interface Ssh2ClientLike {
 }
 
 export interface Ssh2TransportOptions {
-  profiles?: ConnectionProfile[];
+  getProfile?: (profileId: string) => ConnectionProfile | undefined;
   /** 密碼由 main process 持有，不經過 renderer（SPEC_V3 13）。 */
   getPassword?: (profileId: string) => Promise<string | null> | string | null;
   clientFactory?: () => Ssh2ClientLike;
 }
 
 const READY_TIMEOUT_MS = 12_000;
+const KEEPALIVE_INTERVAL_MS = 10_000;
 
 export class Ssh2Transport implements TransportPort {
   private events: TransportEvents | null = null;
@@ -43,11 +44,9 @@ export class Ssh2Transport implements TransportPort {
   private wasConnected = false;
   private readonly terminals = new Map<string, Ssh2ShellStreamLike>();
   private nextTerminalId = 1;
-  private readonly profiles: ConnectionProfile[];
   private readonly clientFactory: () => Ssh2ClientLike;
 
   constructor(private readonly options: Ssh2TransportOptions = {}) {
-    this.profiles = options.profiles ?? [];
     this.clientFactory =
       options.clientFactory ?? (() => new Client() as unknown as Ssh2ClientLike);
   }
@@ -56,12 +55,8 @@ export class Ssh2Transport implements TransportPort {
     this.events = events;
   }
 
-  listProfiles(): Promise<ConnectionProfile[]> {
-    return Promise.resolve(this.profiles);
-  }
-
   async connect(profileId: string): Promise<void> {
-    const profile = this.profiles.find((candidate) => candidate.id === profileId);
+    const profile = this.options.getProfile?.(profileId);
     if (!profile) throw new Error(`unknown profile: ${profileId}`);
     if (this.client) throw new Error('already connected; disconnect first');
 
@@ -102,6 +97,7 @@ export class Ssh2Transport implements TransportPort {
         username: profile.username,
         ...(password === null ? {} : { password }),
         readyTimeout: READY_TIMEOUT_MS,
+        keepaliveInterval: KEEPALIVE_INTERVAL_MS,
       });
     });
   }

@@ -134,7 +134,7 @@ async function connectedTransport(): Promise<{
   const client = new FakeClient();
   const recorder = createRecorder();
   const transport = new Ssh2Transport({
-    profiles: [PROFILE],
+    getProfile: () => PROFILE,
     getPassword: () => 'hunter2',
     clientFactory: () => client,
   });
@@ -148,7 +148,7 @@ async function connectedTransport(): Promise<{
 
 describe('Ssh2Transport', () => {
   it('rejects unknown profiles', async () => {
-    const transport = new Ssh2Transport({ profiles: [] });
+    const transport = new Ssh2Transport({ getProfile: () => undefined });
     await expect(transport.connect('nope')).rejects.toThrow('unknown profile');
   });
 
@@ -160,6 +160,7 @@ describe('Ssh2Transport', () => {
       username: 'ycchao',
       password: 'hunter2',
       readyTimeout: 12000,
+      keepaliveInterval: 10000,
     });
   });
 
@@ -175,7 +176,7 @@ describe('Ssh2Transport', () => {
     const client = new FakeClient();
     const recorder = createRecorder();
     const transport = new Ssh2Transport({
-      profiles: [PROFILE],
+      getProfile: () => PROFILE,
       clientFactory: () => client,
     });
     transport.setEvents(recorder);
@@ -281,7 +282,7 @@ describe('Ssh2Transport', () => {
   });
 
   it('refuses to open terminals when not connected', async () => {
-    const transport = new Ssh2Transport({ profiles: [PROFILE] });
+    const transport = new Ssh2Transport({ getProfile: () => PROFILE });
     await expect(
       transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 }),
     ).rejects.toThrow('not connected');

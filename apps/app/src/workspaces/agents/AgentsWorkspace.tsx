@@ -9,6 +9,7 @@ import {
   mockAgentInstallState,
   mockAgentSessions,
   mockAgentTimelines,
+  mockSlashCommands,
 } from '@cozypad/test-fixtures';
 import { ChatComposer } from './ChatComposer';
 import { ChatTimeline } from './ChatTimeline';
@@ -103,27 +104,18 @@ export function AgentsWorkspace() {
     }));
   };
 
-  const sendMessage = (text: string) => {
-    if (!selectedSessionId) return;
-    const sessionId = selectedSessionId;
-    const now = new Date().toISOString();
-    const userId = `local-${nextItemId}`;
-    const assistantId = `local-${nextItemId + 1}`;
-    setNextItemId((current) => current + 2);
+  const streamAssistant = (sessionId: string, reply: string) => {
+    const assistantId = `local-a${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     appendItems(sessionId, [
-      { kind: 'message', id: userId, role: 'user', text, timestamp: now },
       {
         kind: 'message',
         id: assistantId,
         role: 'assistant',
         text: '',
         streaming: true,
-        timestamp: now,
+        timestamp: new Date().toISOString(),
       },
     ]);
-    setDrafts((current) => ({ ...current, [sessionId]: '' }));
-
-    const reply = MOCK_REPLIES[agent];
     let cursor = 0;
     const interval = setInterval(() => {
       cursor = Math.min(cursor + 3, reply.length);
@@ -138,6 +130,81 @@ export function AgentsWorkspace() {
       }));
       if (done) clearInterval(interval);
     }, 30);
+  };
+
+  const appendUserMessage = (sessionId: string, text: string) => {
+    appendItems(sessionId, [
+      {
+        kind: 'message',
+        id: `local-u${nextItemId}`,
+        role: 'user',
+        text,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    setNextItemId((current) => current + 1);
+  };
+
+  const runSlashCommand = (sessionId: string, text: string) => {
+    const name = text.slice(1).split(/\s+/)[0] ?? '';
+    const known = mockSlashCommands[agent].find((command) => command.name === name);
+    if (name === 'clear') {
+      setTimelines((current) => ({ ...current, [sessionId]: [] }));
+      return;
+    }
+    appendUserMessage(sessionId, text);
+    if (name === 'help') {
+      const list = mockSlashCommands[agent]
+        .map((command) => `- \`/${command.name}\` — ${command.description}`)
+        .join('\n');
+      streamAssistant(sessionId, `可用指令：\n\n${list}`);
+      return;
+    }
+    if (known) {
+      streamAssistant(
+        sessionId,
+        `（mock）已執行 \`/${known.name}\`——真實行為將由 ${agent} adapter 提供（Phase 2+）。`,
+      );
+      return;
+    }
+    streamAssistant(sessionId, `未知指令 \`/${name}\`，輸入 \`/help\` 查看可用指令。`);
+  };
+
+  const sendMessage = (text: string) => {
+    if (!selectedSessionId) return;
+    const sessionId = selectedSessionId;
+    setDrafts((current) => ({ ...current, [sessionId]: '' }));
+    if (text.startsWith('/')) {
+      runSlashCommand(sessionId, text);
+      return;
+    }
+    appendUserMessage(sessionId, text);
+    streamAssistant(sessionId, MOCK_REPLIES[agent]);
+  };
+
+  const answerQuestion = (itemId: string, optionIndex: number) => {
+    if (!selectedSessionId) return;
+    const sessionId = selectedSessionId;
+    let chosenLabel: string | null = null;
+    setTimelines((current) => ({
+      ...current,
+      [sessionId]: (current[sessionId] ?? []).map((item) => {
+        if (item.id === itemId && item.kind === 'question') {
+          chosenLabel = item.options[optionIndex]?.label ?? null;
+          return { ...item, selectedIndex: optionIndex };
+        }
+        return item;
+      }),
+    }));
+    setTimeout(() => {
+      if (chosenLabel !== null) {
+        appendUserMessage(sessionId, chosenLabel);
+        streamAssistant(
+          sessionId,
+          `好，採用 **${chosenLabel}**。（mock）我會照這個方向繼續——真實 agent 會由 adapter 把選擇回傳（Phase 2+）。`,
+        );
+      }
+    }, 0);
   };
 
   const resolveApproval = (itemId: string, resolution: 'allowed' | 'denied') => {
@@ -254,10 +321,12 @@ export function AgentsWorkspace() {
                   sessionId={selectedSession.id}
                   items={timeline}
                   onResolveApproval={resolveApproval}
+                  onAnswerQuestion={answerQuestion}
                 />
                 <ChatComposer
                   agentLabel={AGENTS.find((entry) => entry.kind === agent)?.label ?? agent}
                   value={drafts[selectedSession.id] ?? ''}
+                  commands={mockSlashCommands[agent]}
                   onChange={(value) =>
                     setDrafts((current) => ({ ...current, [selectedSession.id]: value }))
                   }

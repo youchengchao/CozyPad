@@ -1,10 +1,13 @@
 import { useEffect, useRef } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { ChatItem } from '@cozypad/contracts';
 
 interface ChatTimelineProps {
   sessionId: string;
   items: ChatItem[];
   onResolveApproval(itemId: string, resolution: 'allowed' | 'denied'): void;
+  onAnswerQuestion(itemId: string, optionIndex: number): void;
 }
 
 function DiffBody({ diff }: { diff: string }) {
@@ -29,7 +32,12 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
-export function ChatTimeline({ sessionId, items, onResolveApproval }: ChatTimelineProps) {
+export function ChatTimeline({
+  sessionId,
+  items,
+  onResolveApproval,
+  onAnswerQuestion,
+}: ChatTimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const positions = useRef(new Map<string, number>());
   const lastSession = useRef<string | null>(null);
@@ -60,7 +68,13 @@ export function ChatTimeline({ sessionId, items, onResolveApproval }: ChatTimeli
                 className={`msg msg-${item.role}${item.streaming ? ' msg-streaming' : ''}`}
               >
                 <div className="msg-body">
-                  {item.text}
+                  {item.role === 'assistant' ? (
+                    <div className="markdown">
+                      <Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown>
+                    </div>
+                  ) : (
+                    item.text
+                  )}
                   {item.streaming ? <span className="caret" /> : null}
                 </div>
               </div>
@@ -121,6 +135,32 @@ export function ChatTimeline({ sessionId, items, onResolveApproval }: ChatTimeli
                     {item.resolution === 'allowed' ? 'Allowed' : 'Denied'}
                   </span>
                 )}
+              </div>
+            );
+          case 'question':
+            return (
+              <div key={item.id} className="card question-card">
+                <div className="question-prompt">{item.prompt}</div>
+                <div className="question-options">
+                  {item.options.map((option, index) => {
+                    const chosen = item.selectedIndex === index;
+                    const answered = item.selectedIndex !== null;
+                    return (
+                      <button
+                        key={option.label}
+                        className={`question-option${chosen ? ' question-option-chosen' : ''}`}
+                        disabled={answered}
+                        onClick={() => onAnswerQuestion(item.id, index)}
+                      >
+                        <span className="question-label">{option.label}</span>
+                        {option.description ? (
+                          <span className="question-desc">{option.description}</span>
+                        ) : null}
+                        {chosen ? <span className="question-check">✓</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             );
           case 'usage':

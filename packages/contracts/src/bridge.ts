@@ -1,7 +1,9 @@
 import type {
   ConnectRequest,
   ConnectionProfile,
+  ConnectionProfileDraft,
   ConnectionStateChanged,
+  DeleteProfileRequest,
 } from './connection';
 import type {
   TerminalCloseRequest,
@@ -25,6 +27,8 @@ export interface PlatformBridge {
   readonly kind: PlatformBridgeKind;
 
   listProfiles(): Promise<ConnectionProfile[]>;
+  saveProfile(draft: ConnectionProfileDraft): Promise<ConnectionProfile>;
+  deleteProfile(request: DeleteProfileRequest): Promise<void>;
   connect(request: ConnectRequest): Promise<void>;
   disconnect(request: ConnectRequest): Promise<void>;
   onConnectionState(listener: (event: ConnectionStateChanged) => void): Unsubscribe;

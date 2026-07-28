@@ -1,5 +1,7 @@
 export const IpcChannels = {
   listProfiles: 'cozypad:profiles:list',
+  saveProfile: 'cozypad:profiles:save',
+  deleteProfile: 'cozypad:profiles:delete',
   connect: 'cozypad:connection:connect',
   disconnect: 'cozypad:connection:disconnect',
   connectionState: 'cozypad:connection:state',

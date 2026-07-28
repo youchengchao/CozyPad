@@ -15,47 +15,93 @@ const MOCK_PROFILE: ConnectionProfile = {
   host: 'mock.local',
   port: 22,
   username: 'cozy',
+  hasPassword: true,
 };
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export interface MockBridgeExtras {
+  /** 模擬非預期斷線，供重連機制的 UI 驗證用。 */
+  simulateDrop(): void;
+}
+
 /** 純瀏覽器模式的 PlatformBridge：讓 UI 開發完全不需要 Electron 或真實主機。 */
-export function createMockBridge(): PlatformBridge {
+export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   const stateListeners = new Set<(event: ConnectionStateChanged) => void>();
   const outputListeners = new Set<(event: TerminalOutputEvent) => void>();
   const closedListeners = new Set<(event: TerminalClosedEvent) => void>();
   const terminals = new Map<string, MockPtyEngine>();
-  let connected = false;
+  let profiles: ConnectionProfile[] = [MOCK_PROFILE];
+  const passwords = new Map<string, string>([[MOCK_PROFILE.id, 'mock']]);
+  let connectedProfileId: string | null = null;
   let nextTerminalId = 1;
+  let nextProfileId = 1;
 
-  const emitState = (state: ConnectionState, error?: string): void => {
+  const emitState = (
+    profileId: string,
+    state: ConnectionState,
+    error?: string,
+  ): void => {
     const event: ConnectionStateChanged = {
-      profileId: MOCK_PROFILE.id,
+      profileId,
       state,
       ...(error === undefined ? {} : { error }),
     };
     stateListeners.forEach((listener) => listener(event));
   };
 
+  const closeAllTerminals = (): void => {
+    for (const engine of terminals.values()) engine.close();
+    terminals.clear();
+  };
+
   return {
     kind: 'mock',
 
-    listProfiles: () => Promise.resolve([MOCK_PROFILE]),
+    listProfiles: () => Promise.resolve([...profiles]),
 
-    async connect() {
-      emitState('connecting');
-      await delay(300);
-      connected = true;
-      emitState('connected');
+    saveProfile(draft) {
+      const id = draft.id ?? `mock-p${nextProfileId++}`;
+      if (draft.password) passwords.set(id, draft.password);
+      const profile: ConnectionProfile = {
+        id,
+        name: draft.name,
+        host: draft.host,
+        port: draft.port,
+        username: draft.username,
+        hasPassword: passwords.has(id),
+      };
+      profiles = [...profiles.filter((entry) => entry.id !== id), profile];
+      return Promise.resolve(profile);
     },
 
-    async disconnect() {
-      connected = false;
-      for (const engine of terminals.values()) engine.close();
-      terminals.clear();
-      emitState('disconnected');
+    deleteProfile({ profileId }) {
+      profiles = profiles.filter((profile) => profile.id !== profileId);
+      passwords.delete(profileId);
+      return Promise.resolve();
+    },
+
+    async connect({ profileId }) {
+      emitState(profileId, 'connecting');
+      await delay(300);
+      connectedProfileId = profileId;
+      emitState(profileId, 'connected');
+    },
+
+    async disconnect({ profileId }) {
+      connectedProfileId = null;
+      closeAllTerminals();
+      emitState(profileId, 'disconnected');
+    },
+
+    simulateDrop() {
+      if (connectedProfileId === null) return;
+      const profileId = connectedProfileId;
+      connectedProfileId = null;
+      closeAllTerminals();
+      emitState(profileId, 'disconnected');
     },
 
     onConnectionState(listener) {
@@ -64,7 +110,7 @@ export function createMockBridge(): PlatformBridge {
     },
 
     async openTerminal(request) {
-      if (!connected) throw new Error('mock bridge: not connected');
+      if (connectedProfileId === null) throw new Error('mock bridge: not connected');
       const terminalId = `mock-term-${nextTerminalId++}`;
       const engine = new MockPtyEngine(
         {

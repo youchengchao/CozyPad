@@ -116,6 +116,32 @@ export class MockPtyEngine {
       case 'uname':
         this.emit('CozyPad-Mock 1.0 x86_64 (no real host)\r\n');
         break;
+      case 'pwd':
+        this.emit('/home/cozy\r\n');
+        break;
+      case 'nvidia-smi':
+        this.emit(
+          [
+            '+-----------------------------------------------------------------------------+',
+            '| NVIDIA-SMI 555.42 (mock)      Driver Version: 555.42      CUDA Version: 12.5 |',
+            '|-------------------------------+----------------------+----------------------|',
+            '|   0  RTX 4090            On   | 00000000:01:00.0 Off |  36%   61C   18432MiB |',
+            '|   1  RTX 4090            On   | 00000000:02:00.0 Off |  34%   58C   18201MiB |',
+            '+-----------------------------------------------------------------------------+',
+            '',
+          ].join('\r\n'),
+        );
+        break;
+      case 'git status':
+        this.emit(
+          [
+            'On branch main',
+            'Changes not staged for commit:',
+            '  [31mmodified:   src/train.py[0m',
+            '',
+          ].join('\r\n'),
+        );
+        break;
       case 'demo': {
         const rows: string[] = [];
         for (let i = 0; i < 24; i++) {

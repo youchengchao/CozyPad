@@ -2,6 +2,8 @@ import { ipcMain } from 'electron';
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import {
   ConnectRequestSchema,
+  ConnectionProfileDraftSchema,
+  DeleteProfileRequestSchema,
   IpcChannels,
   TerminalCloseRequestSchema,
   TerminalInputSchema,
@@ -10,10 +12,15 @@ import {
   base64ToBytes,
   bytesToBase64,
 } from '@cozypad/contracts';
+import type { ProfileStorePort } from './profileStore';
 import type { TransportPort } from './transport/TransportPort';
 
 /** 所有 IPC 進出都經 Zod 驗證，且只接受主視窗的 sender（SPEC_V3 4.1、13）。 */
-export function registerIpc(transport: TransportPort, win: BrowserWindow): void {
+export function registerIpc(
+  transport: TransportPort,
+  profileStore: ProfileStorePort,
+  win: BrowserWindow,
+): void {
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   };
@@ -39,7 +46,17 @@ export function registerIpc(transport: TransportPort, win: BrowserWindow): void 
 
   ipcMain.handle(IpcChannels.listProfiles, (event) => {
     assertSender(event);
-    return transport.listProfiles();
+    return profileStore.list();
+  });
+
+  ipcMain.handle(IpcChannels.saveProfile, (event, raw: unknown) => {
+    assertSender(event);
+    return profileStore.save(ConnectionProfileDraftSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.deleteProfile, (event, raw: unknown) => {
+    assertSender(event);
+    return profileStore.remove(DeleteProfileRequestSchema.parse(raw).profileId);
   });
 
   ipcMain.handle(IpcChannels.connect, (event, raw: unknown) => {

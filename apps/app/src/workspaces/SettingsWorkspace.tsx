@@ -1,10 +1,14 @@
 import { PROTOCOL_VERSION } from '@cozypad/contracts';
+import { getBridge } from '../platform/bridge';
 
 interface SettingsWorkspaceProps {
   bridgeKind: string;
 }
 
 export function SettingsWorkspace({ bridgeKind }: SettingsWorkspaceProps) {
+  const bridge = getBridge();
+  const canSimulateDrop = 'simulateDrop' in bridge;
+
   return (
     <div className="settings-workspace">
       <div className="card">
@@ -14,6 +18,22 @@ export function SettingsWorkspace({ bridgeKind }: SettingsWorkspaceProps) {
           <span className="hint">Dark（淺色主題與縮放沿用 SPEC FR-09，Phase 6 移植）</span>
         </div>
       </div>
+
+      {canSimulateDrop ? (
+        <div className="card">
+          <h3>Developer (mock)</h3>
+          <div className="settings-row">
+            <span>斷線重連測試</span>
+            <button
+              onClick={() =>
+                (bridge as unknown as { simulateDrop(): void }).simulateDrop()
+              }
+            >
+              模擬非預期斷線
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="card">
         <h3>Connection</h3>
