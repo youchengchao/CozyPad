@@ -117,6 +117,9 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
             <div key={id} className="terminal-pane" hidden={active !== id}>
               <TerminalView
                 profileId={profileId}
+                // 遠端 session 結束（exit、tmux kill-session、process 死亡）時
+                // 本地分頁一併關閉，不留下空殼。
+                onExit={() => closeTab(id)}
                 onHandle={(handle) => {
                   if (handle) handles.current.set(id, handle);
                   else handles.current.delete(id);

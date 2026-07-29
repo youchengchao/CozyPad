@@ -2043,6 +2043,50 @@ button.danger:hover {
   cursor: default;
 }
 
+.install-log {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.install-row {
+  display: flex;
+  gap: 10px;
+}
+
+.install-stage {
+  flex-shrink: 0;
+  width: 68px;
+  color: var(--text-faint);
+}
+
+.install-message {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  color: var(--text-dim);
+}
+
+.install-done .install-stage,
+.install-done .install-message {
+  color: var(--green);
+}
+
+.install-failed .install-stage,
+.install-failed .install-message {
+  color: var(--red);
+}
+
+.install-error {
+  color: var(--red);
+  max-height: 160px;
+}
+
 /* ---------- mobile ---------- */
 
 @media (max-width: 820px) {

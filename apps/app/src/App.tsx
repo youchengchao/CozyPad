@@ -3,6 +3,7 @@ import type {
   ConnectionProfile,
   ConnectionState,
   HostKeyPromptEvent,
+  TmuxStatus,
 } from '@cozypad/contracts';
 import { getBridge } from './platform/bridge';
 import {
@@ -18,6 +19,7 @@ import {
   SettingsIcon,
   TerminalIcon,
 } from './components/icons';
+import { TmuxSetupDialog } from './components/TmuxSetupDialog';
 import { AgentsWorkspace } from './workspaces/agents/AgentsWorkspace';
 import { FilesWorkspace } from './workspaces/FilesWorkspace';
 import { MonitorWorkspace } from './workspaces/MonitorWorkspace';
@@ -49,6 +51,8 @@ export function App() {
   const [passwordPrompt, setPasswordPrompt] = useState<ConnectionProfile | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
   const [mockData, setMockData] = useState(false);
+  const [tmuxStatus, setTmuxStatus] = useState<TmuxStatus | null>(null);
+  const [tmuxPromptDismissed, setTmuxPromptDismissed] = useState(false);
   const [reconnect, setReconnect] = useState<{
     attempt: number;
     secondsLeft: number;
@@ -83,6 +87,15 @@ export function App() {
   useEffect(() => {
     void bridge.getAppInfo().then((info) => setMockData(info.mockData));
   }, [bridge]);
+
+  useEffect(
+    () =>
+      bridge.onTmuxStatus((status) => {
+        setTmuxStatus(status);
+        if (status.installed && status.satisfiesTarget) setTmuxPromptDismissed(false);
+      }),
+    [bridge],
+  );
 
   const doConnect = useCallback(
     (profileId: string) => {
@@ -309,6 +322,19 @@ export function App() {
           profile={passwordPrompt}
           onCancel={() => setPasswordPrompt(null)}
           onSubmit={(password, remember) => void submitPassword(password, remember)}
+        />
+      ) : null}
+      {tmuxStatus !== null &&
+      !tmuxPromptDismissed &&
+      state === 'connected' &&
+      !(tmuxStatus.installed && tmuxStatus.satisfiesTarget) ? (
+        <TmuxSetupDialog
+          status={tmuxStatus}
+          onDismiss={() => setTmuxPromptDismissed(true)}
+          onInstalled={(status) => {
+            setTmuxStatus(status);
+            setTmuxPromptDismissed(true);
+          }}
         />
       ) : null}
       {hostKeyPrompt ? (

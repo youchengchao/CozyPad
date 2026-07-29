@@ -1,0 +1,32 @@
+import { z } from 'zod';
+
+/** CozyPad 期望的 tmux 版本下限（低於此版本的 mouse 模式與 pane 格式行為不一致）。 */
+export const TMUX_TARGET_VERSION = '3.5a';
+
+export const TmuxStatusSchema = z.object({
+  installed: z.boolean(),
+  version: z.string().nullable(),
+  /** 可執行檔路徑；使用者層級安裝會在 ~/.local/bin/tmux。 */
+  path: z.string().nullable(),
+  userLevel: z.boolean(),
+  /** 版本是否達到 TMUX_TARGET_VERSION。 */
+  satisfiesTarget: z.boolean(),
+  targetVersion: z.string(),
+  /** 是否具備自動安裝所需的工具（curl/make/cc）。 */
+  canInstall: z.boolean(),
+  missingTools: z.array(z.string()),
+});
+export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
+
+export const TmuxInstallProgressSchema = z.object({
+  stage: z.enum(['starting', 'downloading', 'building', 'installing', 'verifying', 'done', 'failed']),
+  message: z.string(),
+});
+export type TmuxInstallProgress = z.infer<typeof TmuxInstallProgressSchema>;
+
+export const TmuxInstallResultSchema = z.object({
+  ok: z.boolean(),
+  status: TmuxStatusSchema,
+  log: z.string(),
+});
+export type TmuxInstallResult = z.infer<typeof TmuxInstallResultSchema>;

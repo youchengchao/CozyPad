@@ -19,6 +19,7 @@ import type {
 } from './files';
 import type { HostKeyDecision, HostKeyPromptEvent } from './hostkey';
 import type { RemoteSettings, RemoteSettingsPatch } from './remoteSettings';
+import type { TmuxInstallProgress, TmuxInstallResult, TmuxStatus } from './tmuxSetup';
 import type { TelemetrySnapshot } from './telemetry';
 import type {
   TerminalCloseRequest,
@@ -81,4 +82,10 @@ export interface PlatformBridge {
   /** 遠端主機上的專案設定；需要連線中。 */
   getRemoteSettings(): Promise<RemoteSettings>;
   setRemoteSettings(patch: RemoteSettingsPatch): Promise<RemoteSettings>;
+
+  /** tmux 佈建：連線後自動偵測，缺少或版本過舊時由 UI 詢問是否安裝。 */
+  getTmuxStatus(): Promise<TmuxStatus>;
+  installTmux(): Promise<TmuxInstallResult>;
+  onTmuxStatus(listener: (status: TmuxStatus) => void): Unsubscribe;
+  onTmuxInstallProgress(listener: (progress: TmuxInstallProgress) => void): Unsubscribe;
 }

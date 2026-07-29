@@ -24,6 +24,8 @@ import type { RemoteFilesPort } from './files/RemoteFilesPort';
 import type { HostKeyGate } from './hostKeys';
 import type { ProfileStorePort } from './profileStore';
 import type { RemoteSettingsPort } from './remoteSettingsService';
+import type { TmuxProvisionerPort } from './tmuxProvisioner';
+import type { TmuxSessionWatcher } from './tmuxWatcher';
 import type { TelemetrySource } from './telemetry/telemetryService';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -34,13 +36,24 @@ export interface IpcServices {
   telemetry: TelemetrySource;
   hostKeys: HostKeyGate | null;
   remoteSettings: RemoteSettingsPort;
+  tmuxProvisioner: TmuxProvisionerPort;
+  tmuxWatcher: TmuxSessionWatcher | null;
   mockData: boolean;
 }
 
 /** 所有 IPC 進出都經 Zod 驗證，且只接受主視窗的 sender（SPEC_V3 4.1、13）。 */
 export function registerIpc(services: IpcServices, win: BrowserWindow): void {
-  const { transport, profileStore, files, telemetry, hostKeys, remoteSettings, mockData } =
-    services;
+  const {
+    transport,
+    profileStore,
+    files,
+    telemetry,
+    hostKeys,
+    remoteSettings,
+    tmuxProvisioner,
+    tmuxWatcher,
+    mockData,
+  } = services;
 
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
@@ -53,9 +66,19 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
         telemetry.start(event.profileId, (snapshot) =>
           send(IpcChannels.telemetryUpdated, snapshot),
         );
+        // 連線後立即偵測 tmux，缺少或版本過舊時由 UI 詢問安裝。
+        void tmuxProvisioner
+          .status()
+          .then((status) => send(IpcChannels.tmuxStatusChanged, status))
+          .catch(() => undefined);
+        tmuxWatcher?.start({
+          onSessions: (sessions) => send(IpcChannels.tmuxSessionsChanged, sessions),
+        });
       }
       if (event.state === 'disconnected' || event.state === 'error') {
         telemetry.stop();
+        tmuxWatcher?.stop();
+        send(IpcChannels.tmuxSessionsChanged, []);
       }
     },
     onTerminalOutput: (terminalId, data) =>
@@ -193,6 +216,20 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
   ipcMain.handle(IpcChannels.remoteSettingsSet, (event, raw: unknown) => {
     assertSender(event);
     return remoteSettings.set(RemoteSettingsPatchSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.tmuxStatus, (event) => {
+    assertSender(event);
+    return tmuxProvisioner.status();
+  });
+
+  ipcMain.handle(IpcChannels.tmuxInstall, async (event) => {
+    assertSender(event);
+    const result = await tmuxProvisioner.install((progress) =>
+      send(IpcChannels.tmuxInstallProgress, progress),
+    );
+    send(IpcChannels.tmuxStatusChanged, result.status);
+    return result;
   });
 
   ipcMain.handle(IpcChannels.hostKeyDecision, (event, raw: unknown) => {

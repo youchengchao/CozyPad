@@ -5,6 +5,7 @@ import type {
   PlatformBridge,
   RemoteSettings,
   TelemetrySnapshot,
+  TmuxStatus,
   TerminalClosedEvent,
   TerminalOutputEvent,
 } from '@cozypad/contracts';
@@ -22,6 +23,17 @@ const MOCK_PROFILE: ConnectionProfile = {
   port: 22,
   username: 'cozy',
   hasPassword: true,
+};
+
+const MOCK_TMUX_STATUS: TmuxStatus = {
+  installed: true,
+  version: '3.5a',
+  path: '/usr/bin/tmux',
+  userLevel: false,
+  satisfiesTarget: true,
+  targetVersion: '3.5a',
+  canInstall: true,
+  missingTools: [],
 };
 
 function delay(ms: number): Promise<void> {
@@ -204,6 +216,16 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
       return () => undefined;
     },
     respondHostKey: () => Promise.resolve(),
+
+    getTmuxStatus: () => Promise.resolve({ ...MOCK_TMUX_STATUS }),
+    installTmux: () =>
+      Promise.resolve({ ok: true, status: { ...MOCK_TMUX_STATUS }, log: '' }),
+    onTmuxStatus() {
+      return () => undefined;
+    },
+    onTmuxInstallProgress() {
+      return () => undefined;
+    },
 
     getRemoteSettings: () => Promise.resolve({ ...remoteSettings }),
     setRemoteSettings: (patch) => {

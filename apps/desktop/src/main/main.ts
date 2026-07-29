@@ -8,6 +8,9 @@ import {
   TmuxRemoteSettings,
 } from './remoteSettingsService';
 import type { RemoteSettingsPort } from './remoteSettingsService';
+import { MockTmuxProvisioner, ShellTmuxProvisioner } from './tmuxProvisioner';
+import type { TmuxProvisionerPort } from './tmuxProvisioner';
+import { TmuxSessionWatcher } from './tmuxWatcher';
 import type { RemoteFilesPort } from './files/RemoteFilesPort';
 import { ShellRemoteFiles } from './files/shellRemoteFiles';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
@@ -75,6 +78,8 @@ interface MainServices {
   telemetry: TelemetrySource;
   hostKeys: HostKeyGate | null;
   remoteSettings: RemoteSettingsPort;
+  tmuxProvisioner: TmuxProvisionerPort;
+  tmuxWatcher: TmuxSessionWatcher | null;
 }
 
 async function createServices(
@@ -88,6 +93,8 @@ async function createServices(
       telemetry: new MockTelemetryGenerator(),
       hostKeys: null,
       remoteSettings: new MemoryRemoteSettings(),
+      tmuxProvisioner: new MockTmuxProvisioner(),
+      tmuxWatcher: null,
     };
   }
 
@@ -106,12 +113,15 @@ async function createServices(
   });
   const exec = (command: string, timeoutMs?: number) => transport.exec(command, timeoutMs);
 
+  const tmux = new TmuxRuntime(exec, TMUX_SOCKET);
   return {
     transport,
     files: new ShellRemoteFiles(exec),
     telemetry: new ShellTelemetry(exec),
     hostKeys,
-    remoteSettings: new TmuxRemoteSettings(new TmuxRuntime(exec, TMUX_SOCKET)),
+    remoteSettings: new TmuxRemoteSettings(tmux),
+    tmuxProvisioner: new ShellTmuxProvisioner(exec),
+    tmuxWatcher: new TmuxSessionWatcher(tmux),
   };
 }
 
@@ -218,6 +228,7 @@ app.whenReady().then(async () => {
   registerIpc({ ...services, profileStore, mockData: USE_MOCK }, win);
   win.on('closed', () => {
     services.telemetry.stop();
+    services.tmuxWatcher?.stop();
     services.transport.dispose();
   });
 

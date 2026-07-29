@@ -27,6 +27,11 @@ export const IpcChannels = {
   hostKeyDecision: 'cozypad:hostkey:decision',
   remoteSettingsGet: 'cozypad:remote-settings:get',
   remoteSettingsSet: 'cozypad:remote-settings:set',
+  tmuxStatus: 'cozypad:tmux:status',
+  tmuxStatusChanged: 'cozypad:tmux:status-changed',
+  tmuxInstall: 'cozypad:tmux:install',
+  tmuxInstallProgress: 'cozypad:tmux:install-progress',
+  tmuxSessionsChanged: 'cozypad:tmux:sessions-changed',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];
