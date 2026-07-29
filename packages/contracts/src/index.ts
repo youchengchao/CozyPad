@@ -9,3 +9,6 @@ export * from './telemetry';
 export * from './files';
 export * from './hostkey';
 export * from './research';
+export * from './shell';
+export * from './agentSession';
+export * from './agentEvents';

@@ -1,11 +1,10 @@
 import type { DirectoryListing, RemoteFileItem } from '@cozypad/contracts';
+import { quoteShellArg } from '@cozypad/contracts';
 import type { RemoteFilesPort } from './RemoteFilesPort';
 
 export type RemoteExec = (command: string, timeoutMs?: number) => Promise<string>;
 
-export function quoteShellArg(input: string): string {
-  return `'${input.replace(/'/g, `'"'"'`)}'`;
-}
+export { quoteShellArg };
 
 function throwOnErrorMarker(output: string, fallback: string): string {
   if (output.startsWith('__ERROR__')) {
