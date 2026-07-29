@@ -3,9 +3,15 @@ import { getBridge } from '../platform/bridge';
 
 interface SettingsWorkspaceProps {
   bridgeKind: string;
+  showPreview: boolean;
+  onTogglePreview(enabled: boolean): void;
 }
 
-export function SettingsWorkspace({ bridgeKind }: SettingsWorkspaceProps) {
+export function SettingsWorkspace({
+  bridgeKind,
+  showPreview,
+  onTogglePreview,
+}: SettingsWorkspaceProps) {
   const bridge = getBridge();
   const canSimulateDrop = 'simulateDrop' in bridge;
 
@@ -16,6 +22,23 @@ export function SettingsWorkspace({ bridgeKind }: SettingsWorkspaceProps) {
         <div className="settings-row">
           <span>Theme</span>
           <span className="hint">Dark（淺色主題與縮放沿用 SPEC FR-09，Phase 6 移植）</span>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>Preview features</h3>
+        <div className="settings-row">
+          <span>顯示預覽工作區（Agents、Research）</span>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={showPreview}
+              onChange={(event) => onTogglePreview(event.target.checked)}
+            />
+            <span className="hint">
+              尚未接上真實 agent／runner 的 mock 介面，demo 用
+            </span>
+          </label>
         </div>
       </div>
 

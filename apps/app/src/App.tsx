@@ -27,20 +27,53 @@ import { TerminalWorkspace } from './workspaces/TerminalWorkspace';
 
 type WorkspaceId = 'agents' | 'research' | 'terminal' | 'files' | 'monitor' | 'settings';
 
-const NAV_ITEMS: { id: WorkspaceId; label: string; icon: () => React.ReactElement }[] = [
-  { id: 'agents', label: 'Agents', icon: () => <AgentsIcon /> },
-  { id: 'research', label: 'Research', icon: () => <ResearchIcon /> },
+interface NavItem {
+  id: WorkspaceId;
+  label: string;
+  icon: () => React.ReactElement;
+  /** 預覽工作區：純 mock 的未來功能，prototype 預設隱藏（Settings 可開）。 */
+  preview?: boolean;
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'agents', label: 'Agents', icon: () => <AgentsIcon />, preview: true },
+  { id: 'research', label: 'Research', icon: () => <ResearchIcon />, preview: true },
   { id: 'terminal', label: 'Terminal', icon: () => <TerminalIcon /> },
   { id: 'files', label: 'Files', icon: () => <FilesIcon /> },
   { id: 'monitor', label: 'Monitor', icon: () => <MonitorIcon /> },
   { id: 'settings', label: 'Settings', icon: () => <SettingsIcon /> },
 ];
 
+const PREVIEW_FLAG_KEY = 'cozypad.showPreviewWorkspaces';
+
+function loadPreviewFlag(): boolean {
+  try {
+    return localStorage.getItem(PREVIEW_FLAG_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 const RECONNECT_DELAYS_MS = [2000, 5000, 10000];
 
 export function App() {
   const bridge = useMemo(() => getBridge(), []);
-  const [workspace, setWorkspace] = useState<WorkspaceId>('agents');
+  const [showPreview, setShowPreview] = useState(loadPreviewFlag);
+  const [workspace, setWorkspace] = useState<WorkspaceId>(() =>
+    loadPreviewFlag() ? 'agents' : 'terminal',
+  );
+
+  const togglePreview = (enabled: boolean) => {
+    setShowPreview(enabled);
+    try {
+      localStorage.setItem(PREVIEW_FLAG_KEY, enabled ? '1' : '0');
+    } catch {
+      // localStorage 不可用時只影響本次啟動的記憶
+    }
+    if (!enabled && (workspace === 'agents' || workspace === 'research')) {
+      setWorkspace('terminal');
+    }
+  };
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [state, setState] = useState<ConnectionState>('disconnected');
@@ -247,12 +280,12 @@ export function App() {
       {error !== null && !reconnect ? <div className="error-banner">{error}</div> : null}
       <div className="shell">
         <nav className="nav-rail">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) => showPreview || item.preview !== true).map((item) => (
             <button
               key={item.id}
               className={`nav-item${workspace === item.id ? ' nav-item-active' : ''}`}
               onClick={() => setWorkspace(item.id)}
-              title={item.label}
+              title={item.preview === true ? `${item.label}（預覽）` : item.label}
             >
               {item.icon()}
               <span className="nav-label">{item.label}</span>
@@ -279,7 +312,11 @@ export function App() {
             <MonitorWorkspace connected={state === 'connected'} />
           </section>
           <section className="workspace-page" hidden={workspace !== 'settings'}>
-            <SettingsWorkspace bridgeKind={bridge.kind} />
+            <SettingsWorkspace
+              bridgeKind={bridge.kind}
+              showPreview={showPreview}
+              onTogglePreview={togglePreview}
+            />
           </section>
         </main>
       </div>
