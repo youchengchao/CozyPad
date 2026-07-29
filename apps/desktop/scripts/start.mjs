@@ -12,11 +12,14 @@ const repoRoot = path.resolve(pkgRoot, '..', '..');
 const node = process.execPath;
 execSync(`"${node}" esbuild.mjs`, { stdio: 'inherit', cwd: pkgRoot });
 
-if (!existsSync(path.join(repoRoot, 'apps', 'app', 'dist', 'index.html'))) {
-  const appRoot = path.join(repoRoot, 'apps', 'app');
-  const viteBin = path.join(appRoot, 'node_modules', 'vite', 'bin', 'vite.js');
-  execSync(`"${node}" "${viteBin}" build`, { stdio: 'inherit', cwd: appRoot });
+// 一律重建 renderer，避免雙擊啟動時載到舊版畫面（Vite 建置約 2-3 秒）。
+const appRoot = path.join(repoRoot, 'apps', 'app');
+const viteBin = path.join(appRoot, 'node_modules', 'vite', 'bin', 'vite.js');
+if (!existsSync(viteBin)) {
+  console.error('找不到 vite，請先在專案根目錄執行 pnpm install');
+  process.exit(1);
 }
+execSync(`"${node}" "${viteBin}" build`, { stdio: 'inherit', cwd: appRoot });
 
 const child = spawn(String(electronPath), ['.'], {
   cwd: pkgRoot,
