@@ -186,6 +186,45 @@ ${this.tmux()} capture-pane -p -J -t ${quoteShellArg(target)} -S -${clamped}
     return throwOnError(await this.exec(command, 5000), 'tmux capture failed');
   }
 
+  /**
+   * 讀取 tmux 全域 mouse 模式（滾輪捲動 / 滑鼠選取）。
+   * 沒有執行中的 server 時退回讀 ~/.tmux.conf 內 CozyPad 管理區塊。
+   */
+  async getMouseMode(): Promise<boolean> {
+    const command = `mode="$(${this.tmux()} show-options -gv mouse 2>/dev/null || true)"
+if [ -z "$mode" ]; then
+  mode="$(sed -n 's/^set -g mouse \\(on\\|off\\)$/\\1/p' "$HOME/.tmux.conf" 2>/dev/null | tail -n 1)"
+fi
+printf '__MOUSE__\\t%s\\n' "\${mode:-off}"
+`;
+    const output = await this.exec(command, 5000);
+    return /__MOUSE__\ton/.test(output);
+  }
+
+  /**
+   * 設定 tmux mouse 模式：立即套用到執行中的 server，並寫入 ~/.tmux.conf
+   * 的 CozyPad 管理區塊（冪等；不動使用者其他設定）。
+   */
+  async setMouseMode(enabled: boolean): Promise<void> {
+    const mode = enabled ? 'on' : 'off';
+    const command = `mode=${mode}
+conf="$HOME/.tmux.conf"
+tmp="$(mktemp)" || { echo "__ERROR__\tcannot create temp file"; exit 1; }
+if [ -f "$conf" ]; then
+  awk 'BEGIN{skip=0}
+       /^# >>> cozypad managed >>>$/{skip=1}
+       skip==0{print}
+       /^# <<< cozypad managed <<<$/{skip=0}' "$conf" > "$tmp"
+fi
+printf '# >>> cozypad managed >>>\\nset -g mouse %s\\n# <<< cozypad managed <<<\\n' "$mode" >> "$tmp"
+mv -- "$tmp" "$conf" || { echo "__ERROR__\tcannot write $conf"; exit 1; }
+${this.tmux()} set-option -g mouse "$mode" 2>/dev/null || true
+printf '__OK__\\t%s\\n' "$mode"
+`;
+    const output = await this.exec(command, 8000);
+    throwOnError(output, 'failed to set tmux mouse mode');
+  }
+
   async hasSession(target: string): Promise<boolean> {
     const command = `${this.tmux()} has-session -t ${quoteShellArg(target)} 2>/dev/null && echo yes || echo no
 `;

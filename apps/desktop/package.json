@@ -16,6 +16,7 @@
     "@cozypad/contracts": "workspace:*",
     "@cozypad/telemetry": "workspace:*",
     "@cozypad/test-fixtures": "workspace:*",
+    "@cozypad/tmux-runtime": "workspace:*",
     "ssh2": "^1.17.0"
   },
   "devDependencies": {

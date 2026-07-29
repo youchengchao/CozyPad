@@ -13,6 +13,7 @@ import {
   HostKeyDecisionSchema,
   HostKeyPromptEventSchema,
   IpcChannels,
+  RemoteSettingsPatchSchema,
   TelemetrySnapshotSchema,
   TerminalCloseRequestSchema,
   TerminalClosedEventSchema,
@@ -137,6 +138,14 @@ const bridge: PlatformBridge = {
 
   respondHostKey: (decision) =>
     ipcRenderer.invoke(IpcChannels.hostKeyDecision, HostKeyDecisionSchema.parse(decision)),
+
+  getRemoteSettings: () => ipcRenderer.invoke(IpcChannels.remoteSettingsGet),
+
+  setRemoteSettings: (patch) =>
+    ipcRenderer.invoke(
+      IpcChannels.remoteSettingsSet,
+      RemoteSettingsPatchSchema.parse(patch),
+    ),
 };
 
 contextBridge.exposeInMainWorld('cozypad', bridge);

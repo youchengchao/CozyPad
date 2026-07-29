@@ -3,6 +3,7 @@ import type {
   ConnectionState,
   ConnectionStateChanged,
   PlatformBridge,
+  RemoteSettings,
   TelemetrySnapshot,
   TerminalClosedEvent,
   TerminalOutputEvent,
@@ -46,6 +47,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   let connectedProfileId: string | null = null;
   let nextTerminalId = 1;
   let nextProfileId = 1;
+  let remoteSettings: RemoteSettings = { tmuxMouseMode: true, tmuxSocket: 'default' };
 
   const emitState = (
     profileId: string,
@@ -202,5 +204,11 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
       return () => undefined;
     },
     respondHostKey: () => Promise.resolve(),
+
+    getRemoteSettings: () => Promise.resolve({ ...remoteSettings }),
+    setRemoteSettings: (patch) => {
+      remoteSettings = { ...remoteSettings, ...patch };
+      return Promise.resolve({ ...remoteSettings });
+    },
   };
 }

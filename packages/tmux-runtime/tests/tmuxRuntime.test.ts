@@ -101,6 +101,33 @@ describe('TmuxRuntime', () => {
     expect(commands[0]).toContain('-S -500');
   });
 
+  it('reads mouse mode from the running server', async () => {
+    const { exec } = fakeExec(['__MOUSE__\ton\n']);
+    await expect(new TmuxRuntime(exec).getMouseMode()).resolves.toBe(true);
+  });
+
+  it('reports mouse mode off when unset', async () => {
+    const { exec } = fakeExec(['__MOUSE__\toff\n']);
+    await expect(new TmuxRuntime(exec).getMouseMode()).resolves.toBe(false);
+  });
+
+  it('setMouseMode applies live and persists a managed block in ~/.tmux.conf', async () => {
+    const { exec, commands } = fakeExec(['__OK__\ton\n']);
+    await new TmuxRuntime(exec).setMouseMode(true);
+    const command = commands[0]!;
+    expect(command).toContain('mode=on');
+    expect(command).toContain('# >>> cozypad managed >>>');
+    expect(command).toContain('set-option -g mouse "$mode"');
+    // 既有設定必須保留：只移除自己的區塊再重寫。
+    expect(command).toContain('awk');
+    expect(command).toContain('$HOME/.tmux.conf');
+  });
+
+  it('setMouseMode surfaces write failures', async () => {
+    const { exec } = fakeExec(['__ERROR__\tcannot write /home/y/.tmux.conf\n']);
+    await expect(new TmuxRuntime(exec).setMouseMode(false)).rejects.toThrow('cannot write');
+  });
+
   it('uses a named socket when provided', async () => {
     const { exec, commands } = fakeExec(['no']);
     const runtime = new TmuxRuntime(exec, 'cozypad');

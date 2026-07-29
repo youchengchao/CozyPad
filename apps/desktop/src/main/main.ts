@@ -2,6 +2,12 @@ import path from 'node:path';
 import { BrowserWindow, app, safeStorage, session } from 'electron';
 import { IpcChannels } from '@cozypad/contracts';
 import { MockRemoteFs, MockTelemetryGenerator } from '@cozypad/test-fixtures';
+import { TmuxRuntime } from '@cozypad/tmux-runtime';
+import {
+  MemoryRemoteSettings,
+  TmuxRemoteSettings,
+} from './remoteSettingsService';
+import type { RemoteSettingsPort } from './remoteSettingsService';
 import type { RemoteFilesPort } from './files/RemoteFilesPort';
 import { ShellRemoteFiles } from './files/shellRemoteFiles';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
@@ -15,6 +21,8 @@ import { Ssh2Transport } from './transport/ssh2Transport';
 import type { TransportPort } from './transport/TransportPort';
 
 const DEV_URL = process.env.COZYPAD_DEV_URL;
+/** 所有 agent conversation session 都開在這個 socket（SPEC_V3 §6）。 */
+const TMUX_SOCKET = process.env.COZYPAD_TMUX_SOCKET ?? 'default';
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const USE_MOCK = process.env.COZYPAD_MOCK === '1' || SMOKE_TEST;
 
@@ -66,6 +74,7 @@ interface MainServices {
   files: RemoteFilesPort;
   telemetry: TelemetrySource;
   hostKeys: HostKeyGate | null;
+  remoteSettings: RemoteSettingsPort;
 }
 
 async function createServices(
@@ -78,6 +87,7 @@ async function createServices(
       files: new MockRemoteFs(),
       telemetry: new MockTelemetryGenerator(),
       hostKeys: null,
+      remoteSettings: new MemoryRemoteSettings(),
     };
   }
 
@@ -101,6 +111,7 @@ async function createServices(
     files: new ShellRemoteFiles(exec),
     telemetry: new ShellTelemetry(exec),
     hostKeys,
+    remoteSettings: new TmuxRemoteSettings(new TmuxRuntime(exec, TMUX_SOCKET)),
   };
 }
 

@@ -289,7 +289,11 @@ export function App() {
             />
           </section>
           <section className="workspace-page" hidden={workspace !== 'settings'}>
-            <SettingsWorkspace bridgeKind={bridge.kind} />
+            <SettingsWorkspace
+              bridgeKind={bridge.kind}
+              mockData={mockData}
+              connected={state === 'connected'}
+            />
           </section>
         </main>
       </div>

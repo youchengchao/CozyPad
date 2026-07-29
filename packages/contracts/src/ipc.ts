@@ -25,6 +25,8 @@ export const IpcChannels = {
   fsDelete: 'cozypad:fs:delete',
   hostKeyPrompt: 'cozypad:hostkey:prompt',
   hostKeyDecision: 'cozypad:hostkey:decision',
+  remoteSettingsGet: 'cozypad:remote-settings:get',
+  remoteSettingsSet: 'cozypad:remote-settings:set',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

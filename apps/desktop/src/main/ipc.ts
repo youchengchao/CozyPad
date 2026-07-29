@@ -12,6 +12,7 @@ import {
   FsWriteRequestSchema,
   HostKeyDecisionSchema,
   IpcChannels,
+  RemoteSettingsPatchSchema,
   TerminalCloseRequestSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
@@ -22,6 +23,7 @@ import {
 import type { RemoteFilesPort } from './files/RemoteFilesPort';
 import type { HostKeyGate } from './hostKeys';
 import type { ProfileStorePort } from './profileStore';
+import type { RemoteSettingsPort } from './remoteSettingsService';
 import type { TelemetrySource } from './telemetry/telemetryService';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -31,12 +33,14 @@ export interface IpcServices {
   files: RemoteFilesPort;
   telemetry: TelemetrySource;
   hostKeys: HostKeyGate | null;
+  remoteSettings: RemoteSettingsPort;
   mockData: boolean;
 }
 
 /** 所有 IPC 進出都經 Zod 驗證，且只接受主視窗的 sender（SPEC_V3 4.1、13）。 */
 export function registerIpc(services: IpcServices, win: BrowserWindow): void {
-  const { transport, profileStore, files, telemetry, hostKeys, mockData } = services;
+  const { transport, profileStore, files, telemetry, hostKeys, remoteSettings, mockData } =
+    services;
 
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
@@ -179,6 +183,16 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
   ipcMain.handle(IpcChannels.fsDelete, (event, raw: unknown) => {
     assertSender(event);
     return files.remove(FsPathRequestSchema.parse(raw).path);
+  });
+
+  ipcMain.handle(IpcChannels.remoteSettingsGet, (event) => {
+    assertSender(event);
+    return remoteSettings.get();
+  });
+
+  ipcMain.handle(IpcChannels.remoteSettingsSet, (event, raw: unknown) => {
+    assertSender(event);
+    return remoteSettings.set(RemoteSettingsPatchSchema.parse(raw));
   });
 
   ipcMain.handle(IpcChannels.hostKeyDecision, (event, raw: unknown) => {

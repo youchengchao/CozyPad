@@ -240,6 +240,19 @@ tmux 不負責：
 - 讓 `capture-pane` 成為主要聊天資料源。
 - 從 ANSI 畫面推測 approval、diff 或 tool result。
 
+### 6.1 強制規則與遠端設定
+
+- **所有 agent conversation session 一律在 tmux 中啟動**，不得以直接 SSH exec
+  或背景 process 取代；CozyPad 使用單一受管 socket（預設 `default`，可由
+  `COZYPAD_TMUX_SOCKET` 覆寫）。
+- 使用者的 tmux 個人化行為（如滑鼠滾輪捲動 pane 歷史）屬**遠端設定**：由 CozyPad
+  的 Settings → 遠端設定切換，寫入 `~/.tmux.conf` 的 CozyPad 管理區塊
+  （`# >>> cozypad managed >>>`）並即時套用，不覆寫使用者其他設定。
+- 設定分兩層：**遠端設定**（存在主機、跨裝置一致，如 tmux 選項、socket）與
+  **Desktop 設定**（只影響本機 UI，如主題、字型）。
+- `smux`（多 agent 討論模式）為後續項目，不阻擋 Phase 2/3；其 session 同樣必須
+  建立在 tmux 之上。
+
 `capture-pane` 只能用於：
 
 - Terminal fallback。

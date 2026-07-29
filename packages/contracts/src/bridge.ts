@@ -18,6 +18,7 @@ import type {
   FsWriteRequest,
 } from './files';
 import type { HostKeyDecision, HostKeyPromptEvent } from './hostkey';
+import type { RemoteSettings, RemoteSettingsPatch } from './remoteSettings';
 import type { TelemetrySnapshot } from './telemetry';
 import type {
   TerminalCloseRequest,
@@ -76,4 +77,8 @@ export interface PlatformBridge {
 
   onHostKeyPrompt(listener: (event: HostKeyPromptEvent) => void): Unsubscribe;
   respondHostKey(decision: HostKeyDecision): Promise<void>;
+
+  /** 遠端主機上的專案設定；需要連線中。 */
+  getRemoteSettings(): Promise<RemoteSettings>;
+  setRemoteSettings(patch: RemoteSettingsPatch): Promise<RemoteSettings>;
 }
