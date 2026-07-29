@@ -9,10 +9,13 @@ const electronPath = require('electron');
 const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
 const repoRoot = path.resolve(pkgRoot, '..', '..');
 
-execSync('node esbuild.mjs', { stdio: 'inherit', cwd: pkgRoot });
+const node = process.execPath;
+execSync(`"${node}" esbuild.mjs`, { stdio: 'inherit', cwd: pkgRoot });
 
 if (!existsSync(path.join(repoRoot, 'apps', 'app', 'dist', 'index.html'))) {
-  execSync('pnpm --filter @cozypad/app build', { stdio: 'inherit', cwd: repoRoot });
+  const appRoot = path.join(repoRoot, 'apps', 'app');
+  const viteBin = path.join(appRoot, 'node_modules', 'vite', 'bin', 'vite.js');
+  execSync(`"${node}" "${viteBin}" build`, { stdio: 'inherit', cwd: appRoot });
 }
 
 const child = spawn(String(electronPath), ['.'], {

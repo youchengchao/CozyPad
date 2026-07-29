@@ -1,7 +1,8 @@
 @echo off
-rem CozyPad desktop - mock demo mode (no real host needed). Double-click to launch.
-set "PATH=C:\Program Files\nodejs;%APPDATA%\npm;%PATH%"
+setlocal
 cd /d "%~dp0"
+set "NODE=C:\Program Files\nodejs\node.exe"
+if not exist "%NODE%" set "NODE=node"
 set COZYPAD_MOCK=1
-call pnpm --filter @cozypad/desktop start
+"%NODE%" apps\desktop\scripts\start.mjs
 if errorlevel 1 pause
