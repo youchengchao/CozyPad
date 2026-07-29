@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "dev": "node scripts/dev.mjs",
+    "dev:ssh": "node scripts/dev.mjs --ssh",
     "start": "node scripts/start.mjs",
     "smoke": "node scripts/smoke.mjs",
     "typecheck": "tsc --noEmit",

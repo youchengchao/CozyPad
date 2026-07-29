@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "pnpm --filter @cozypad/app dev",
     "dev:desktop": "concurrently -k \"pnpm --filter @cozypad/app dev\" \"pnpm --filter @cozypad/desktop dev\"",
+    "dev:desktop:ssh": "concurrently -k \"pnpm --filter @cozypad/app dev\" \"pnpm --filter @cozypad/desktop dev:ssh\"",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
