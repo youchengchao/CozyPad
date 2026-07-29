@@ -8,3 +8,4 @@ export * from './chat';
 export * from './telemetry';
 export * from './files';
 export * from './hostkey';
+export * from './research';

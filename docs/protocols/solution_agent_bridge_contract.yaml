@@ -1,0 +1,204 @@
+schema_version: 1
+name: cozypad_solution_agent_bridge
+status: proposed_reference_contract
+
+trust_boundary:
+  cozy_pad:
+    owns:
+      - user_interface
+      - interactive_ssh
+      - file_browser
+      - terminal
+      - persistent_tmux_sessions
+      - live_hardware_telemetry
+      - user_visible_approval
+    must_not_own:
+      - orchestrator_registry_mutation
+      - long_job_completion_judgment
+      - hidden_worker_fallback
+  solution_agent:
+    owns:
+      - task_and_run_identity
+      - task_state_machine
+      - dependency_readiness
+      - workplace_binding
+      - scheduler_policy
+      - remote_job_lifecycle
+      - heartbeat_and_terminal_state
+      - artifact_collection
+      - durable_action_requests
+  model:
+    owns:
+      - proposals
+      - explanations
+      - bounded_structured_intent
+    must_not_own:
+      - credentials
+      - approval
+      - direct_shell_execution
+      - registry_mutation
+      - claim_upgrade
+
+transport:
+  phase_1:
+    kind: local_process_or_localhost_only
+    authentication: operating_system_user_boundary
+    network_exposure: loopback_only
+    mutation_allowed: false
+  later:
+    kind: localhost_json_api
+    authentication: short_lived_local_capability
+    network_exposure: loopback_only
+    mutation_allowed: action_requests_only
+
+read_models:
+  task_summary:
+    required:
+      - task_id
+      - status
+      - title
+      - worker
+      - updated_at
+    optional:
+      - run_id
+      - attempt
+      - line
+      - batch
+      - blocked_by
+      - used_partial_inputs
+      - summary_short
+  remote_run_summary:
+    required:
+      - task_id
+      - run_id
+      - status
+      - workplace_id
+    optional:
+      - pid
+      - run_state
+      - heartbeat_age_seconds
+      - exit_code
+      - stdout_tail
+      - stderr_tail
+  workplace_summary:
+    required:
+      - workplace_id
+      - display_name
+      - readiness
+    optional:
+      - gpu_ids
+      - warnings
+      - last_preflight_at
+    forbidden:
+      - password
+      - private_key
+      - identity_file_content
+      - api_key
+      - auth_token
+  artifact_summary:
+    required:
+      - task_id
+      - run_id
+      - status
+      - artifacts
+    optional:
+      - metrics_summary
+      - claim_limitations
+      - recommended_next_action
+  action_request_summary:
+    required:
+      - action_id
+      - action_type
+      - status
+      - risk
+      - reason
+    optional:
+      - task_id
+      - run_id
+      - requires_user_approval
+
+read_operations:
+  - name: list_tasks
+    result: task_summary[]
+  - name: get_task
+    args: [task_id]
+    result: task_summary
+  - name: list_remote_runs
+    result: remote_run_summary[]
+  - name: get_remote_run
+    args: [task_id, run_id]
+    result: remote_run_summary
+  - name: list_workplaces
+    result: workplace_summary[]
+  - name: get_scheduler_status
+    result: object
+  - name: get_schedule_dry_run
+    args: [workplace_id]
+    result: object
+  - name: list_action_requests
+    result: action_request_summary[]
+  - name: get_artifact_summary
+    args: [task_id, run_id]
+    result: artifact_summary
+
+mutation_operations:
+  direct_execution_allowed: false
+  request_only:
+    - request_launch
+    - request_collect
+    - request_remote_stop
+    - request_requeue
+    - request_dependency_reconcile
+  required_fields:
+    - action_type
+    - reason
+    - actor
+    - created_at
+    - expected_current_state
+  execution_requirements:
+    - revalidate_current_state
+    - check_maintenance_mode
+    - check_workplace_binding
+    - check_policy
+    - record_resolution_event
+    - require_explicit_user_approval_for_risky_actions
+
+status_vocabulary:
+  orchestrator:
+    - pending
+    - running
+    - launching
+    - launch_failed
+    - launch_unknown
+    - completed
+    - partial
+    - failed
+  worker_result:
+    - success
+    - partial
+    - failed
+  execution_port:
+    - succeeded
+    - failed_launch
+    - failed_exit_code
+    - artifact_missing
+    - metrics_missing
+    - validation_failed
+    - failed
+
+privacy:
+  never_return:
+    - password
+    - api_key
+    - access_token
+    - refresh_token
+    - auth_token
+    - private_key
+    - private_key_path
+    - identity_file_content
+    - cookie
+    - raw_environment
+  path_policy:
+    model_view: logical_ids_or_workspace_relative_paths
+    ui_view: user_authorized_paths_only
+    logs: redact_secret_like_values
