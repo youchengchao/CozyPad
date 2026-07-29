@@ -43,16 +43,19 @@ function formatTime(iso: string): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-export function AgentsWorkspace() {
+export function AgentsWorkspace({ mockData }: { mockData: boolean }) {
   const [agent, setAgent] = useState<AgentKind>('claude');
-  const [sessions, setSessions] = useState<AgentSessionSummary[]>(mockAgentSessions);
-  const [timelines, setTimelines] =
-    useState<Record<string, ChatItem[]>>(mockAgentTimelines);
-  const [selected, setSelected] = useState<Record<AgentKind, string | null>>({
-    claude: 'claude-s1',
-    codex: 'codex-s1',
-    agy: null,
-  });
+  const [sessions, setSessions] = useState<AgentSessionSummary[]>(
+    mockData ? mockAgentSessions : [],
+  );
+  const [timelines, setTimelines] = useState<Record<string, ChatItem[]>>(
+    mockData ? mockAgentTimelines : {},
+  );
+  const [selected, setSelected] = useState<Record<AgentKind, string | null>>(
+    mockData
+      ? { claude: 'claude-s1', codex: 'codex-s1', agy: null }
+      : { claude: null, codex: null, agy: null },
+  );
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [filters, setFilters] = useState<Record<AgentKind, string>>({
     claude: '',
@@ -261,7 +264,20 @@ export function AgentsWorkspace() {
         </button>
       </div>
 
-      {mockAgentInstallState[agent] === 'not_detected' ? (
+      {!mockData ? (
+        <div className="agent-setup">
+          <h2>尚未接上 {AGENTS.find((entry) => entry.kind === agent)?.label ?? agent} adapter</h2>
+          <p>
+            這裡會列出遠端主機 tmux 中執行的 agent session。Adapter
+            接線（啟動、讀取 structured 事件、resume）屬 Phase 2/3，尚未完成。
+          </p>
+          <p className="hint">
+            架構層已就緒：normalized event schema、複合 session identity、tmux runtime
+            與 stream-json parser 都已實作並通過測試。
+          </p>
+          <p className="hint">想看聊天介面的完整樣貌，請以 mock 模式啟動（CozyPad-Demo.bat）。</p>
+        </div>
+      ) : mockAgentInstallState[agent] === 'not_detected' ? (
         <div className="agent-setup">
           <h2>agy 尚未偵測到</h2>
           <p>遠端主機上找不到 agy 可執行檔。安裝後 CozyPad 會自動偵測版本與能力。</p>

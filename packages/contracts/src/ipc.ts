@@ -1,4 +1,5 @@
 export const IpcChannels = {
+  appInfo: 'cozypad:app:info',
   listProfiles: 'cozypad:profiles:list',
   saveProfile: 'cozypad:profiles:save',
   deleteProfile: 'cozypad:profiles:delete',

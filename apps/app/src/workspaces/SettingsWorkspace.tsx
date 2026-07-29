@@ -60,6 +60,10 @@ export function SettingsWorkspace({ bridgeKind }: SettingsWorkspaceProps) {
           <span className="mono">{bridgeKind}</span>
         </div>
         <div className="settings-row">
+          <span>Agent adapter</span>
+          <span className="hint">尚未接線（Phase 2/3）；架構層與 parser 已完成</span>
+        </div>
+        <div className="settings-row">
           <span>Protocol</span>
           <span className="mono">v{PROTOCOL_VERSION}</span>
         </div>

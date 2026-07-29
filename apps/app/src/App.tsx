@@ -48,6 +48,7 @@ export function App() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [passwordPrompt, setPasswordPrompt] = useState<ConnectionProfile | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
+  const [mockData, setMockData] = useState(false);
   const [reconnect, setReconnect] = useState<{
     attempt: number;
     secondsLeft: number;
@@ -78,6 +79,10 @@ export function App() {
   }, [refreshProfiles]);
 
   useEffect(() => bridge.onHostKeyPrompt(setHostKeyPrompt), [bridge]);
+
+  useEffect(() => {
+    void bridge.getAppInfo().then((info) => setMockData(info.mockData));
+  }, [bridge]);
 
   const doConnect = useCallback(
     (profileId: string) => {
@@ -205,7 +210,9 @@ export function App() {
           ⚙
         </button>
         <span className={`status status-${state}`}>{state}</span>
-        <span className="bridge-kind">bridge: {bridge.kind}</span>
+        <span className={`mode-tag${mockData ? ' mode-mock' : ' mode-ssh'}`}>
+          {mockData ? 'MOCK 資料' : 'SSH'}
+        </span>
         <span className="spacer" />
         {state === 'connected' ? (
           <button onClick={handleDisconnect}>Disconnect</button>
@@ -261,7 +268,7 @@ export function App() {
         </nav>
         <main className="workspace">
           <section className="workspace-page" hidden={workspace !== 'agents'}>
-            <AgentsWorkspace />
+            <AgentsWorkspace mockData={mockData} />
           </section>
           <section className="workspace-page" hidden={workspace !== 'research'}>
             <ResearchWorkspace />

@@ -33,6 +33,11 @@ export type Unsubscribe = () => void;
 
 export type PlatformBridgeKind = 'electron' | 'capacitor' | 'mock';
 
+export interface AppInfo {
+  /** true = 內建假資料模式（COZYPAD_MOCK=1 或瀏覽器 mock bridge）。 */
+  mockData: boolean;
+}
+
 /**
  * 唯一允許 React app 接觸平台能力的介面（SPEC_V3 3.1）。
  * Electron preload、Capacitor plugin 與瀏覽器 mock 各自實作。
@@ -40,6 +45,7 @@ export type PlatformBridgeKind = 'electron' | 'capacitor' | 'mock';
 export interface PlatformBridge {
   readonly kind: PlatformBridgeKind;
 
+  getAppInfo(): Promise<AppInfo>;
   listProfiles(): Promise<ConnectionProfile[]>;
   saveProfile(draft: ConnectionProfileDraft): Promise<ConnectionProfile>;
   deleteProfile(request: DeleteProfileRequest): Promise<void>;

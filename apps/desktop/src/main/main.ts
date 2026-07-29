@@ -204,7 +204,7 @@ app.whenReady().then(async () => {
   const profileStore = await createProfileStore();
   const win = createWindow();
   const services = await createServices(profileStore, win);
-  registerIpc({ ...services, profileStore }, win);
+  registerIpc({ ...services, profileStore, mockData: USE_MOCK }, win);
   win.on('closed', () => {
     services.telemetry.stop();
     services.transport.dispose();

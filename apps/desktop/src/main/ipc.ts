@@ -31,11 +31,12 @@ export interface IpcServices {
   files: RemoteFilesPort;
   telemetry: TelemetrySource;
   hostKeys: HostKeyGate | null;
+  mockData: boolean;
 }
 
 /** 所有 IPC 進出都經 Zod 驗證，且只接受主視窗的 sender（SPEC_V3 4.1、13）。 */
 export function registerIpc(services: IpcServices, win: BrowserWindow): void {
-  const { transport, profileStore, files, telemetry, hostKeys } = services;
+  const { transport, profileStore, files, telemetry, hostKeys, mockData } = services;
 
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
@@ -69,6 +70,11 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
   const assertSender = (event: IpcMainInvokeEvent | IpcMainEvent): void => {
     if (event.sender !== win.webContents) throw new Error('unauthorized IPC sender');
   };
+
+  ipcMain.handle(IpcChannels.appInfo, (event) => {
+    assertSender(event);
+    return { mockData };
+  });
 
   ipcMain.handle(IpcChannels.listProfiles, (event) => {
     assertSender(event);

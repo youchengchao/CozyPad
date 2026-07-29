@@ -68,6 +68,8 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   return {
     kind: 'mock',
 
+    getAppInfo: () => Promise.resolve({ mockData: true }),
+
     listProfiles: () => Promise.resolve([...profiles]),
 
     saveProfile(draft) {

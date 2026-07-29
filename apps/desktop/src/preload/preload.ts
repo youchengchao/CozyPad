@@ -46,6 +46,8 @@ function subscribe<T>(
 const bridge: PlatformBridge = {
   kind: 'electron',
 
+  getAppInfo: () => ipcRenderer.invoke(IpcChannels.appInfo),
+
   listProfiles: () => ipcRenderer.invoke(IpcChannels.listProfiles),
 
   saveProfile: (draft) =>
