@@ -1,8 +1,15 @@
 import path from 'node:path';
 import { BrowserWindow, app, safeStorage, session } from 'electron';
+import { IpcChannels } from '@cozypad/contracts';
+import { MockRemoteFs, MockTelemetryGenerator } from '@cozypad/test-fixtures';
+import type { RemoteFilesPort } from './files/RemoteFilesPort';
+import { ShellRemoteFiles } from './files/shellRemoteFiles';
+import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { registerIpc } from './ipc';
 import { MemoryProfileStore, ProfileStore } from './profileStore';
 import type { ProfileCrypto, ProfileStorePort } from './profileStore';
+import { ShellTelemetry } from './telemetry/telemetryService';
+import type { TelemetrySource } from './telemetry/telemetryService';
 import { MOCK_PROFILE, MockTransport } from './transport/mockTransport';
 import { Ssh2Transport } from './transport/ssh2Transport';
 import type { TransportPort } from './transport/TransportPort';
@@ -51,12 +58,47 @@ async function createProfileStore(): Promise<ProfileStorePort> {
   return store;
 }
 
-function createTransport(profileStore: ProfileStorePort): TransportPort {
-  if (USE_MOCK) return new MockTransport();
-  return new Ssh2Transport({
+interface MainServices {
+  transport: TransportPort;
+  files: RemoteFilesPort;
+  telemetry: TelemetrySource;
+  hostKeys: HostKeyGate | null;
+}
+
+async function createServices(
+  profileStore: ProfileStorePort,
+  win: BrowserWindow,
+): Promise<MainServices> {
+  if (USE_MOCK) {
+    return {
+      transport: new MockTransport(),
+      files: new MockRemoteFs(),
+      telemetry: new MockTelemetryGenerator(),
+      hostKeys: null,
+    };
+  }
+
+  const knownHosts = new KnownHostsStore(
+    path.join(app.getPath('userData'), 'known_hosts.json'),
+  );
+  await knownHosts.load();
+  const hostKeys = new HostKeyGate(knownHosts, (event) => {
+    if (!win.isDestroyed()) win.webContents.send(IpcChannels.hostKeyPrompt, event);
+  });
+
+  const transport = new Ssh2Transport({
     getProfile: (profileId) => profileStore.get(profileId),
     getPassword: (profileId) => profileStore.getPassword(profileId),
+    verifyHostKey: (profile, key) => hostKeys.verify(profile, key),
   });
+  const exec = (command: string, timeoutMs?: number) => transport.exec(command, timeoutMs);
+
+  return {
+    transport,
+    files: new ShellRemoteFiles(exec),
+    telemetry: new ShellTelemetry(exec),
+    hostKeys,
+  };
 }
 
 function createWindow(): BrowserWindow {
@@ -153,10 +195,13 @@ app.whenReady().then(async () => {
   }
 
   const profileStore = await createProfileStore();
-  const transport = createTransport(profileStore);
   const win = createWindow();
-  registerIpc(transport, profileStore, win);
-  win.on('closed', () => transport.dispose());
+  const services = await createServices(profileStore, win);
+  registerIpc({ ...services, profileStore }, win);
+  win.on('closed', () => {
+    services.telemetry.stop();
+    services.transport.dispose();
+  });
 
   if (SMOKE_TEST) void runSmokeTest(win);
 });

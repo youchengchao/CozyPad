@@ -3,6 +3,7 @@ import type { ConnectionStateChanged } from '@cozypad/contracts';
 import { sshFixtures } from '@cozypad/test-fixtures';
 import type {
   Ssh2ClientLike,
+  Ssh2ExecStreamLike,
   Ssh2ShellStreamLike,
 } from '../src/main/transport/ssh2Transport';
 import { Ssh2Transport } from '../src/main/transport/ssh2Transport';
@@ -54,12 +55,49 @@ class FakeShellStream implements Ssh2ShellStreamLike {
   }
 }
 
+class FakeExecStream implements Ssh2ExecStreamLike {
+  private readonly dataListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly closeListeners: ((code: number | null) => void)[] = [];
+  private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+
+  readonly stderr = {
+    on: (_event: 'data', listener: (chunk: Uint8Array) => void): void => {
+      this.stderrListeners.push(listener);
+    },
+  };
+
+  on(
+    event: 'data' | 'close',
+    listener: ((chunk: Uint8Array) => void) | ((code: number | null) => void),
+  ): this {
+    if (event === 'data') this.dataListeners.push(listener as (chunk: Uint8Array) => void);
+    else this.closeListeners.push(listener as (code: number | null) => void);
+    return this;
+  }
+
+  emitStdout(text: string): void {
+    this.dataListeners.forEach((listener) => listener(new TextEncoder().encode(text)));
+  }
+
+  emitStderr(text: string): void {
+    this.stderrListeners.forEach((listener) => listener(new TextEncoder().encode(text)));
+  }
+
+  emitClose(code: number | null): void {
+    this.closeListeners.forEach((listener) => listener(code));
+  }
+}
+
 class FakeClient implements Ssh2ClientLike {
   connectConfig: Record<string, unknown> | null = null;
   ended = false;
   readonly shellRequests: {
     options: { term: string; cols: number; rows: number };
     callback: (error: Error | undefined, stream: Ssh2ShellStreamLike) => void;
+  }[] = [];
+  readonly execRequests: {
+    command: string;
+    callback: (error: Error | undefined, stream: Ssh2ExecStreamLike) => void;
   }[] = [];
   private readonly handlers = new Map<string, ((...args: never[]) => void)[]>();
 
@@ -79,6 +117,13 @@ class FakeClient implements Ssh2ClientLike {
     callback: (error: Error | undefined, stream: Ssh2ShellStreamLike) => void,
   ): void {
     this.shellRequests.push({ options, callback });
+  }
+
+  exec(
+    command: string,
+    callback: (error: Error | undefined, stream: Ssh2ExecStreamLike) => void,
+  ): void {
+    this.execRequests.push({ command, callback });
   }
 
   end(): void {
@@ -286,5 +331,60 @@ describe('Ssh2Transport', () => {
     await expect(
       transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 }),
     ).rejects.toThrow('not connected');
+  });
+
+  it('exec resolves collected stdout on close', async () => {
+    const { transport, client } = await connectedTransport();
+    const execPromise = transport.exec('uname -a');
+    const request = client.execRequests[0]!;
+    expect(request.command).toBe('uname -a');
+    const stream = new FakeExecStream();
+    request.callback(undefined, stream);
+    stream.emitStdout('Linux gpu-box ');
+    stream.emitStdout('6.8.0');
+    stream.emitClose(0);
+    await expect(execPromise).resolves.toBe('Linux gpu-box 6.8.0');
+  });
+
+  it('exec rejects with stderr on non-zero exit and empty stdout', async () => {
+    const { transport, client } = await connectedTransport();
+    const execPromise = transport.exec('false');
+    const stream = new FakeExecStream();
+    client.execRequests[0]!.callback(undefined, stream);
+    stream.emitStderr('nope\n');
+    stream.emitClose(1);
+    await expect(execPromise).rejects.toThrow('nope');
+  });
+
+  it('passes the host verifier result through to ssh2', async () => {
+    const client = new FakeClient();
+    const recorder = createRecorder();
+    const verified: Uint8Array[] = [];
+    const transport = new Ssh2Transport({
+      getProfile: () => PROFILE,
+      verifyHostKey: (profile, key) => {
+        expect(profile.host).toBe(PROFILE.host);
+        verified.push(key);
+        return Promise.resolve(true);
+      },
+      clientFactory: () => client,
+    });
+    transport.setEvents(recorder);
+    const connectPromise = transport.connect('p1');
+    await flushMicrotasks();
+
+    const hostVerifier = client.connectConfig?.hostVerifier as (
+      key: Uint8Array,
+      done: (valid: boolean) => void,
+    ) => void;
+    expect(typeof hostVerifier).toBe('function');
+    const results: boolean[] = [];
+    hostVerifier(new Uint8Array([1, 2, 3]), (valid) => results.push(valid));
+    await flushMicrotasks();
+    expect(results).toEqual([true]);
+    expect(verified).toHaveLength(1);
+
+    client.emit('ready');
+    await connectPromise;
   });
 });

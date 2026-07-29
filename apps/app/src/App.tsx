@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ConnectionProfile, ConnectionState } from '@cozypad/contracts';
+import type {
+  ConnectionProfile,
+  ConnectionState,
+  HostKeyPromptEvent,
+} from '@cozypad/contracts';
 import { getBridge } from './platform/bridge';
-import { ConnectionManager, PasswordPrompt } from './components/ConnectionManager';
+import {
+  ConnectionManager,
+  HostKeyDialog,
+  PasswordPrompt,
+} from './components/ConnectionManager';
 import {
   AgentsIcon,
   FilesIcon,
@@ -39,6 +47,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
   const [passwordPrompt, setPasswordPrompt] = useState<ConnectionProfile | null>(null);
+  const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
   const [reconnect, setReconnect] = useState<{
     attempt: number;
     secondsLeft: number;
@@ -67,6 +76,8 @@ export function App() {
   useEffect(() => {
     void refreshProfiles();
   }, [refreshProfiles]);
+
+  useEffect(() => bridge.onHostKeyPrompt(setHostKeyPrompt), [bridge]);
 
   const doConnect = useCallback(
     (profileId: string) => {
@@ -262,10 +273,10 @@ export function App() {
             />
           </section>
           <section className="workspace-page" hidden={workspace !== 'files'}>
-            <FilesWorkspace />
+            <FilesWorkspace connected={state === 'connected'} />
           </section>
           <section className="workspace-page" hidden={workspace !== 'monitor'}>
-            <MonitorWorkspace />
+            <MonitorWorkspace connected={state === 'connected'} />
           </section>
           <section className="workspace-page" hidden={workspace !== 'settings'}>
             <SettingsWorkspace bridgeKind={bridge.kind} />
@@ -284,6 +295,15 @@ export function App() {
           profile={passwordPrompt}
           onCancel={() => setPasswordPrompt(null)}
           onSubmit={(password, remember) => void submitPassword(password, remember)}
+        />
+      ) : null}
+      {hostKeyPrompt ? (
+        <HostKeyDialog
+          prompt={hostKeyPrompt}
+          onRespond={(accept) => {
+            void bridge.respondHostKey({ requestId: hostKeyPrompt.requestId, accept });
+            setHostKeyPrompt(null);
+          }}
         />
       ) : null}
     </div>

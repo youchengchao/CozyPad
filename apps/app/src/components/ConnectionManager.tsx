@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ConnectionProfile } from '@cozypad/contracts';
+import type { ConnectionProfile, HostKeyPromptEvent } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 
 interface ConnectionManagerProps {
@@ -199,6 +199,53 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+interface HostKeyDialogProps {
+  prompt: HostKeyPromptEvent;
+  onRespond(accept: boolean): void;
+}
+
+export function HostKeyDialog({ prompt, onRespond }: HostKeyDialogProps) {
+  const changed = prompt.status === 'changed';
+  return (
+    <div className="modal-overlay">
+      <div className="modal modal-narrow" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <h2>{changed ? '⚠ Host key 已變更' : '首次連線此主機'}</h2>
+        </div>
+        {changed ? (
+          <p className="hostkey-warning">
+            {prompt.host}:{prompt.port} 的 host key 與上次記錄不同。
+            可能是主機重灌，也可能是中間人攻擊——請先向管理者確認再繼續。
+          </p>
+        ) : (
+          <p className="hint">
+            無法自動驗證 {prompt.host}:{prompt.port} 的身分。請比對下方指紋後決定是否信任。
+          </p>
+        )}
+        <div className="hostkey-fp">
+          <span className="hint">{prompt.keyType} · SHA256</span>
+          <code className="mono">{prompt.fingerprintSha256}</code>
+          {changed && prompt.previousFingerprint ? (
+            <>
+              <span className="hint">先前記錄</span>
+              <code className="mono hostkey-old">{prompt.previousFingerprint}</code>
+            </>
+          ) : null}
+        </div>
+        <div className="form-actions">
+          <button onClick={() => onRespond(false)}>中止連線</button>
+          <button
+            className={changed ? 'danger' : 'primary'}
+            onClick={() => onRespond(true)}
+          >
+            {changed ? '仍然信任並更新' : '信任並繼續'}
+          </button>
+        </div>
       </div>
     </div>
   );

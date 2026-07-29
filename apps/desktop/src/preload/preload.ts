@@ -4,7 +4,16 @@ import {
   ConnectionProfileDraftSchema,
   ConnectionStateChangedSchema,
   DeleteProfileRequestSchema,
+  FsCreateRequestSchema,
+  FsPathRequestSchema,
+  FsReadRequestSchema,
+  FsRenameRequestSchema,
+  FsTransferRequestSchema,
+  FsWriteRequestSchema,
+  HostKeyDecisionSchema,
+  HostKeyPromptEventSchema,
   IpcChannels,
+  TelemetrySnapshotSchema,
   TerminalCloseRequestSchema,
   TerminalClosedEventSchema,
   TerminalInputSchema,
@@ -87,6 +96,45 @@ const bridge: PlatformBridge = {
 
   onTerminalClosed: (listener) =>
     subscribe(IpcChannels.terminalClosed, TerminalClosedEventSchema, listener),
+
+  onTelemetry: (listener) =>
+    subscribe(IpcChannels.telemetryUpdated, TelemetrySnapshotSchema, listener),
+
+  fsList: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsList, FsPathRequestSchema.parse(request)),
+
+  fsRead: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsRead, FsReadRequestSchema.parse(request)),
+
+  fsReadBytes: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsReadBytes, FsPathRequestSchema.parse(request)),
+
+  fsWrite: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsWrite, FsWriteRequestSchema.parse(request)),
+
+  fsCreate: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsCreate, FsCreateRequestSchema.parse(request)),
+
+  fsRename: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsRename, FsRenameRequestSchema.parse(request)),
+
+  fsDuplicate: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsDuplicate, FsPathRequestSchema.parse(request)),
+
+  fsCopy: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsCopy, FsTransferRequestSchema.parse(request)),
+
+  fsMove: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsMove, FsTransferRequestSchema.parse(request)),
+
+  fsDelete: (request) =>
+    ipcRenderer.invoke(IpcChannels.fsDelete, FsPathRequestSchema.parse(request)),
+
+  onHostKeyPrompt: (listener) =>
+    subscribe(IpcChannels.hostKeyPrompt, HostKeyPromptEventSchema, listener),
+
+  respondHostKey: (decision) =>
+    ipcRenderer.invoke(IpcChannels.hostKeyDecision, HostKeyDecisionSchema.parse(decision)),
 };
 
 contextBridge.exposeInMainWorld('cozypad', bridge);

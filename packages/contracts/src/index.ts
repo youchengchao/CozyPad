@@ -5,3 +5,6 @@ export * from './encoding';
 export * from './bridge';
 export * from './ipc';
 export * from './chat';
+export * from './telemetry';
+export * from './files';
+export * from './hostkey';

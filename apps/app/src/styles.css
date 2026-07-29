@@ -357,6 +357,32 @@ button.danger:hover {
   color: var(--text-faint);
 }
 
+.hostkey-warning {
+  margin: 0;
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hostkey-fp {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.hostkey-fp code {
+  word-break: break-all;
+}
+
+.hostkey-old {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
 .shell {
   flex: 1;
   min-height: 0;

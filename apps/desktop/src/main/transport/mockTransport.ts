@@ -29,6 +29,12 @@ export class MockTransport implements TransportPort {
     this.events = events;
   }
 
+  exec(): Promise<string> {
+    return Promise.reject(
+      new Error('mock transport has no shell exec; mock services are wired directly'),
+    );
+  }
+
   async connect(profileId: string): Promise<void> {
     this.emitState(profileId, 'connecting');
     await delay(200);

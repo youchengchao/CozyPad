@@ -1,363 +1,306 @@
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { RemoteFileItem } from '@cozypad/contracts';
+import { base64ToBytes, textToBase64 } from '@cozypad/contracts';
+import { getBridge } from '../platform/bridge';
 
-interface FsNode {
-  name: string;
-  path: string;
-  kind: 'dir' | 'file';
-  children?: FsNode[];
+interface FilesWorkspaceProps {
+  connected: boolean;
 }
-
-const INITIAL_TREE: FsNode[] = [
-  {
-    name: 'seg-train',
-    path: '~/projects/seg-train',
-    kind: 'dir',
-    children: [
-      {
-        name: 'configs',
-        path: '~/projects/seg-train/configs',
-        kind: 'dir',
-        children: [
-          {
-            name: 'base.yaml',
-            path: '~/projects/seg-train/configs/base.yaml',
-            kind: 'file',
-          },
-        ],
-      },
-      {
-        name: 'src',
-        path: '~/projects/seg-train/src',
-        kind: 'dir',
-        children: [
-          { name: 'train.py', path: '~/projects/seg-train/src/train.py', kind: 'file' },
-          {
-            name: 'metrics_writer.py',
-            path: '~/projects/seg-train/src/metrics_writer.py',
-            kind: 'file',
-          },
-        ],
-      },
-      {
-        name: 'cozypad.study.yaml',
-        path: '~/projects/seg-train/cozypad.study.yaml',
-        kind: 'file',
-      },
-      { name: 'notes.md', path: '~/projects/seg-train/notes.md', kind: 'file' },
-      { name: 'paper.pdf', path: '~/projects/seg-train/paper.pdf', kind: 'file' },
-    ],
-  },
-];
-
-const INITIAL_CONTENT: Record<string, string> = {
-  '~/projects/seg-train/configs/base.yaml': [
-    'dataset:',
-    '  root: data/train',
-    '  split: {train: 0.8, validation: 0.1, test: 0.1}',
-    'train:',
-    '  batch_size: 32',
-    '  epochs: 100',
-    '  learning_rate: 0.0003',
-  ].join('\n'),
-  '~/projects/seg-train/src/train.py': [
-    'import torch',
-    'from torch.utils.data import DataLoader',
-    '',
-    'loader = DataLoader(',
-    '    dataset,',
-    '    batch_size=32,',
-    '    num_workers=8,',
-    '    pin_memory=True,',
-    ')',
-  ].join('\n'),
-  '~/projects/seg-train/src/metrics_writer.py': [
-    'import json, os',
-    '',
-    'class MetricsWriter:',
-    '    def __init__(self, run_dir):',
-    '        self.path = os.path.join(run_dir, "metrics.jsonl")',
-  ].join('\n'),
-  '~/projects/seg-train/cozypad.study.yaml': [
-    'schemaVersion: 1',
-    'study:',
-    '  id: normalization-init-ablation',
-    '  objective: {metric: val/accuracy, direction: maximize}',
-  ].join('\n'),
-  '~/projects/seg-train/notes.md': [
-    '# Notes',
-    '',
-    '- 2026-07-29: dataloader 瓶頸已修，GPU util **36% → 88%**',
-    '- TODO: normalization ablation 的 `minmax` run 要重跑',
-    '',
-    '| factor | best |',
-    '| --- | --- |',
-    '| normalization | zscore |',
-    '| batch size | 32 |',
-  ].join('\n'),
-};
 
 type DialogState =
   | null
-  | { kind: 'new-file' | 'new-folder'; dir: string }
-  | { kind: 'move'; path: string }
-  | { kind: 'delete'; path: string };
+  | { kind: 'new-file'; dir: string }
+  | { kind: 'new-folder'; dir: string }
+  | { kind: 'rename'; item: RemoteFileItem }
+  | { kind: 'move'; item: RemoteFileItem }
+  | { kind: 'copy-to'; item: RemoteFileItem }
+  | { kind: 'delete'; item: RemoteFileItem };
 
-function cloneTree(nodes: FsNode[]): FsNode[] {
-  return nodes.map((node) => ({
-    ...node,
-    children: node.children ? cloneTree(node.children) : undefined,
-  }));
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'py', 'ts', 'tsx', 'js', 'jsx', 'json', 'yaml', 'yml',
+  'toml', 'cfg', 'ini', 'sh', 'bash', 'zsh', 'log', 'csv', 'tsv', 'xml', 'html',
+  'css', 'sql', 'rs', 'go', 'c', 'h', 'cpp', 'hpp', 'java', 'rb', 'dart', 'gitignore',
+]);
+
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
-function findNode(nodes: FsNode[], path: string): FsNode | null {
-  for (const node of nodes) {
-    if (node.path === path) return node;
-    if (node.children) {
-      const found = findNode(node.children, path);
-      if (found) return found;
-    }
-  }
-  return null;
+function isTextFile(item: RemoteFileItem): boolean {
+  if (item.name.startsWith('.') && !item.name.includes('.', 1)) return true;
+  return TEXT_EXTENSIONS.has(extensionOf(item.name));
 }
 
-function removeNode(nodes: FsNode[], path: string): FsNode[] {
-  return nodes
-    .filter((node) => node.path !== path)
-    .map((node) => ({
-      ...node,
-      children: node.children ? removeNode(node.children, path) : undefined,
-    }));
+function isMarkdown(item: RemoteFileItem): boolean {
+  const ext = extensionOf(item.name);
+  return ext === 'md' || ext === 'markdown';
 }
 
-function insertNode(nodes: FsNode[], dirPath: string, child: FsNode): FsNode[] {
-  return nodes.map((node) => {
-    if (node.path === dirPath && node.kind === 'dir') {
-      const children = [...(node.children ?? []), child].sort((a, b) => {
-        if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-      return { ...node, children };
-    }
-    return {
-      ...node,
-      children: node.children ? insertNode(node.children, dirPath, child) : undefined,
-    };
-  });
+function isPdf(item: RemoteFileItem): boolean {
+  return extensionOf(item.name) === 'pdf';
 }
 
-function rewritePaths(node: FsNode, newParentPath: string, newName?: string): FsNode {
-  const name = newName ?? node.name;
-  const path = `${newParentPath}/${name}`;
-  return {
-    name,
-    path,
-    kind: node.kind,
-    children: node.children?.map((child) => rewritePaths(child, path)),
-  };
+function parentOf(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index <= 0 ? '/' : path.slice(0, index);
 }
 
-function collectPaths(node: FsNode): string[] {
-  return [node.path, ...(node.children ?? []).flatMap(collectPaths)];
-}
+const MAX_EDITOR_BYTES = 262144;
 
-function parentPath(path: string): string {
-  return path.slice(0, path.lastIndexOf('/'));
-}
-
-function isMarkdown(path: string): boolean {
-  return path.endsWith('.md');
-}
-
-function isPdf(path: string): boolean {
-  return path.endsWith('.pdf');
-}
-
-export function FilesWorkspace() {
-  const [tree, setTree] = useState<FsNode[]>(INITIAL_TREE);
-  const [contents, setContents] = useState<Record<string, string>>(INITIAL_CONTENT);
-  const [expanded, setExpanded] = useState(
-    new Set(['~/projects/seg-train', '~/projects/seg-train/src']),
+export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
+  const bridge = useMemo(() => getBridge(), []);
+  const [rootPath, setRootPath] = useState<string | null>(null);
+  const [children, setChildren] = useState<Record<string, RemoteFileItem[]>>({});
+  const [expanded, setExpanded] = useState(new Set<string>());
+  const [selected, setSelected] = useState<RemoteFileItem | null>(null);
+  const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
+    null,
   );
-  const [selected, setSelected] = useState<string | null>(
-    '~/projects/seg-train/src/train.py',
-  );
-  const [pwd, setPwd] = useState('~/projects/seg-train');
-  const [draft, setDraft] = useState<{ path: string; text: string } | null>(null);
-  const [mdPreview, setMdPreview] = useState(true);
+  const [mdPreview, setMdPreview] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pwd, setPwd] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dialogInput, setDialogInput] = useState('');
-  const editorRef = useRef<HTMLTextAreaElement>(null);
-
-  const selectedNode = selected !== null ? findNode(tree, selected) : null;
-  const currentDir =
-    selectedNode === null
-      ? '~/projects/seg-train'
-      : selectedNode.kind === 'dir'
-        ? selectedNode.path
-        : parentPath(selectedNode.path);
 
   const showFlash = (message: string) => {
     setFlash(message);
-    setTimeout(() => setFlash(null), 1500);
+    setTimeout(() => setFlash(null), 1600);
   };
 
-  const toggle = (path: string) => {
+  const report = (err: unknown) => {
+    setError(err instanceof Error ? err.message : String(err));
+  };
+
+  const loadDir = useCallback(
+    async (path: string): Promise<string | null> => {
+      try {
+        const listing = await bridge.fsList({ path });
+        setChildren((current) => ({ ...current, [listing.path]: listing.items }));
+        setError(null);
+        return listing.path;
+      } catch (err: unknown) {
+        report(err);
+        return null;
+      }
+    },
+    [bridge],
+  );
+
+  useEffect(() => {
+    if (!connected) {
+      setRootPath(null);
+      setChildren({});
+      setExpanded(new Set());
+      setSelected(null);
+      setDraft(null);
+      setPwd(null);
+      return;
+    }
+    void loadDir('~').then((resolved) => {
+      if (resolved !== null) {
+        setRootPath(resolved);
+        setPwd(resolved);
+        setExpanded(new Set([resolved]));
+      }
+    });
+  }, [connected, loadDir]);
+
+  const toggleDir = (item: RemoteFileItem) => {
+    setSelected(item);
+    setDraft(null);
     setExpanded((current) => {
       const next = new Set(current);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(item.path)) {
+        next.delete(item.path);
+      } else {
+        next.add(item.path);
+        if (children[item.path] === undefined) void loadDir(item.path);
+      }
       return next;
     });
   };
 
-  const select = (node: FsNode) => {
-    setSelected(node.path);
-    if (node.kind === 'file' && !isPdf(node.path)) {
-      setDraft({ path: node.path, text: contents[node.path] ?? '' });
-    } else {
-      setDraft(null);
+  const openFile = (item: RemoteFileItem) => {
+    setSelected(item);
+    setDraft(null);
+    setMdPreview(false);
+    if (!isTextFile(item) || isPdf(item) || item.sizeBytes > MAX_EDITOR_BYTES) return;
+    void bridge
+      .fsRead({ path: item.path, maxBytes: MAX_EDITOR_BYTES, offset: 0 })
+      .then(({ content }) => {
+        setDraft({ path: item.path, text: content, saved: content });
+        if (isMarkdown(item)) setMdPreview(true);
+      })
+      .catch(report);
+  };
+
+  const refreshDirs = async (...paths: (string | null)[]) => {
+    for (const path of paths) {
+      if (path !== null && (children[path] !== undefined || path === rootPath)) {
+        await loadDir(path);
+      }
     }
   };
 
   const saveDraft = () => {
     if (!draft) return;
-    setContents((current) => ({ ...current, [draft.path]: draft.text }));
-    showFlash('已儲存');
-  };
-
-  const dirty = draft !== null && draft.text !== (contents[draft.path] ?? '');
-
-  const copyPath = () => {
-    if (!selected) return;
-    void navigator.clipboard
-      ?.writeText(selected)
-      .then(() => showFlash('路徑已複製'))
-      .catch(() => undefined);
+    setBusy(true);
+    bridge
+      .fsWrite({ path: draft.path, contentBase64: textToBase64(draft.text) })
+      .then(() => {
+        setDraft((current) => (current ? { ...current, saved: current.text } : current));
+        showFlash('已儲存');
+        void refreshDirs(parentOf(draft.path));
+      })
+      .catch(report)
+      .finally(() => setBusy(false));
   };
 
   const download = () => {
-    if (!selectedNode || selectedNode.kind !== 'file') return;
-    const content = contents[selectedNode.path] ?? '';
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = selectedNode.name;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    if (!selected || selected.type === 'd') return;
+    setBusy(true);
+    bridge
+      .fsReadBytes({ path: selected.path })
+      .then(({ dataBase64 }) => {
+        const blob = new Blob([new Uint8Array(base64ToBytes(dataBase64))]);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = selected.name;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(report)
+      .finally(() => setBusy(false));
   };
 
   const duplicate = () => {
-    if (!selectedNode) return;
-    const parent = parentPath(selectedNode.path);
-    const copyName = selectedNode.name.replace(/(\.[^.]*)?$/, ' copy$1');
-    const copied = rewritePaths(selectedNode, parent, copyName);
-    setTree((current) => insertNode(cloneTree(current), parent, copied));
-    if (selectedNode.kind === 'file') {
-      setContents((current) => ({
-        ...current,
-        [copied.path]: current[selectedNode.path] ?? '',
-      }));
-    }
-    showFlash('已建立副本');
+    if (!selected) return;
+    setBusy(true);
+    bridge
+      .fsDuplicate({ path: selected.path })
+      .then(() => {
+        showFlash('已建立副本');
+        void refreshDirs(parentOf(selected.path));
+      })
+      .catch(report)
+      .finally(() => setBusy(false));
   };
 
   const confirmDialog = () => {
     if (dialog === null) return;
+    const input = dialogInput.trim();
+    setBusy(true);
+    const done = (message: string, ...refresh: (string | null)[]) => {
+      showFlash(message);
+      setDialog(null);
+      setDialogInput('');
+      void refreshDirs(...refresh);
+    };
+
+    let action: Promise<void>;
     if (dialog.kind === 'new-file' || dialog.kind === 'new-folder') {
-      const name = dialogInput.trim();
-      if (name === '') return;
-      const node: FsNode = {
-        name,
-        path: `${dialog.dir}/${name}`,
-        kind: dialog.kind === 'new-file' ? 'file' : 'dir',
-        ...(dialog.kind === 'new-folder' ? { children: [] } : {}),
-      };
-      setTree((current) => insertNode(cloneTree(current), dialog.dir, node));
-      if (dialog.kind === 'new-file') {
-        setContents((current) => ({ ...current, [node.path]: '' }));
-      }
-      setExpanded((current) => new Set(current).add(dialog.dir));
-      showFlash(dialog.kind === 'new-file' ? '已建立檔案' : '已建立資料夾');
-    }
-    if (dialog.kind === 'move') {
-      const target = dialogInput.trim();
-      const targetNode = findNode(tree, target);
-      if (!targetNode || targetNode.kind !== 'dir') {
-        showFlash('目標資料夾不存在');
+      if (input === '') {
+        setBusy(false);
         return;
       }
-      const moving = findNode(tree, dialog.path);
-      if (!moving) return;
-      const moved = rewritePaths(moving, target);
-      const oldPaths = collectPaths(moving);
-      const newPaths = collectPaths(moved);
-      setTree((current) => insertNode(removeNode(cloneTree(current), dialog.path), target, moved));
-      setContents((current) => {
-        const next = { ...current };
-        oldPaths.forEach((oldPath, index) => {
-          if (oldPath in next) {
-            next[newPaths[index]!] = next[oldPath]!;
-            delete next[oldPath];
-          }
+      action = bridge
+        .fsCreate({
+          directory: dialog.dir,
+          name: input,
+          kind: dialog.kind === 'new-file' ? 'file' : 'directory',
+        })
+        .then(() => done(dialog.kind === 'new-file' ? '已建立檔案' : '已建立資料夾', dialog.dir));
+    } else if (dialog.kind === 'rename') {
+      if (input === '') {
+        setBusy(false);
+        return;
+      }
+      action = bridge
+        .fsRename({ path: dialog.item.path, newName: input })
+        .then(() => {
+          setSelected(null);
+          setDraft(null);
+          done('已重新命名', parentOf(dialog.item.path));
         });
-        return next;
-      });
-      setSelected(moved.path);
-      showFlash('已移動');
-    }
-    if (dialog.kind === 'delete') {
-      const node = findNode(tree, dialog.path);
-      if (node) {
-        const paths = collectPaths(node);
-        setTree((current) => removeNode(cloneTree(current), dialog.path));
-        setContents((current) => {
-          const next = { ...current };
-          paths.forEach((path) => delete next[path]);
-          return next;
-        });
-        if (selected !== null && paths.includes(selected)) {
+    } else if (dialog.kind === 'move' || dialog.kind === 'copy-to') {
+      if (input === '') {
+        setBusy(false);
+        return;
+      }
+      const call =
+        dialog.kind === 'move'
+          ? bridge.fsMove({ sourcePath: dialog.item.path, destinationDirectory: input })
+          : bridge.fsCopy({ sourcePath: dialog.item.path, destinationDirectory: input });
+      action = call.then(({ path }) => {
+        if (dialog.kind === 'move') {
           setSelected(null);
           setDraft(null);
         }
-        showFlash('已刪除');
-      }
+        done(dialog.kind === 'move' ? '已移動' : '已複製', parentOf(dialog.item.path), parentOf(path));
+      });
+    } else {
+      action = bridge.fsDelete({ path: dialog.item.path }).then(() => {
+        setSelected(null);
+        setDraft(null);
+        done('已刪除', parentOf(dialog.item.path));
+      });
     }
-    setDialog(null);
-    setDialogInput('');
+    action.catch(report).finally(() => setBusy(false));
   };
 
-  const renderTree = (nodes: FsNode[], depth: number) => (
-    <>
-      {nodes.map((node) => {
-        const isOpen = expanded.has(node.path);
-        return (
-          <div key={node.path}>
-            <button
-              className={`tree-row${selected === node.path ? ' tree-row-active' : ''}`}
-              style={{ paddingLeft: 10 + depth * 16 }}
-              onClick={() => {
-                if (node.kind === 'dir') toggle(node.path);
-                select(node);
-              }}
-            >
-              <span className="tree-glyph">
-                {node.kind === 'dir' ? (isOpen ? '▾' : '▸') : '·'}
-              </span>
-              {node.name}
-              {node.path === pwd ? <span className="pwd-badge">pwd</span> : null}
-            </button>
-            {node.kind === 'dir' && isOpen && node.children
-              ? renderTree(node.children, depth + 1)
-              : null}
-          </div>
-        );
-      })}
-    </>
-  );
+  const currentDir =
+    selected === null
+      ? (pwd ?? rootPath ?? '~')
+      : selected.type === 'd'
+        ? selected.path
+        : parentOf(selected.path);
+
+  const dirty = draft !== null && draft.text !== draft.saved;
+
+  const renderTree = (dirPath: string, depth: number) => {
+    const items = children[dirPath];
+    if (items === undefined) {
+      return (
+        <div className="hint" style={{ paddingLeft: 14 + depth * 16 }}>
+          載入中…
+        </div>
+      );
+    }
+    return items.map((item) => {
+      const isDir = item.type === 'd';
+      const isOpen = expanded.has(item.path);
+      return (
+        <div key={item.path}>
+          <button
+            className={`tree-row${selected?.path === item.path ? ' tree-row-active' : ''}`}
+            style={{ paddingLeft: 10 + depth * 16 }}
+            onClick={() => (isDir ? toggleDir(item) : openFile(item))}
+            title={item.path}
+          >
+            <span className="tree-glyph">{isDir ? (isOpen ? '▾' : '▸') : '·'}</span>
+            {item.name}
+            {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
+          </button>
+          {isDir && isOpen ? renderTree(item.path, depth + 1) : null}
+        </div>
+      );
+    });
+  };
+
+  if (!connected) {
+    return (
+      <div className="placeholder">
+        <p>Connect to browse remote files.</p>
+        <p className="hint">連線後從家目錄開始瀏覽。</p>
+      </div>
+    );
+  }
 
   return (
     <div className="files-workspace">
@@ -369,67 +312,90 @@ export function FilesWorkspace() {
           <button onClick={() => setDialog({ kind: 'new-folder', dir: currentDir })}>
             ＋資料夾
           </button>
+          <button onClick={() => void refreshDirs(...Object.keys(children))} title="重新整理">
+            ↻
+          </button>
         </div>
-        <div className="files-note hint">mock 檔案 — 真實 SFTP 在 Phase 6 接上</div>
-        {renderTree(tree, 0)}
+        <div className="files-note hint mono">{rootPath ?? '~'}</div>
+        {rootPath !== null ? renderTree(rootPath, 0) : <div className="hint">載入中…</div>}
       </aside>
       <div className="files-preview">
-        {selectedNode ? (
+        {error ? <div className="error-banner">{error}</div> : null}
+        {selected ? (
           <>
             <div className="files-preview-head">
-              <span className="mono files-path">{selectedNode.path}</span>
+              <span className="mono files-path">{selected.path}</span>
               {flash ? <span className="flash">{flash}</span> : null}
               <div className="files-actions">
-                {selectedNode.kind === 'dir' ? (
-                  <button onClick={() => setPwd(selectedNode.path)}>Set pwd</button>
+                {selected.type === 'd' ? (
+                  <button onClick={() => setPwd(selected.path)}>Set pwd</button>
                 ) : null}
                 {draft ? (
-                  <button className={dirty ? 'primary' : ''} onClick={saveDraft}>
+                  <button className={dirty ? 'primary' : ''} disabled={busy} onClick={saveDraft}>
                     儲存{dirty ? ' •' : ''}
                   </button>
                 ) : null}
-                {draft && isMarkdown(selectedNode.path) ? (
+                {draft && isMarkdown(selected) ? (
                   <button onClick={() => setMdPreview((preview) => !preview)}>
                     {mdPreview ? '編輯' : '預覽'}
                   </button>
                 ) : null}
-                <button onClick={copyPath}>Copy path</button>
-                <button onClick={duplicate}>Copy</button>
-                <button onClick={() => setDialog({ kind: 'move', path: selectedNode.path })}>
+                <button
+                  onClick={() => {
+                    void navigator.clipboard
+                      ?.writeText(selected.path)
+                      .then(() => showFlash('路徑已複製'))
+                      .catch(() => undefined);
+                  }}
+                >
+                  Copy path
+                </button>
+                <button disabled={busy} onClick={duplicate}>
+                  Copy
+                </button>
+                <button onClick={() => setDialog({ kind: 'copy-to', item: selected })}>
+                  Copy to…
+                </button>
+                <button onClick={() => setDialog({ kind: 'move', item: selected })}>
                   Move
                 </button>
-                {selectedNode.kind === 'file' && !isPdf(selectedNode.path) ? (
-                  <button onClick={download}>Download</button>
+                <button onClick={() => setDialog({ kind: 'rename', item: selected })}>
+                  Rename
+                </button>
+                {selected.type !== 'd' ? (
+                  <button disabled={busy} onClick={download}>
+                    Download
+                  </button>
                 ) : null}
                 <button
                   className="danger"
-                  onClick={() => setDialog({ kind: 'delete', path: selectedNode.path })}
+                  onClick={() => setDialog({ kind: 'delete', item: selected })}
                 >
                   Delete
                 </button>
               </div>
             </div>
-            {selectedNode.kind === 'dir' ? (
+            {selected.type === 'd' ? (
               <div className="placeholder">
-                <p>{selectedNode.children?.length ?? 0} 個項目</p>
-                <p className="hint">pwd: {pwd}</p>
+                <p>{children[selected.path]?.length ?? '…'} 個項目</p>
+                <p className="hint">pwd: {pwd ?? '—'}</p>
               </div>
-            ) : isPdf(selectedNode.path) ? (
+            ) : isPdf(selected) ? (
               <div className="pdf-frame">
                 <div className="pdf-box">
-                  <p>📄 {selectedNode.name}</p>
+                  <p>📄 {selected.name}</p>
                   <p className="hint">
-                    PDF 預覽將以 pdf.js 串接真實 SFTP 內容（Phase 6，SPEC FR-04）。
+                    {(selected.sizeBytes / 1024).toFixed(1)} KB · PDF 內嵌預覽（pdf.js）為
+                    Phase 6 後續項目；先用 Download 取回。
                   </p>
                 </div>
               </div>
-            ) : draft && isMarkdown(selectedNode.path) && mdPreview ? (
+            ) : draft && isMarkdown(selected) && mdPreview ? (
               <div className="md-preview markdown">
                 <Markdown remarkPlugins={[remarkGfm]}>{draft.text}</Markdown>
               </div>
             ) : draft ? (
               <textarea
-                ref={editorRef}
                 className="files-editor mono"
                 value={draft.text}
                 spellCheck={false}
@@ -458,7 +424,17 @@ export function FilesWorkspace() {
                   }
                 }}
               />
-            ) : null}
+            ) : (
+              <div className="placeholder">
+                <p>{selected.name}</p>
+                <p className="hint">
+                  {(selected.sizeBytes / 1024).toFixed(1)} KB · {selected.modified} ·
+                  {isTextFile(selected)
+                    ? ' 檔案過大，僅供 Download'
+                    : ' 二進位格式不做文字預覽（SPEC FR-04）'}
+                </p>
+              </div>
+            )}
           </>
         ) : (
           <div className="placeholder">
@@ -473,11 +449,12 @@ export function FilesWorkspace() {
             {dialog.kind === 'delete' ? (
               <>
                 <p>
-                  確定刪除 <span className="mono">{dialog.path}</span>？
+                  確定刪除 <span className="mono">{dialog.item.path}</span>？
+                  {dialog.item.type === 'd' ? '（含其中所有內容）' : ''}
                 </p>
                 <div className="form-actions">
                   <button onClick={() => setDialog(null)}>取消</button>
-                  <button className="danger" onClick={confirmDialog}>
+                  <button className="danger" disabled={busy} onClick={confirmDialog}>
                     刪除
                   </button>
                 </div>
@@ -485,16 +462,26 @@ export function FilesWorkspace() {
             ) : (
               <>
                 <p>
-                  {dialog.kind === 'move'
-                    ? `把 ${dialog.path} 移動到（輸入目標資料夾路徑）`
-                    : dialog.kind === 'new-file'
-                      ? `在 ${dialog.dir} 新增檔案`
-                      : `在 ${dialog.dir} 新增資料夾`}
+                  {dialog.kind === 'new-file'
+                    ? `在 ${dialog.dir} 新增檔案`
+                    : dialog.kind === 'new-folder'
+                      ? `在 ${dialog.dir} 新增資料夾`
+                      : dialog.kind === 'rename'
+                        ? `重新命名 ${dialog.item.name}`
+                        : dialog.kind === 'move'
+                          ? `把 ${dialog.item.name} 移動到（目標資料夾路徑）`
+                          : `把 ${dialog.item.name} 複製到（目標資料夾路徑）`}
                 </p>
                 <input
                   autoFocus
                   value={dialogInput}
-                  placeholder={dialog.kind === 'move' ? '~/projects/seg-train/src' : '名稱'}
+                  placeholder={
+                    dialog.kind === 'move' || dialog.kind === 'copy-to'
+                      ? (rootPath ?? '~')
+                      : dialog.kind === 'rename'
+                        ? dialog.item.name
+                        : '名稱'
+                  }
                   onChange={(event) => setDialogInput(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') confirmDialog();
@@ -502,7 +489,7 @@ export function FilesWorkspace() {
                 />
                 <div className="form-actions">
                   <button onClick={() => setDialog(null)}>取消</button>
-                  <button className="primary" onClick={confirmDialog}>
+                  <button className="primary" disabled={busy} onClick={confirmDialog}>
                     確定
                   </button>
                 </div>

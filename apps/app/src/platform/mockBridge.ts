@@ -3,11 +3,16 @@ import type {
   ConnectionState,
   ConnectionStateChanged,
   PlatformBridge,
+  TelemetrySnapshot,
   TerminalClosedEvent,
   TerminalOutputEvent,
 } from '@cozypad/contracts';
 import { base64ToBytes, bytesToBase64 } from '@cozypad/contracts';
-import { MockPtyEngine } from '@cozypad/test-fixtures';
+import {
+  MockPtyEngine,
+  MockRemoteFs,
+  MockTelemetryGenerator,
+} from '@cozypad/test-fixtures';
 
 const MOCK_PROFILE: ConnectionProfile = {
   id: 'mock-local',
@@ -32,7 +37,10 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   const stateListeners = new Set<(event: ConnectionStateChanged) => void>();
   const outputListeners = new Set<(event: TerminalOutputEvent) => void>();
   const closedListeners = new Set<(event: TerminalClosedEvent) => void>();
+  const telemetryListeners = new Set<(snapshot: TelemetrySnapshot) => void>();
   const terminals = new Map<string, MockPtyEngine>();
+  const remoteFs = new MockRemoteFs();
+  const telemetry = new MockTelemetryGenerator();
   let profiles: ConnectionProfile[] = [MOCK_PROFILE];
   const passwords = new Map<string, string>([[MOCK_PROFILE.id, 'mock']]);
   let connectedProfileId: string | null = null;
@@ -88,10 +96,14 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
       await delay(300);
       connectedProfileId = profileId;
       emitState(profileId, 'connected');
+      telemetry.start(profileId, (snapshot) =>
+        telemetryListeners.forEach((listener) => listener(snapshot)),
+      );
     },
 
     async disconnect({ profileId }) {
       connectedProfileId = null;
+      telemetry.stop();
       closeAllTerminals();
       emitState(profileId, 'disconnected');
     },
@@ -100,6 +112,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
       if (connectedProfileId === null) return;
       const profileId = connectedProfileId;
       connectedProfileId = null;
+      telemetry.stop();
       closeAllTerminals();
       emitState(profileId, 'disconnected');
     },
@@ -160,5 +173,32 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
       closedListeners.add(listener);
       return () => closedListeners.delete(listener);
     },
+
+    onTelemetry(listener) {
+      telemetryListeners.add(listener);
+      return () => telemetryListeners.delete(listener);
+    },
+
+    fsList: (request) => remoteFs.list(request.path),
+    fsRead: async (request) => ({
+      content: await remoteFs.readText(request.path, request.maxBytes, request.offset),
+    }),
+    fsReadBytes: async (request) => ({ dataBase64: await remoteFs.readBytes(request.path) }),
+    fsWrite: (request) => remoteFs.write(request.path, request.contentBase64),
+    fsCreate: (request) => remoteFs.create(request.directory, request.name, request.kind),
+    fsRename: (request) => remoteFs.rename(request.path, request.newName),
+    fsDuplicate: async (request) => ({ path: await remoteFs.duplicate(request.path) }),
+    fsCopy: async (request) => ({
+      path: await remoteFs.copyTo(request.sourcePath, request.destinationDirectory),
+    }),
+    fsMove: async (request) => ({
+      path: await remoteFs.moveTo(request.sourcePath, request.destinationDirectory),
+    }),
+    fsDelete: (request) => remoteFs.remove(request.path),
+
+    onHostKeyPrompt() {
+      return () => undefined;
+    },
+    respondHostKey: () => Promise.resolve(),
   };
 }

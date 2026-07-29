@@ -4,6 +4,13 @@ import {
   ConnectRequestSchema,
   ConnectionProfileDraftSchema,
   DeleteProfileRequestSchema,
+  FsCreateRequestSchema,
+  FsPathRequestSchema,
+  FsReadRequestSchema,
+  FsRenameRequestSchema,
+  FsTransferRequestSchema,
+  FsWriteRequestSchema,
+  HostKeyDecisionSchema,
   IpcChannels,
   TerminalCloseRequestSchema,
   TerminalInputSchema,
@@ -12,21 +19,40 @@ import {
   base64ToBytes,
   bytesToBase64,
 } from '@cozypad/contracts';
+import type { RemoteFilesPort } from './files/RemoteFilesPort';
+import type { HostKeyGate } from './hostKeys';
 import type { ProfileStorePort } from './profileStore';
+import type { TelemetrySource } from './telemetry/telemetryService';
 import type { TransportPort } from './transport/TransportPort';
 
+export interface IpcServices {
+  transport: TransportPort;
+  profileStore: ProfileStorePort;
+  files: RemoteFilesPort;
+  telemetry: TelemetrySource;
+  hostKeys: HostKeyGate | null;
+}
+
 /** 所有 IPC 進出都經 Zod 驗證，且只接受主視窗的 sender（SPEC_V3 4.1、13）。 */
-export function registerIpc(
-  transport: TransportPort,
-  profileStore: ProfileStorePort,
-  win: BrowserWindow,
-): void {
+export function registerIpc(services: IpcServices, win: BrowserWindow): void {
+  const { transport, profileStore, files, telemetry, hostKeys } = services;
+
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   };
 
   transport.setEvents({
-    onConnectionState: (event) => send(IpcChannels.connectionState, event),
+    onConnectionState: (event) => {
+      send(IpcChannels.connectionState, event);
+      if (event.state === 'connected') {
+        telemetry.start(event.profileId, (snapshot) =>
+          send(IpcChannels.telemetryUpdated, snapshot),
+        );
+      }
+      if (event.state === 'disconnected' || event.state === 'error') {
+        telemetry.stop();
+      }
+    },
     onTerminalOutput: (terminalId, data) =>
       send(IpcChannels.terminalOutput, {
         terminalId,
@@ -91,5 +117,67 @@ export function registerIpc(
   ipcMain.handle(IpcChannels.terminalClose, (event, raw: unknown) => {
     assertSender(event);
     transport.closeTerminal(TerminalCloseRequestSchema.parse(raw).terminalId);
+  });
+
+  ipcMain.handle(IpcChannels.fsList, (event, raw: unknown) => {
+    assertSender(event);
+    return files.list(FsPathRequestSchema.parse(raw).path);
+  });
+
+  ipcMain.handle(IpcChannels.fsRead, async (event, raw: unknown) => {
+    assertSender(event);
+    const request = FsReadRequestSchema.parse(raw);
+    return { content: await files.readText(request.path, request.maxBytes, request.offset) };
+  });
+
+  ipcMain.handle(IpcChannels.fsReadBytes, async (event, raw: unknown) => {
+    assertSender(event);
+    return { dataBase64: await files.readBytes(FsPathRequestSchema.parse(raw).path) };
+  });
+
+  ipcMain.handle(IpcChannels.fsWrite, (event, raw: unknown) => {
+    assertSender(event);
+    const request = FsWriteRequestSchema.parse(raw);
+    return files.write(request.path, request.contentBase64);
+  });
+
+  ipcMain.handle(IpcChannels.fsCreate, (event, raw: unknown) => {
+    assertSender(event);
+    const request = FsCreateRequestSchema.parse(raw);
+    return files.create(request.directory, request.name, request.kind);
+  });
+
+  ipcMain.handle(IpcChannels.fsRename, (event, raw: unknown) => {
+    assertSender(event);
+    const request = FsRenameRequestSchema.parse(raw);
+    return files.rename(request.path, request.newName);
+  });
+
+  ipcMain.handle(IpcChannels.fsDuplicate, async (event, raw: unknown) => {
+    assertSender(event);
+    return { path: await files.duplicate(FsPathRequestSchema.parse(raw).path) };
+  });
+
+  ipcMain.handle(IpcChannels.fsCopy, async (event, raw: unknown) => {
+    assertSender(event);
+    const request = FsTransferRequestSchema.parse(raw);
+    return { path: await files.copyTo(request.sourcePath, request.destinationDirectory) };
+  });
+
+  ipcMain.handle(IpcChannels.fsMove, async (event, raw: unknown) => {
+    assertSender(event);
+    const request = FsTransferRequestSchema.parse(raw);
+    return { path: await files.moveTo(request.sourcePath, request.destinationDirectory) };
+  });
+
+  ipcMain.handle(IpcChannels.fsDelete, (event, raw: unknown) => {
+    assertSender(event);
+    return files.remove(FsPathRequestSchema.parse(raw).path);
+  });
+
+  ipcMain.handle(IpcChannels.hostKeyDecision, (event, raw: unknown) => {
+    assertSender(event);
+    const decision = HostKeyDecisionSchema.parse(raw);
+    hostKeys?.resolve(decision.requestId, decision.accept);
   });
 }

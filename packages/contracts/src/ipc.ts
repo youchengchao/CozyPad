@@ -11,6 +11,19 @@ export const IpcChannels = {
   terminalClose: 'cozypad:terminal:close',
   terminalOutput: 'cozypad:terminal:output',
   terminalClosed: 'cozypad:terminal:closed',
+  telemetryUpdated: 'cozypad:telemetry:updated',
+  fsList: 'cozypad:fs:list',
+  fsRead: 'cozypad:fs:read',
+  fsReadBytes: 'cozypad:fs:read-bytes',
+  fsWrite: 'cozypad:fs:write',
+  fsCreate: 'cozypad:fs:create',
+  fsRename: 'cozypad:fs:rename',
+  fsDuplicate: 'cozypad:fs:duplicate',
+  fsCopy: 'cozypad:fs:copy',
+  fsMove: 'cozypad:fs:move',
+  fsDelete: 'cozypad:fs:delete',
+  hostKeyPrompt: 'cozypad:hostkey:prompt',
+  hostKeyDecision: 'cozypad:hostkey:decision',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@cozypad/contracts": "workspace:*",
+    "@cozypad/telemetry": "workspace:*",
     "@cozypad/test-fixtures": "workspace:*",
     "ssh2": "^1.17.0"
   },
