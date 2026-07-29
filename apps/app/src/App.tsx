@@ -276,7 +276,10 @@ export function App() {
             <FilesWorkspace connected={state === 'connected'} />
           </section>
           <section className="workspace-page" hidden={workspace !== 'monitor'}>
-            <MonitorWorkspace connected={state === 'connected'} />
+            <MonitorWorkspace
+              connected={state === 'connected'}
+              host={selectedProfile ? `${selectedProfile.username}@${selectedProfile.host}` : null}
+            />
           </section>
           <section className="workspace-page" hidden={workspace !== 'settings'}>
             <SettingsWorkspace bridgeKind={bridge.kind} />

@@ -20,11 +20,14 @@ const USE_MOCK = process.env.COZYPAD_MOCK === '1' || SMOKE_TEST;
 
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  // Monaco 與 pdf.js 的 worker 皆由 Vite 打包成同源檔案；blob: 供 worker bootstrap。
+  "worker-src 'self' blob:",
+  "child-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' data: blob:",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",
@@ -105,6 +108,7 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: USE_MOCK ? 'CozyPad — MOCK 模式（假主機）' : 'CozyPad — SSH 模式',
     backgroundColor: '#101014',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -183,6 +187,9 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  console.log(
+    `[cozypad] transport mode: ${USE_MOCK ? 'MOCK' : 'SSH'} (COZYPAD_MOCK=${process.env.COZYPAD_MOCK ?? '(unset)'})`,
+  );
   if (!DEV_URL) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       callback({

@@ -3,11 +3,13 @@ import { defineConfig } from 'vitest/config';
 
 const PROD_CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "worker-src 'self' blob:",
+  "child-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' data: blob:",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

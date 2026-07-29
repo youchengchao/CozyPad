@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { TelemetrySnapshot } from '@cozypad/contracts';
+import type { GpuMetric, TelemetrySnapshot } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 
 interface MonitorWorkspaceProps {
   connected: boolean;
+  host: string | null;
 }
 
 function Bar({ percent, tone }: { percent: number; tone?: 'warn' | 'hot' }) {
@@ -17,6 +18,29 @@ function Bar({ percent, tone }: { percent: number; tone?: 'warn' | 'hot' }) {
   );
 }
 
+function StatCard({
+  title,
+  subtitle,
+  value,
+  percent,
+  tone,
+}: {
+  title: string;
+  subtitle: string;
+  value: string;
+  percent: number;
+  tone?: 'warn' | 'hot';
+}) {
+  return (
+    <div className="card stat-card">
+      <span className="stat-title">{title}</span>
+      <span className="stat-value">{value}</span>
+      <Bar percent={percent} tone={tone} />
+      <span className="stat-subtitle">{subtitle}</span>
+    </div>
+  );
+}
+
 function formatRuntime(seconds: number | null): string {
   if (seconds === null) return '—';
   const hours = Math.floor(seconds / 3600);
@@ -24,12 +48,21 @@ function formatRuntime(seconds: number | null): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
-export function MonitorWorkspace({ connected }: MonitorWorkspaceProps) {
+function gpuAverages(gpus: GpuMetric[]): { util: number; vramUsed: number; vramTotal: number } {
+  if (gpus.length === 0) return { util: 0, vramUsed: 0, vramTotal: 0 };
+  return {
+    util: gpus.reduce((sum, gpu) => sum + gpu.usage, 0) / gpus.length,
+    vramUsed: gpus.reduce((sum, gpu) => sum + gpu.memoryUsedMb, 0),
+    vramTotal: gpus.reduce((sum, gpu) => sum + gpu.memoryTotalMb, 0),
+  };
+}
+
+export function MonitorWorkspace({ connected, host }: MonitorWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [snapshot, setSnapshot] = useState<TelemetrySnapshot | null>(null);
+  const [commandDialog, setCommandDialog] = useState<string | null>(null);
 
   useEffect(() => bridge.onTelemetry(setSnapshot), [bridge]);
-
   useEffect(() => {
     if (!connected) setSnapshot(null);
   }, [connected]);
@@ -53,121 +86,163 @@ export function MonitorWorkspace({ connected }: MonitorWorkspaceProps) {
   }
 
   const { cpu, memory, gpus } = snapshot;
-  const gpuProcesses = gpus.flatMap((gpu) =>
+  const busiest =
+    cpu && cpu.cores.length > 0
+      ? cpu.cores.reduce((a, b) => (a.usage >= b.usage ? a : b))
+      : null;
+  const averages = gpuAverages(gpus);
+  const processes = gpus.flatMap((gpu) =>
     gpu.processes.map((process) => ({ gpuIndex: gpu.index, ...process })),
   );
 
   return (
     <div className="monitor-workspace">
-      <div className="monitor-note hint">
-        更新於 {new Date(snapshot.timestamp).toLocaleTimeString()}（
-        {bridge.kind === 'mock' ? 'mock 資料源' : 'ssh 輪詢'}）
+      <div className="monitor-header">
+        <span className="monitor-host">{host ?? 'Remote host'}</span>
+        <span className={`dot ${connected ? 'dot-ok' : 'dot-off'}`} />
+        <span className="spacer" />
+        <span className="hint mono">
+          Synced at {new Date(snapshot.timestamp).toLocaleTimeString()}
+        </span>
       </div>
-      <div className="monitor-grid">
-        <div className="card monitor-card">
-          <h3>CPU</h3>
-          {cpu ? (
-            <>
-              <div className="big-number">{Math.round(cpu.totalUsage)}%</div>
-              <div className="core-grid">
-                {cpu.cores.map((core) => (
-                  <div key={core.index} className="core-row">
-                    <span className="core-label">c{core.index}</span>
-                    <Bar percent={core.usage} />
-                    <span className="core-value">{Math.round(core.usage)}%</span>
-                  </div>
-                ))}
+
+      <div className="stat-row">
+        <StatCard
+          title="CPU"
+          value={cpu ? `${cpu.totalUsage.toFixed(0)}%` : '—'}
+          percent={cpu?.totalUsage ?? 0}
+          subtitle={
+            cpu === null
+              ? 'CPU Info'
+              : busiest === null
+                ? 'CPU Info'
+                : `${cpu.cores.length} cores · busiest: ${busiest.usage.toFixed(0)}%`
+          }
+        />
+        <StatCard
+          title="Memory"
+          value={
+            memory
+              ? `${(memory.usedMb / 1024).toFixed(1)} / ${(memory.totalMb / 1024).toFixed(0)} GB`
+              : '—'
+          }
+          percent={memory ? (memory.usedMb / Math.max(1, memory.totalMb)) * 100 : 0}
+          subtitle={
+            memory
+              ? `${((memory.usedMb / Math.max(1, memory.totalMb)) * 100).toFixed(0)}% used`
+              : 'Memory info unavailable'
+          }
+          tone="warn"
+        />
+        <StatCard
+          title="GPU"
+          value={gpus.length === 0 ? 'N/A' : `${averages.util.toFixed(0)}%`}
+          percent={averages.util}
+          subtitle={
+            gpus.length === 0
+              ? 'nvidia-smi not available'
+              : `${gpus.length} device${gpus.length > 1 ? 's' : ''} · ${(averages.vramUsed / 1024).toFixed(1)}/${(averages.vramTotal / 1024).toFixed(0)} GB VRAM`
+          }
+        />
+      </div>
+
+      {gpus.length > 0 ? (
+        <div className="card">
+          <h3>GPU devices</h3>
+          <div className="gpu-list">
+            {gpus.map((gpu) => (
+              <div key={gpu.uuid} className="gpu-item">
+                <div className="gpu-item-head">
+                  <span className="gpu-name">
+                    <span className="gpu-index">#{gpu.index}</span> {gpu.name}
+                  </span>
+                  <span className="mono gpu-temp">{gpu.temperature.toFixed(0)}°C</span>
+                </div>
+                <div className="gpu-row">
+                  <span>util</span>
+                  <Bar percent={gpu.usage} />
+                  <span className="core-value">{gpu.usage.toFixed(0)}%</span>
+                </div>
+                <div className="gpu-row">
+                  <span>vram</span>
+                  <Bar
+                    percent={(gpu.memoryUsedMb / Math.max(1, gpu.memoryTotalMb)) * 100}
+                    tone="warn"
+                  />
+                  <span className="core-value">
+                    {(gpu.memoryUsedMb / 1024).toFixed(1)}/
+                    {(gpu.memoryTotalMb / 1024).toFixed(0)}G
+                  </span>
+                </div>
               </div>
-            </>
-          ) : (
-            <p className="hint">無法讀取 /proc/stat。</p>
-          )}
-        </div>
-
-        <div className="card monitor-card">
-          <h3>Memory</h3>
-          {memory ? (
-            <>
-              <div className="big-number">
-                {(memory.usedMb / 1024).toFixed(1)} / {(memory.totalMb / 1024).toFixed(0)} GB
-              </div>
-              <Bar percent={(memory.usedMb / Math.max(1, memory.totalMb)) * 100} />
-            </>
-          ) : (
-            <p className="hint">無法讀取 free。</p>
-          )}
-        </div>
-
-        {gpus.map((gpu) => (
-          <div key={gpu.uuid} className="card monitor-card">
-            <h3>
-              GPU {gpu.index} <span className="hint">{gpu.name}</span>
-            </h3>
-            <div className="gpu-row">
-              <span>util</span>
-              <Bar percent={gpu.usage} />
-              <span className="core-value">{Math.round(gpu.usage)}%</span>
-            </div>
-            <div className="gpu-row">
-              <span>vram</span>
-              <Bar
-                percent={(gpu.memoryUsedMb / Math.max(1, gpu.memoryTotalMb)) * 100}
-                tone="warn"
-              />
-              <span className="core-value">
-                {(gpu.memoryUsedMb / 1024).toFixed(1)}/
-                {(gpu.memoryTotalMb / 1024).toFixed(0)}G
-              </span>
-            </div>
-            <div className="gpu-row">
-              <span>temp</span>
-              <Bar
-                percent={(gpu.temperature / 90) * 100}
-                tone={gpu.temperature > 75 ? 'hot' : undefined}
-              />
-              <span className="core-value">{Math.round(gpu.temperature)}°C</span>
-            </div>
+            ))}
           </div>
-        ))}
-        {gpus.length === 0 ? (
-          <div className="card monitor-card">
-            <h3>GPU</h3>
-            <p className="hint">遠端沒有 nvidia-smi（或無 NVIDIA GPU）；其他監控不受影響。</p>
-          </div>
-        ) : null}
+        </div>
+      ) : null}
 
-        {gpuProcesses.length > 0 ? (
-          <div className="card monitor-card monitor-processes">
-            <h3>GPU processes</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>GPU</th>
-                  <th>PID</th>
-                  <th>user</th>
-                  <th>runtime</th>
-                  <th>command</th>
-                  <th>VRAM</th>
+      <div className="card">
+        <h3>Active processes</h3>
+        {processes.length === 0 ? (
+          <p className="hint">目前沒有 GPU process。</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>GPU</th>
+                <th>PID</th>
+                <th>user</th>
+                <th>runtime</th>
+                <th>command</th>
+                <th>VRAM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {processes.map((process) => (
+                <tr
+                  key={`${process.gpuIndex}-${process.pid}`}
+                  className="clickable-row"
+                  onClick={() => setCommandDialog(process.commandLine)}
+                  title="點擊查看完整命令"
+                >
+                  <td className="mono">{process.gpuIndex}</td>
+                  <td className="mono">{process.pid}</td>
+                  <td>{process.username}</td>
+                  <td className="mono">{formatRuntime(process.runtimeSeconds)}</td>
+                  <td className="mono process-command">{process.commandLine}</td>
+                  <td className="mono">{(process.usedMemoryMb / 1024).toFixed(1)}G</td>
                 </tr>
-              </thead>
-              <tbody>
-                {gpuProcesses.map((process) => (
-                  <tr key={`${process.gpuIndex}-${process.pid}`}>
-                    <td className="mono">{process.gpuIndex}</td>
-                    <td className="mono">{process.pid}</td>
-                    <td>{process.username}</td>
-                    <td className="mono">{formatRuntime(process.runtimeSeconds)}</td>
-                    <td className="mono process-command" title={process.commandLine}>
-                      {process.commandLine}
-                    </td>
-                    <td className="mono">{(process.usedMemoryMb / 1024).toFixed(1)}G</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
+
+      {commandDialog !== null ? (
+        <div className="modal-overlay" onClick={() => setCommandDialog(null)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Process command</h2>
+              <button className="modal-close" onClick={() => setCommandDialog(null)}>
+                ×
+              </button>
+            </div>
+            <pre className="command-block">{commandDialog}</pre>
+            <div className="form-actions">
+              <button
+                onClick={() => {
+                  void navigator.clipboard?.writeText(commandDialog).catch(() => undefined);
+                  setCommandDialog(null);
+                }}
+              >
+                Copy
+              </button>
+              <button className="primary" onClick={() => setCommandDialog(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import type { DirectoryListing, RemoteFileItem } from '@cozypad/contracts';
 import { base64ToBytes, bytesToBase64 } from '@cozypad/contracts';
+import { buildSamplePdf } from './samplePdf';
 
 const HOME = '/home/cozy';
 const MODIFIED = '2026-07-29 12:00';
@@ -50,7 +51,7 @@ function seed(): MockNode {
           'notes.md',
           '# Notes\n\n- 2026-07-29: dataloader 瓶頸已修，GPU util **36% → 88%**\n\n| factor | best |\n| --- | --- |\n| normalization | zscore |\n',
         ),
-        { name: 'paper.pdf', type: 'f', content: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]) },
+        { name: 'paper.pdf', type: 'f', content: buildSamplePdf() },
       ]),
     ]),
     textNode('.bashrc', 'export PATH="$HOME/bin:$PATH"\n'),

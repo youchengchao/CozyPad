@@ -1352,26 +1352,115 @@ button.danger:hover {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
-}
-
-.monitor-note {
-  margin-bottom: 10px;
-}
-
-.monitor-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
-.monitor-processes {
-  grid-column: 1 / -1;
+.monitor-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px 2px;
 }
 
-.big-number {
-  font-size: 26px;
+.monitor-host {
   font-weight: 700;
-  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.dot-ok {
+  background: var(--green);
+}
+
+.dot-off {
+  background: var(--red);
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.stat-title {
+  font-size: 12px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.stat-value {
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.stat-subtitle {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.gpu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gpu-item {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+.gpu-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.gpu-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gpu-index {
+  color: var(--accent);
+  margin-right: 4px;
+}
+
+.gpu-temp {
+  color: var(--text-dim);
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover td {
+  background: var(--bg-hover);
+}
+
+.command-block {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 50vh;
+  overflow-y: auto;
 }
 
 .bar {
@@ -1596,37 +1685,212 @@ button.danger:hover {
   font-size: 10.5px;
 }
 
-.files-editor {
+.code-editor {
   flex: 1;
-  resize: none;
-  border: none;
-  outline: none;
-  background: var(--bg);
-  color: var(--text);
-  padding: 14px 18px;
-  font-size: 13px;
-  line-height: 1.6;
-  tab-size: 4;
+  min-height: 0;
 }
 
 .md-preview {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 22px;
+  padding: 28px 40px;
 }
 
-.pdf-frame {
-  flex: 1;
-  display: flex;
+/* ---------- markdown document styling ---------- */
+
+.markdown-doc {
+  max-width: 860px;
+  margin: 0 auto;
+  line-height: 1.75;
+  font-size: 15px;
+  color: #d9d9e0;
 }
 
-.pdf-box {
-  margin: auto;
-  text-align: center;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  padding: 40px 60px;
+.markdown-doc h1,
+.markdown-doc h2,
+.markdown-doc h3,
+.markdown-doc h4 {
+  color: #fff;
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 1.6em 0 0.6em;
+  letter-spacing: -0.01em;
+}
+
+.markdown-doc h1 {
+  font-size: 28px;
+  margin-top: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-doc h2 {
+  font-size: 21px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-doc h3 {
+  font-size: 17px;
+}
+
+.markdown-doc p {
+  margin: 0 0 1.1em;
+}
+
+.markdown-doc ul,
+.markdown-doc ol {
+  margin: 0 0 1.1em;
+  padding-left: 26px;
+}
+
+.markdown-doc li {
+  margin-bottom: 0.4em;
+}
+
+.markdown-doc li::marker {
+  color: var(--accent);
+}
+
+.markdown-doc a {
+  color: var(--blue);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(122, 162, 247, 0.35);
+}
+
+.markdown-doc a:hover {
+  border-bottom-color: var(--blue);
+}
+
+.markdown-doc code {
+  background: #1c1c23;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1.5px 6px;
+  font-size: 13px;
+  color: #ffcd8a;
+}
+
+.markdown-doc pre {
+  background: #16161c;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 1.2em;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+
+.markdown-doc pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #d9d9e0;
+  font-size: 13px;
+}
+
+.markdown-doc blockquote {
+  margin: 0 0 1.2em;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--accent);
   color: var(--text-dim);
+  background: rgba(255, 180, 84, 0.04);
+}
+
+.markdown-doc table {
+  border-collapse: collapse;
+  margin: 0 0 1.3em;
+  width: 100%;
+  font-size: 14px;
+}
+
+.markdown-doc th {
+  background: var(--bg-raised);
+  text-align: left;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.markdown-doc th,
+.markdown-doc td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.markdown-doc tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.markdown-doc hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+
+.markdown-doc img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.markdown-doc input[type='checkbox'] {
+  margin-right: 6px;
+}
+
+/* ---------- pdf viewer ---------- */
+
+.pdf-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.pdf-toolbar button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 26px;
+  height: 24px;
+  color: var(--text-dim);
+}
+
+.pdf-toolbar button:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.pdf-name {
+  color: var(--text-dim);
+}
+
+.pdf-loading {
+  padding: 20px;
+  text-align: center;
+}
+
+.pdf-pages {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  background: #0b0b0e;
+}
+
+.pdf-page {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  border-radius: 3px;
+  max-width: 100%;
 }
 
 /* ---------- research ---------- */

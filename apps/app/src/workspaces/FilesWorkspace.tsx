@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import type { RemoteFileItem } from '@cozypad/contracts';
 import { base64ToBytes, textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
+import { CodeEditor } from '../components/CodeEditor';
+import { PdfViewer } from '../components/PdfViewer';
 
 interface FilesWorkspaceProps {
   connected: boolean;
@@ -59,6 +61,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
     null,
   );
+  const [pdfData, setPdfData] = useState<{ path: string; dataBase64: string } | null>(null);
   const [mdPreview, setMdPreview] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -128,8 +131,20 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const openFile = (item: RemoteFileItem) => {
     setSelected(item);
     setDraft(null);
+    setPdfData(null);
     setMdPreview(false);
-    if (!isTextFile(item) || isPdf(item) || item.sizeBytes > MAX_EDITOR_BYTES) return;
+
+    if (isPdf(item)) {
+      setBusy(true);
+      void bridge
+        .fsReadBytes({ path: item.path })
+        .then(({ dataBase64 }) => setPdfData({ path: item.path, dataBase64 }))
+        .catch(report)
+        .finally(() => setBusy(false));
+      return;
+    }
+
+    if (!isTextFile(item) || item.sizeBytes > MAX_EDITOR_BYTES) return;
     void bridge
       .fsRead({ path: item.path, maxBytes: MAX_EDITOR_BYTES, offset: 0 })
       .then(({ content }) => {
@@ -381,48 +396,25 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 <p className="hint">pwd: {pwd ?? '—'}</p>
               </div>
             ) : isPdf(selected) ? (
-              <div className="pdf-frame">
-                <div className="pdf-box">
-                  <p>📄 {selected.name}</p>
-                  <p className="hint">
-                    {(selected.sizeBytes / 1024).toFixed(1)} KB · PDF 內嵌預覽（pdf.js）為
-                    Phase 6 後續項目；先用 Download 取回。
-                  </p>
+              pdfData && pdfData.path === selected.path ? (
+                <PdfViewer dataBase64={pdfData.dataBase64} fileName={selected.name} />
+              ) : (
+                <div className="placeholder">
+                  <p>載入 PDF…</p>
                 </div>
-              </div>
+              )
             ) : draft && isMarkdown(selected) && mdPreview ? (
-              <div className="md-preview markdown">
+              <div className="md-preview markdown markdown-doc">
                 <Markdown remarkPlugins={[remarkGfm]}>{draft.text}</Markdown>
               </div>
             ) : draft ? (
-              <textarea
-                className="files-editor mono"
+              <CodeEditor
+                path={draft.path}
                 value={draft.text}
-                spellCheck={false}
-                onChange={(event) =>
-                  setDraft((current) =>
-                    current ? { ...current, text: event.target.value } : current,
-                  )
+                onChange={(text) =>
+                  setDraft((current) => (current ? { ...current, text } : current))
                 }
-                onKeyDown={(event) => {
-                  if (event.key === 'Tab') {
-                    event.preventDefault();
-                    const el = event.currentTarget;
-                    const { selectionStart, selectionEnd, value } = el;
-                    const next =
-                      value.slice(0, selectionStart) + '  ' + value.slice(selectionEnd);
-                    setDraft((current) =>
-                      current ? { ...current, text: next } : current,
-                    );
-                    requestAnimationFrame(() => {
-                      el.selectionStart = el.selectionEnd = selectionStart + 2;
-                    });
-                  }
-                  if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-                    event.preventDefault();
-                    saveDraft();
-                  }
-                }}
+                onSave={saveDraft}
               />
             ) : (
               <div className="placeholder">
