@@ -46,6 +46,15 @@ export interface AppInfo {
 }
 
 /**
+ * 背景維持連線的能力。手機需要前景服務才能在切換 app／關螢幕時保住 socket；
+ * 桌面只要視窗開著就會持續執行，回報 unsupported。
+ */
+export interface BackgroundMode {
+  supported: boolean;
+  enabled: boolean;
+}
+
+/**
  * 唯一允許 React app 接觸平台能力的介面（SPEC_V3 3.1）。
  * Electron preload、Capacitor plugin 與瀏覽器 mock 各自實作。
  */
@@ -87,6 +96,9 @@ export interface PlatformBridge {
   /** 遠端主機上的專案設定；需要連線中。 */
   getRemoteSettings(): Promise<RemoteSettings>;
   setRemoteSettings(patch: RemoteSettingsPatch): Promise<RemoteSettings>;
+
+  getBackgroundMode(): Promise<BackgroundMode>;
+  setBackgroundMode(enabled: boolean): Promise<void>;
 
   /** 系統剪貼簿；桌面走原生 API，不受 renderer 權限限制。 */
   readClipboard(): Promise<string>;

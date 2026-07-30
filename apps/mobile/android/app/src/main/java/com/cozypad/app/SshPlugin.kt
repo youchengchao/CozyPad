@@ -36,6 +36,8 @@ class SshPlugin : Plugin() {
     private val terminalIds = AtomicInteger(0)
     private val pendingHostKeys = ConcurrentHashMap<String, HostKeyDecision>()
     private val hostKeyIds = AtomicInteger(0)
+    @Volatile private var backgroundEnabled = false
+    @Volatile private var backgroundHost = ""
 
     private class ShellSession(
         val session: Session,
@@ -87,11 +89,16 @@ class SshPlugin : Plugin() {
                         if (client === ssh) {
                             client = null
                             closeAllShells()
+                            stopBackgroundService()
                             notifyListeners("connectionState", JSObject().put("state", "disconnected"))
                         }
                     }
                 }
 
+                if (backgroundEnabled) {
+                    backgroundHost = "$username@$host"
+                    SshForegroundService.start(context, backgroundHost)
+                }
                 notifyListeners("connectionState", JSObject().put("state", "connected"))
                 call.resolve()
             } catch (error: Exception) {
@@ -155,9 +162,46 @@ class SshPlugin : Plugin() {
 
     @PluginMethod
     fun disconnect(call: PluginCall) {
+        stopBackgroundService()
         disconnectInternal()
         notifyListeners("connectionState", JSObject().put("state", "disconnected"))
         call.resolve()
+    }
+
+    // ── 背景維持連線 ────────────────────────────────────────────────────
+
+    @PluginMethod
+    fun getBackgroundMode(call: PluginCall) {
+        call.resolve(
+            JSObject().put("supported", true).put("enabled", backgroundEnabled),
+        )
+    }
+
+    @PluginMethod
+    fun setBackgroundMode(call: PluginCall) {
+        val enabled = call.getBoolean("enabled") ?: false
+        backgroundEnabled = enabled
+        if (enabled) {
+            val host = call.getString("host") ?: "remote host"
+            backgroundHost = host
+            if (client != null) SshForegroundService.start(context, host)
+        } else {
+            stopBackgroundService()
+        }
+        call.resolve()
+    }
+
+    /** 連線是否仍活著；程序被凍結後回到前景時用來確認。 */
+    @PluginMethod
+    fun isConnected(call: PluginCall) {
+        call.resolve(JSObject().put("connected", client?.isConnected == true))
+    }
+
+    private fun stopBackgroundService() {
+        try {
+            SshForegroundService.stop(context)
+        } catch (_: Exception) {
+        }
     }
 
     private fun disconnectInternal() {

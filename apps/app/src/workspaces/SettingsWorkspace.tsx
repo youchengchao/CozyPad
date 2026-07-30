@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { RemoteSettings } from '@cozypad/contracts';
+import type { BackgroundMode, RemoteSettings } from '@cozypad/contracts';
 import { PROTOCOL_VERSION } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 
@@ -45,6 +45,14 @@ export function SettingsWorkspace({
   const [busy, setBusy] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleanResult, setCleanResult] = useState<string | null>(null);
+  const [background, setBackground] = useState<BackgroundMode>({
+    supported: false,
+    enabled: false,
+  });
+
+  useEffect(() => {
+    void bridge.getBackgroundMode().then(setBackground).catch(() => undefined);
+  }, [bridge]);
 
   const cleanup = async (removeTmuxBinary: boolean): Promise<void> => {
     setCleaning(true);
@@ -126,6 +134,31 @@ export function SettingsWorkspace({
           </>
         )}
       </div>
+
+      {background.supported ? (
+        <div className="card">
+          <h3>背景執行</h3>
+          <div className="settings-row">
+            <span>
+              切換 app 後維持連線
+              <span className="hint settings-sub">
+                以前景服務保住 SSH 連線（狀態列會有常駐通知）。關閉時 Android
+                會在背景凍結連線；無論是否開啟，遠端 tmux 中的工作都不會中斷，重連即可接回。
+              </span>
+            </span>
+            <Toggle
+              checked={background.enabled}
+              onChange={(value) => {
+                void bridge
+                  .setBackgroundMode(value)
+                  .then(() => bridge.getBackgroundMode())
+                  .then(setBackground)
+                  .catch(() => undefined);
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
 
       <div className="card">
         <h3>Desktop 設定（只影響本機）</h3>

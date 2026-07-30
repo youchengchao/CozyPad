@@ -43,6 +43,9 @@ interface SshPlugin {
   resizeTerminal(options: { terminalId: string; cols: number; rows: number }): Promise<void>;
   closeTerminal(options: { terminalId: string }): Promise<void>;
   respondHostKey(options: { requestId: string; accept: boolean }): Promise<void>;
+  getBackgroundMode(): Promise<{ supported: boolean; enabled: boolean }>;
+  setBackgroundMode(options: { enabled: boolean; host?: string }): Promise<void>;
+  isConnected(): Promise<{ connected: boolean }>;
   addListener(
     event: string,
     handler: (payload: Record<string, unknown>) => void,
@@ -187,6 +190,20 @@ export function createCapacitorBridge(
   });
   void ssh.addListener('execLine', (payload) => {
     execStreams.get(String(payload.streamId))?.(String(payload.line));
+  });
+
+  /**
+   * 程序被 Android 凍結時 watchdog 可能沒機會回報斷線，
+   * 回到前景時主動確認一次，讓 UI 的自動重連能接手。
+   */
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || activeProfileId === null) return;
+    void ssh
+      .isConnected()
+      .then(({ connected }) => {
+        if (!connected) emitState(activeProfileId!, 'disconnected');
+      })
+      .catch(() => undefined);
   });
 
   const exec = async (command: string, timeoutMs?: number): Promise<string> => {
@@ -377,6 +394,16 @@ export function createCapacitorBridge(
         await persistHosts();
       }
       await ssh.respondHostKey(decision);
+    },
+
+    getBackgroundMode: () => ssh.getBackgroundMode(),
+
+    async setBackgroundMode(enabled) {
+      const profile = profiles.find((entry) => entry.id === activeProfileId);
+      await ssh.setBackgroundMode({
+        enabled,
+        ...(profile === undefined ? {} : { host: `${profile.username}@${profile.host}` }),
+      });
     },
 
     async readClipboard() {

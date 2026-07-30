@@ -142,6 +142,10 @@ const bridge: PlatformBridge = {
   respondHostKey: (decision) =>
     ipcRenderer.invoke(IpcChannels.hostKeyDecision, HostKeyDecisionSchema.parse(decision)),
 
+  // 桌面只要視窗開著就持續執行，不需要前景服務。
+  getBackgroundMode: () => Promise.resolve({ supported: false, enabled: false }),
+  setBackgroundMode: () => Promise.resolve(),
+
   readClipboard: () => ipcRenderer.invoke(IpcChannels.clipboardRead),
 
   writeClipboard: (text) => ipcRenderer.invoke(IpcChannels.clipboardWrite, text),

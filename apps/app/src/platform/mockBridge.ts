@@ -219,6 +219,9 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
     },
     respondHostKey: () => Promise.resolve(),
 
+    getBackgroundMode: () => Promise.resolve({ supported: false, enabled: false }),
+    setBackgroundMode: () => Promise.resolve(),
+
     async readClipboard() {
       try {
         return await navigator.clipboard.readText();
