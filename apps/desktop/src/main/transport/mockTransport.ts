@@ -12,6 +12,7 @@ export const MOCK_PROFILE: ConnectionProfile = {
   host: 'mock.local',
   port: 22,
   username: 'cozy',
+  authMethod: 'password',
 };
 
 function delay(ms: number): Promise<void> {

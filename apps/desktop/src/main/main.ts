@@ -65,8 +65,9 @@ async function createProfileStore(): Promise<ProfileStorePort> {
       host: envHost,
       port: Number(process.env.COZYPAD_SSH_PORT ?? 22),
       username: process.env.COZYPAD_SSH_USER ?? 'root',
+      authMethod: 'password',
       password: process.env.COZYPAD_SSH_PASSWORD ?? undefined,
-      rememberPassword: false,
+      rememberCredential: false,
     });
   }
   return store;
@@ -108,7 +109,7 @@ async function createServices(
 
   const transport = new Ssh2Transport({
     getProfile: (profileId) => profileStore.get(profileId),
-    getPassword: (profileId) => profileStore.getPassword(profileId),
+    getCredential: (profileId) => profileStore.getCredential(profileId),
     verifyHostKey: (profile, key) => hostKeys.verify(profile, key),
   });
   const exec = (command: string, timeoutMs?: number) => transport.exec(command, timeoutMs);

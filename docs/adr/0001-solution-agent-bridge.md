@@ -10,11 +10,11 @@
 
 handoff 包提出 CozyPad ⇄ solution-agent（確定性 Python 任務編排器）的整合設計。
 打包時間早於 V3 定案，其中 CozyPad/Hermes 參考源碼已過時（V3 移除 Hermes），
-但 solution-agent 側的執行層設計與 SPEC_V3 §18 Research Lab 高度互補。
+但 solution-agent 側的執行層設計與 `SPEC.md` §18 Research Lab 高度互補。
 
 ## 決策
 
-### 採納（融入 SPEC_V3 §18 的實作準則）
+### 採納（融入 `SPEC.md` §18 的實作準則）
 
 1. **信任邊界**（見 `docs/protocols/solution_agent_bridge_contract.yaml`）：
    - CozyPad 擁有 UI、互動 SSH、tmux、telemetry、使用者核准。
@@ -25,12 +25,12 @@ handoff 包提出 CozyPad ⇄ solution-agent（確定性 Python 任務編排器�
 3. **顯式狀態機**：轉移鄰接表 + 冪等同狀態寫入 + 顯式 `InvalidTransition` 錯誤
    （已移植為 `@cozypad/contracts` 的 `validateRunTransition`）。
 4. **SSH 啟動不確定性語意**：`launch_unknown`（逾時、遠端狀態不明）不得與
-   `launch_failed`（確定失敗）混同；對應 SPEC_V3 `lost` 的細化，reconciliation
+   `launch_failed`（確定失敗）混同；對應 `SPEC.md` `lost` 的細化，reconciliation
    後才能收斂。
 5. **Heartbeat**：遠端 run 目錄增加 `heartbeat.json`；UI 顯示 `heartbeat_age`；
    PID 消失且無 exit code → `lost`，不得推定成功或失敗。
 6. **ExecutionSpec 白名單**：run 的命令來自 `script_id` 註冊表與驗證過的
-   workspace/artifact 路徑，不執行模型產生的任意 shell 字串（SPEC_V3 §13）。
+   workspace/artifact 路徑，不執行模型產生的任意 shell 字串（`SPEC.md` §13）。
 7. **單一事實來源**：舊 Flutter 的 `~/.dashboard_tasks.json` 與新執行層註冊表
    不得成為兩個可寫 master；遷移時一次性匯入後唯讀。
 
@@ -38,9 +38,9 @@ handoff 包提出 CozyPad ⇄ solution-agent（確定性 Python 任務編排器�
 
 - 包內的 Flutter/Hermes 參考源碼（V3 已移除 Hermes，repo 內另有最新版）。
 - Phase 3「Hermes 整合」——由 V3 的 remote agent adapter（Claude/Codex）取代。
-- solution-agent 以本機 Python 常駐服務運行——牴觸 SPEC_V3 §3（核心不內嵌
+- solution-agent 以本機 Python 常駐服務運行——牴觸 `SPEC.md` §3（核心不內嵌
   Python）。改為：**執行層跑在遠端主機**，CozyPad 經 SSH 與 durable files 溝通
-  （SPEC_V3 §17 既留此選項）。
+  （`SPEC.md` §17 既留此選項）。
 
 ## 影響
 

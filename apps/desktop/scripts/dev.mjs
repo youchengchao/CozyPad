@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
 
-execSync('node esbuild.mjs', { stdio: 'inherit', cwd: pkgRoot });
+execSync('node esbuild.mjs --sourcemap', { stdio: 'inherit', cwd: pkgRoot });
 
 const useRealSsh = process.argv.includes('--ssh');
 

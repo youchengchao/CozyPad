@@ -1,14 +1,14 @@
 # CozyPad V3 開發指南
 
 V3 是 TypeScript monorepo：**Electron（桌面）+ Capacitor（Android）共用同一套 React app**。
-技術決策與架構約束見 [SPEC_V3.md](../SPEC_V3.md)（特別是 3.1 的 PlatformBridge 規則）。
+技術決策、SSH 安全邊界與 release gates 見唯一規格檔 [SPEC.md](../SPEC.md)。
 
 ## 需要安裝的東西
 
 | 你要做的事 | 需要 |
 | --- | --- |
 | UI／共用邏輯／桌面功能（大多數工作） | Node.js LTS + pnpm，就這樣 |
-| Android APK build | 再加 Android SDK（`platform-tools`、`platforms;android-35`、`build-tools;35.0.0`）+ JDK 21 |
+| Android APK build | 再加 Android SDK（`platform-tools`、`platforms;android-36`、相容 Build Tools）+ JDK 21 |
 
 不需要 Flutter、Dart、Rust、Visual Studio、Android Studio。
 
@@ -27,7 +27,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm --filter @cozypad/desktop smoke   # Electron 自動驗證（載入 + IPC terminal 往返）
-pnpm --filter @cozypad/mobile apk      # Android debug APK（需 SDK + JDK）
+pnpm --filter @cozypad/mobile apk:debug # Android debug APK（真機開發）
 ```
 
 Android build 需要環境變數（或寫入 `apps/mobile/android/local.properties`）：
@@ -46,6 +46,9 @@ apps/
   mobile/     Capacitor shell（Android）
 packages/
   contracts/  Zod schemas、PlatformBridge interface、IPC channels — 跨平台唯一協定來源
+  remote-services/  遠端檔案、telemetry、tmux 安裝與設定
+  telemetry/  Linux CPU、RAM、GPU 指標解析
+  tmux-runtime/  tmux session/runtime
   test-fixtures/  MockPtyEngine、ssh byte fixtures、mock agent 資料
 lib/ 等       舊 Flutter 版（V3 cutover 前保持可發佈，不要動）
 ```
@@ -57,8 +60,62 @@ lib/ 等       舊 Flutter 版（V3 cutover 前保持可發佈，不要動）
 3. IPC 進出兩端都要過 Zod 驗證。
 4. Terminal 資料是 binary-safe bytes（base64 over IPC），不准 line-based 處理。
 
-## 真實 SSH 主機手動測試（Phase 3 secure storage 落地前）
+## SSH credential 與 host trust
 
-```bash
-COZYPAD_MOCK=0 COZYPAD_SSH_HOST=<host> COZYPAD_SSH_USER=<user> COZYPAD_SSH_PASSWORD=<pw> pnpm dev:desktop
+- UI 支援密碼與 SSH private key；加密 private key 可另填 passphrase。
+- Secret 只會單向提交 privileged bridge。Profile list 只回傳
+  `hasPassword`／`hasPrivateKey`，不得回傳內容。
+- Desktop 在 Electron main process 使用 `safeStorage`；Android 使用 native
+  credential vault 與 Android Keystore AES-256-GCM。
+- Desktop 與 Android credential 均綁定 profile ID、host、port、username 與
+  auth method；target 改變後必須重新輸入。
+- 關閉「以 OS 安全儲存保留驗證資料」時，secret 只保留在 main/native process
+  memory，app 關閉後清除，同次執行仍可自動重連。
+- Host key 採 OpenSSH `SHA256:` fingerprint。首次與變更都要提示，信任資料不得由
+  renderer／WebView 直接讀寫。
+- Desktop 與 Android 均使用安全演算法白名單，不可為舊主機重新啟用 SHA-1、DSA、
+  CBC、3DES、RC4 或 MD5。
+
+## 真實 SSH 主機手動測試
+
+一般測試請執行 `pnpm dev:desktop:ssh`，再從連線管理 UI 建立密碼或 SSH Key profile。
+也可以使用一次性環境變數建立密碼 profile；不要把值寫進 script：
+
+```powershell
+$env:COZYPAD_SSH_HOST = "<host>"
+$env:COZYPAD_SSH_PORT = "22"
+$env:COZYPAD_SSH_USER = "<user>"
+$env:COZYPAD_SSH_PASSWORD = "<temporary password>"
+pnpm.cmd dev:desktop:ssh
+Remove-Item Env:COZYPAD_SSH_PASSWORD
 ```
+
+至少驗證首次 host-key prompt、fingerprint 變更拒絕、密碼、未加密 key、加密 key、
+手動斷線，以及非手動斷線後的自動重連。Android 原生改動還要重建並重裝 APK，
+不能只更新 Web assets。
+
+## 正式發行
+
+正式命令會 fail closed：缺少簽章資訊就停止，不產生可誤發的 unsigned artifact。
+
+Android signed release：
+
+```powershell
+$env:COZYPAD_ANDROID_KEYSTORE = "<keystore path>"
+$env:COZYPAD_ANDROID_STORE_PASSWORD = "<CI or local secret>"
+$env:COZYPAD_ANDROID_KEY_ALIAS = "<key alias>"
+$env:COZYPAD_ANDROID_KEY_PASSWORD = "<CI or local secret>"
+pnpm.cmd --filter @cozypad/mobile apk
+```
+
+Desktop signed package：
+
+```powershell
+$env:CSC_LINK = "<certificate path or encoded certificate>"
+$env:CSC_KEY_PASSWORD = "<CI or local secret>"
+pnpm.cmd --filter @cozypad/desktop package
+```
+
+`apk:release:unsigned` 與 `package:unsigned` 只供本機驗證，禁止上傳 release。
+Keystore、certificate、password、`.env`、SDK/JDK 絕對路徑與 live-reload
+`server.url` 都不得提交。

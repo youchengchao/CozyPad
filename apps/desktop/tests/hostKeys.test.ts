@@ -16,6 +16,7 @@ const PROFILE = {
   host: '10.0.0.5',
   port: 22,
   username: 'y',
+  authMethod: 'password' as const,
 };
 
 function ed25519KeyBlob(): Uint8Array {
@@ -43,6 +44,10 @@ describe('parseKeyType', () => {
 });
 
 describe('HostKeyGate', () => {
+  it('uses the OpenSSH SHA256 fingerprint representation', () => {
+    expect(fingerprintSha256(ed25519KeyBlob())).toMatch(/^SHA256:[A-Za-z0-9+/]{43}$/u);
+  });
+
   it('prompts as "new" on first contact and stores the key after acceptance', async () => {
     const store = tempStore();
     const prompts: HostKeyPromptEvent[] = [];
@@ -72,6 +77,20 @@ describe('HostKeyGate', () => {
 
     await expect(gate.verify(PROFILE, key)).resolves.toBe(true);
     expect(prompts).toHaveLength(0);
+  });
+
+  it('silently migrates the former padded fingerprint representation', async () => {
+    const store = tempStore();
+    const key = ed25519KeyBlob();
+    const current = fingerprintSha256(key);
+    const legacy = `${current.replace('SHA256:', '')}=`;
+    await store.set('10.0.0.5', 22, legacy);
+    const prompts: HostKeyPromptEvent[] = [];
+    const gate = new HostKeyGate(store, (event) => prompts.push(event));
+
+    await expect(gate.verify(PROFILE, key)).resolves.toBe(true);
+    expect(prompts).toHaveLength(0);
+    expect(store.get('10.0.0.5', 22)).toBe(current);
   });
 
   it('prompts as "changed" with the previous fingerprint when the key differs', async () => {

@@ -3,6 +3,7 @@
   "appName": "CozyPad",
   "webDir": "../app/dist",
   "android": {
-    "backgroundColor": "#101014"
+    "backgroundColor": "#101014",
+    "loggingBehavior": "none"
   }
 }

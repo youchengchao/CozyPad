@@ -4,7 +4,12 @@ import path from 'node:path';
 import type { ConnectionProfile, HostKeyPromptEvent } from '@cozypad/contracts';
 
 export function fingerprintSha256(key: Uint8Array): string {
-  return createHash('sha256').update(key).digest('base64');
+  const digest = createHash('sha256').update(key).digest('base64').replace(/=+$/u, '');
+  return `SHA256:${digest}`;
+}
+
+function normalizeSha256Fingerprint(fingerprint: string): string {
+  return fingerprint.replace(/^SHA256:/u, '').replace(/=+$/u, '');
 }
 
 /** host key blob 開頭是 length-prefixed 演算法名稱（如 ssh-ed25519）。 */
@@ -57,6 +62,7 @@ export class KnownHostsStore {
  */
 export class HostKeyGate {
   private readonly pending = new Map<string, (accept: boolean) => void>();
+  private static readonly PROMPT_TIMEOUT_MS = 3 * 60 * 1000;
 
   constructor(
     private readonly store: KnownHostsStore,
@@ -66,11 +72,27 @@ export class HostKeyGate {
   async verify(profile: ConnectionProfile, key: Uint8Array): Promise<boolean> {
     const fingerprint = fingerprintSha256(key);
     const known = this.store.get(profile.host, profile.port);
-    if (known === fingerprint) return true;
+    if (
+      known !== undefined &&
+      normalizeSha256Fingerprint(known) === normalizeSha256Fingerprint(fingerprint)
+    ) {
+      // Silently migrate the former padded/raw representation.
+      if (known !== fingerprint) {
+        await this.store.set(profile.host, profile.port, fingerprint);
+      }
+      return true;
+    }
 
     const requestId = randomUUID();
     const accepted = await new Promise<boolean>((resolve) => {
-      this.pending.set(requestId, resolve);
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        resolve(false);
+      }, HostKeyGate.PROMPT_TIMEOUT_MS);
+      this.pending.set(requestId, (accept) => {
+        clearTimeout(timer);
+        resolve(accept);
+      });
       this.prompt({
         requestId,
         profileId: profile.id,

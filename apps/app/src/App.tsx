@@ -8,9 +8,10 @@ import type {
 import { getBridge } from './platform/bridge';
 import {
   ConnectionManager,
+  CredentialPrompt,
   HostKeyDialog,
-  PasswordPrompt,
 } from './components/ConnectionManager';
+import type { CredentialSubmission } from './components/ConnectionManager';
 import {
   AgentsIcon,
   FilesIcon,
@@ -49,7 +50,7 @@ export function App() {
   const [state, setState] = useState<ConnectionState>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
-  const [passwordPrompt, setPasswordPrompt] = useState<ConnectionProfile | null>(null);
+  const [credentialPrompt, setCredentialPrompt] = useState<ConnectionProfile | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
   const [mockData, setMockData] = useState(false);
   const [tmuxStatus, setTmuxStatus] = useState<TmuxStatus | null>(null);
@@ -186,8 +187,12 @@ export function App() {
   const handleConnect = () => {
     if (!selectedProfile) return;
     attempts.current = 0;
-    if (selectedProfile.hasPassword !== true && bridge.kind !== 'mock') {
-      setPasswordPrompt(selectedProfile);
+    const hasCredential =
+      (selectedProfile.authMethod ?? 'password') === 'privateKey'
+        ? selectedProfile.hasPrivateKey === true
+        : selectedProfile.hasPassword === true;
+    if (!hasCredential && bridge.kind !== 'mock') {
+      setCredentialPrompt(selectedProfile);
       return;
     }
     doConnect(selectedProfile.id);
@@ -202,21 +207,29 @@ export function App() {
     if (selectedId !== null) void bridge.disconnect({ profileId: selectedId });
   };
 
-  const submitPassword = async (password: string, remember: boolean) => {
-    const profile = passwordPrompt;
+  const submitCredential = async (credential: CredentialSubmission) => {
+    const profile = credentialPrompt;
     if (!profile) return;
-    setPasswordPrompt(null);
-    await bridge.saveProfile({
-      id: profile.id,
-      name: profile.name,
-      host: profile.host,
-      port: profile.port,
-      username: profile.username,
-      password,
-      rememberPassword: remember,
-    });
-    await refreshProfiles();
-    doConnect(profile.id);
+    setCredentialPrompt(null);
+    try {
+      await bridge.saveProfile({
+        id: profile.id,
+        name: profile.name,
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        ...credential,
+      });
+      await refreshProfiles();
+      doConnect(profile.id);
+    } catch (credentialError) {
+      setState('error');
+      setError(
+        credentialError instanceof Error
+          ? credentialError.message
+          : String(credentialError),
+      );
+    }
   };
 
   return (
@@ -337,11 +350,11 @@ export function App() {
           onChanged={refreshProfiles}
         />
       ) : null}
-      {passwordPrompt ? (
-        <PasswordPrompt
-          profile={passwordPrompt}
-          onCancel={() => setPasswordPrompt(null)}
-          onSubmit={(password, remember) => void submitPassword(password, remember)}
+      {credentialPrompt ? (
+        <CredentialPrompt
+          profile={credentialPrompt}
+          onCancel={() => setCredentialPrompt(null)}
+          onSubmit={(credential) => void submitCredential(credential)}
         />
       ) : null}
       {tmuxStatus !== null &&

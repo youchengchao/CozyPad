@@ -17,12 +17,12 @@
 ### 0.2 Android 建置（只有要編 APK 的人裝）
 
 1. Android SDK：任一位置解壓 cmdline-tools，安裝
-   `platforms;android-35`、`build-tools;35.0.0`、`platform-tools`
+   `platforms;android-36`、相容的 Build Tools、`platform-tools`
 2. JDK 21（Temurin zip 版免安裝程式，解壓即可）
-3. 設環境變數（範例為本機現值）：
+3. 設環境變數；只放在本機或 CI，不要提交絕對路徑：
    ```
-   ANDROID_HOME=D:\Android-SDK-for-Windows
-   JAVA_HOME=D:\dev-tools\jdk\jdk-21.0.11+10
+   ANDROID_HOME=<Android SDK 路徑>
+   JAVA_HOME=<JDK 21 路徑>
    ```
 4. 驗證：`adb devices` 跑得動即可（`%ANDROID_HOME%\platform-tools\adb.exe`）
 
@@ -54,20 +54,46 @@
    ```json
    "server": { "url": "http://localhost:5173", "cleartext": true }
    ```
-4. `pnpm --filter @cozypad/mobile apk` 編一次殼 → `adb install -r apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`
+4. `pnpm --filter @cozypad/mobile apk:debug` 編一次殼 → `adb install -r apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`
 5. 之後改 code 存檔，**手機畫面直接熱更新，不用重編 APK**
 6. 測完把 `server` 設定拿掉（不要 commit）
 
 只有動到原生層（新增 Capacitor plugin、改 Android 專案設定）才需要重跑步驟 4。
 
-### 2.3 正式 APK（發版／離線驗證）
+### 2.3 Debug APK（真機開發／離線驗證）
 
 ```
-pnpm --filter @cozypad/mobile apk
+pnpm --filter @cozypad/mobile apk:debug
 ```
-產物：`apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`（約 5MB）
+產物：`apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`
+（debug 版含除錯資訊，會明顯大於 release）
 安裝：`adb install -r <apk路徑>`，或傳檔到手機點開。
-（release 簽章版屬發佈流程，尚未設定。）
+
+### 2.4 SSH 密碼與 Key 測試
+
+在連線管理新增 profile，選擇「密碼」或「SSH Key」。Private key 可貼上或選檔；
+加密 key 另填 passphrase。第一次連線要核對 OpenSSH `SHA256:` host-key
+fingerprint；若 fingerprint 變更，先在主機端確認原因，不要直接接受。
+
+關閉「以 OS 安全儲存保留驗證資料」時，credential 只保留到 app 結束，但同次執行
+期間仍可用於斷線重連。Android 持久 credential 與 host trust 均由原生 Keystore
+保護，不會從 profile list 回傳 WebView。
+
+### 2.5 Signed release APK
+
+正式 `apk` 命令要求四個簽章環境變數，缺少任一項就停止：
+
+```powershell
+$env:COZYPAD_ANDROID_KEYSTORE = "<keystore path>"
+$env:COZYPAD_ANDROID_STORE_PASSWORD = "<CI or local secret>"
+$env:COZYPAD_ANDROID_KEY_ALIAS = "<key alias>"
+$env:COZYPAD_ANDROID_KEY_PASSWORD = "<CI or local secret>"
+pnpm.cmd --filter @cozypad/mobile apk
+```
+
+產物：`apps/mobile/android/app/build/outputs/apk/release/app-release.apk`。
+`apk:release:unsigned` 只供本機驗證，禁止上傳 release。Keystore 與密碼只能放在
+本機環境變數或 CI secrets。
 
 ## 3. Flutter ↔ 本專案指令對照
 
@@ -78,6 +104,6 @@ pnpm --filter @cozypad/mobile apk
 | hot reload（按 r） | 自動（Vite HMR，存檔即生效） |
 | `flutter run`（桌面） | `pnpm dev:desktop` |
 | `flutter run`（手機） | Live reload（見 2.2） |
-| `flutter build apk --split-per-abi` | `pnpm --filter @cozypad/mobile apk` |
+| `flutter build apk --split-per-abi` | 開發用 `pnpm --filter @cozypad/mobile apk:debug`；正式版用 `apk` |
 | `flutter test` | `pnpm test` |
 | `flutter analyze` | `pnpm lint && pnpm typecheck` |

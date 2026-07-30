@@ -258,7 +258,8 @@ button {
   color: var(--text);
 }
 
-.modal input:not([type='checkbox']) {
+.modal input:not([type='checkbox']),
+.modal textarea {
   width: 100%;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -269,7 +270,8 @@ button {
   outline: none;
 }
 
-.modal input:focus {
+.modal input:focus,
+.modal textarea:focus {
   border-color: var(--accent);
 }
 
@@ -291,6 +293,56 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.auth-method-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.auth-method-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.auth-method-switch button {
+  padding: 7px 10px;
+  border-radius: 5px;
+  color: var(--text-dim);
+}
+
+.auth-method-switch button.active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.private-key-input {
+  min-height: 132px;
+  resize: vertical;
+  line-height: 1.45;
+  font-size: 11.5px;
+  white-space: pre;
+}
+
+.modal label.credential-file {
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 7px;
+  color: var(--text-dim);
+}
+
+.credential-file input[type='file'] {
+  font-size: 12px;
 }
 
 .form-row {

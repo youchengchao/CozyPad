@@ -22,7 +22,9 @@ const MOCK_PROFILE: ConnectionProfile = {
   host: 'mock.local',
   port: 22,
   username: 'cozy',
+  authMethod: 'password',
   hasPassword: true,
+  credentialPersisted: false,
 };
 
 const MOCK_TMUX_STATUS: TmuxStatus = {
@@ -57,6 +59,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   const telemetry = new MockTelemetryGenerator();
   let profiles: ConnectionProfile[] = [MOCK_PROFILE];
   const passwords = new Map<string, string>([[MOCK_PROFILE.id, 'mock']]);
+  const privateKeys = new Map<string, string>();
   let connectedProfileId: string | null = null;
   let nextTerminalId = 1;
   let nextProfileId = 1;
@@ -90,14 +93,25 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
 
     saveProfile(draft) {
       const id = draft.id ?? `mock-p${nextProfileId++}`;
-      if (draft.password) passwords.set(id, draft.password);
+      if (draft.authMethod === 'privateKey') {
+        passwords.delete(id);
+        if (draft.privateKey) privateKeys.set(id, draft.privateKey);
+      } else {
+        privateKeys.delete(id);
+        if (draft.password) passwords.set(id, draft.password);
+      }
       const profile: ConnectionProfile = {
         id,
         name: draft.name,
         host: draft.host,
         port: draft.port,
         username: draft.username,
+        authMethod: draft.authMethod,
         hasPassword: passwords.has(id),
+        hasPrivateKey: privateKeys.has(id),
+        credentialPersisted:
+          draft.rememberCredential &&
+          (passwords.has(id) || privateKeys.has(id)),
       };
       profiles = [...profiles.filter((entry) => entry.id !== id), profile];
       return Promise.resolve(profile);
@@ -106,6 +120,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
     deleteProfile({ profileId }) {
       profiles = profiles.filter((profile) => profile.id !== profileId);
       passwords.delete(profileId);
+      privateKeys.delete(profileId);
       return Promise.resolve();
     },
 

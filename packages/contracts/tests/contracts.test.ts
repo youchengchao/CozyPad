@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ConnectRequestSchema,
+  ConnectionProfileDraftSchema,
   ConnectionProfileSchema,
   ConnectionStateChangedSchema,
   TerminalInputSchema,
@@ -21,6 +22,34 @@ describe('ConnectionProfileSchema', () => {
       username: 'ycchao',
     });
     expect(parsed.port).toBe(22);
+    expect(parsed.authMethod).toBe('password');
+  });
+
+  it('accepts private-key authentication without returning key material', () => {
+    const parsed = ConnectionProfileDraftSchema.parse({
+      name: 'Key host',
+      host: 'example.test',
+      username: 'cozy',
+      authMethod: 'privateKey',
+      privateKey: 'test-key-material',
+      passphrase: 'test-passphrase',
+      rememberCredential: true,
+    });
+    expect(parsed.authMethod).toBe('privateKey');
+    expect(parsed.rememberCredential).toBe(true);
+  });
+
+  it('normalizes the legacy rememberPassword input', () => {
+    const parsed = ConnectionProfileDraftSchema.parse({
+      name: 'Legacy host',
+      host: 'example.test',
+      username: 'cozy',
+      password: 'test-only',
+      rememberPassword: true,
+    });
+    expect(parsed.authMethod).toBe('password');
+    expect(parsed.rememberCredential).toBe(true);
+    expect('rememberPassword' in parsed).toBe(false);
   });
 
   it('rejects out-of-range ports', () => {

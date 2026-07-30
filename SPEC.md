@@ -56,9 +56,11 @@ lib/hermes/rebuild/hermes_remote_runtime.dart
 | Desktop | Electron + React + TypeScript + Vite |
 | Desktop Terminal | xterm.js + `ssh2` PTY stream |
 | Desktop persistence | SQLite |
+| Desktop SSH secrets | Electron main process + `safeStorage` |
 | Research analytics | Parquet artifacts + embedded DuckDB adapter |
 | Charts and tables | Apache ECharts + TanStack Table |
 | Mobile | Capacitor + 共用同一套 React + TypeScript |
+| Android SSH secrets | Native credential vault + Android Keystore AES-256-GCM |
 | Shared contracts | TypeScript + Zod |
 | Monorepo | pnpm workspace |
 | Remote process supervisor | tmux |
@@ -85,7 +87,8 @@ Tauri 2 是既定的效能逃生路線，且必須維持為「換殼」而不是
   - React app 必須可在純瀏覽器 + mock adapter 模式下啟動與測試。
 - 遷移評估觸發條件（參考值，非硬 gate）：Windows 閒置記憶體 > 500MB、冷啟動 > 3 秒、或安裝包體積成為使用者實際抱怨來源。
 
-與 SPEC_V2 的差異：Mobile 由 React Native + Expo 改為 Capacitor，使 Desktop 與 Mobile 共用同一套 React app；SPEC_V2 中 React Native／Expo 相關章節不再適用。
+與前版草案的差異：Mobile 由 React Native + Expo 改為 Capacitor，使 Desktop 與
+Mobile 共用同一套 React app；舊草案中的 React Native／Expo 內容不再適用。
 
 ## 4. 系統架構
 
@@ -95,6 +98,8 @@ flowchart TB
     Mobile[Capacitor Mobile]
     Core[Shared TypeScript Core]
     Store[SQLite Session Store]
+    Vault[Platform Credential Vault]
+    Trust[Host Key Trust Store]
     SSH[SSH Transport]
     Tmux[tmux Runtime Supervisor]
     Adapter[Agent Adapter]
@@ -105,6 +110,12 @@ flowchart TB
     Desktop --> Core
     Mobile --> Core
     Desktop --> Store
+    Desktop --> Vault
+    Mobile --> Vault
+    Desktop --> Trust
+    Mobile --> Trust
+    Vault --> SSH
+    Trust --> SSH
     Desktop --> SSH
     SSH --> Tmux
     Tmux --> Adapter
@@ -119,6 +130,8 @@ flowchart TB
 
 - React renderer 不得直接存取 Node.js、SSH、filesystem 或 process API。
 - Electron main process 擁有 SSH、tmux、SQLite、secrets 與 agent process lifecycle。
+- Android `SshPlugin` 擁有 socket、SSH credential 與 host-key trust；WebView 只提交
+  新 credential，不得列舉、讀回或覆寫已信任 fingerprint。
 - Preload 只暴露經 Zod 驗證的 typed IPC。
 - Shared core 不得 import Electron、Capacitor、`ssh2` 或 xterm.js。
 - React app 不得直接 import shell API；平台能力一律經由 `PlatformBridge` adapter（見 3.1），使 desktop shell 可整顆替換（Electron ⇄ Tauri）。
@@ -569,14 +582,28 @@ cozypad/
 │   └── protocols/
 ├── legacy/
 │   └── flutter/
-├── SPEC.md
-├── SPEC_V2.md
-└── SPEC_V3.md
+└── SPEC.md
 ```
 
 ## 13. Security
 
-- 使用 SSH host key verification；未知或變更的 fingerprint 必須提示。
+- SSH 驗證方式支援密碼與 private key；加密私鑰可另外提供 passphrase。
+- Profile list 與一般 metadata 不得包含密碼、私鑰或 passphrase。Secret 只能單向送進
+  privileged platform layer，儲存後不得回傳 renderer／WebView 或寫入 log。
+- Desktop 記憶的 SSH secret 必須以 Electron `safeStorage` 加密；Android 必須以
+  Android Keystore 管理的 AES-256-GCM 金鑰加密。OS secure storage 不可用時必須
+  fail closed，不得退回明文儲存。
+- 使用者不選擇記憶時，credential 僅保留在 main/native process memory，讓同一次
+  app 執行期間可自動重連；process 結束後即失效。
+- Credential 必須綁定 profile ID、host、port、username 與 auth method。
+  任一欄位不一致時不得取用舊 credential，避免 renderer metadata 遭竄改後轉送 secret。
+- 使用 SSH host key verification；未知或變更的 fingerprint 必須提示。Fingerprint
+  採 OpenSSH `SHA256:` 格式，信任資料只由 privileged platform layer 管理。
+- Desktop 與 Android 使用明確的安全演算法白名單；禁止 SHA-1、DSA、CBC、3DES、
+  RC4 與 MD5，且不得為相容舊主機而靜默降級。
+- Host-key prompt 必須有逾時與拒絕路徑；fingerprint 變更不得沿用先前信任。
+- Android release 禁止 cleartext traffic、系統資料備份與 WebView release debugging，
+  並啟用 shrinking／obfuscation。正式 APK 與 Desktop package 缺少簽章資訊時必須拒絕建置。
 - Agent authentication 沿用遠端 CLI 自己的 credential，不複製到 CozyPad。
 - Electron renderer 啟用 sandbox、context isolation 與嚴格 CSP。
 - 所有 IPC、remote metadata 與 provider event 都經 schema validation。
@@ -627,6 +654,8 @@ cozypad/
 
 - Files、Monitor、Tasks、Projects、Settings。
 - 移轉舊連線資料，但不移轉 Hermes memory/session。
+- 舊 SSH profile、credential 與 host-key trust 只允許在 privileged platform layer
+  進行一次性遷移；遷移成功後移除舊 secret，失敗時保留舊資料以便安全重試。
 
 ### Phase 6A：Research Lab
 
@@ -641,7 +670,8 @@ cozypad/
 - **Transport 有兩條路，不互斥：**
   - **原生 SSH plugin（直連）**：Capacitor plugin 包 Android sshj／iOS libssh2，實作
     同一個 `PlatformBridge`。WebView 本身沒有 raw TCP，必須由原生層提供；
-    Flutter 版以 `dartssh2` 達成的直連能力即由此對應。UI 完全不需改動。
+    Flutter 版以 `dartssh2` 達成的直連能力即由此對應。Android 已落地密碼與 SSH Key
+    登入、native credential vault、host-key trust、keepalive 與自動重連。
   - **配對 Desktop 或 authenticated gateway**：適合不想在手機上管理金鑰／密碼的情境。
 - Mobile 不直接解析 agent raw protocol。
 
@@ -695,6 +725,17 @@ cozypad/
 - App restart、SSH 斷線與 tmux reattach 後，run status 與 metrics 不重複、不遺失。
 - 表格篩選、圖表資料集與統計摘要使用同一組 run selection。
 
+### Gate G：SSH Security
+
+- Desktop 與 Android 均通過密碼、未加密 private key、加密 private key 與
+  「不記憶但同次執行可重連」測試。
+- Renderer／WebView 無法從 profile list、bridge response、log 或 error message
+  取得已儲存的 credential。
+- 未知 host key、變更 host key、提示逾時與使用者拒絕都會安全中止連線。
+- 弱演算法測試證明 SHA-1、DSA、CBC、3DES、RC4 與 MD5 不會被協商。
+- Android release manifest、R8 與簽章 gate 通過；發行資產不得包含 source map、
+  keystore、簽章密碼或環境專屬絕對路徑。
+
 ## 16. 已定案事項
 
 - Hermes 整體移除，不重寫、不相容、不遷移對話。
@@ -706,6 +747,8 @@ cozypad/
 - Desktop shell V1 採 Electron；效能或體積成為實際問題時，遷移目標為 Tauri 2，
   React app 與 shared core 不得因此重寫（約束見 3.1）。
 - Mobile shell 採 Capacitor 並與 Desktop 共用同一套 React app；不採 React Native。
+- Android 第一版採原生 SSH plugin 直連；authenticated gateway 保留為可選路徑，
+  不作為密碼／SSH Key 直連的前置條件。
 - CozyPad 發布物的技術主線維持 TypeScript；V3 第一版不內嵌 Python 或 Rust runtime，
   但 Research Lab 可執行遠端專案自己的 Python、Rust 或 shell workflow。
 - Research Lab 是獨立頂層 workspace；研究 run、tmux runtime 與 agent conversation 各自有 ID，只以明確外鍵連結。
@@ -713,7 +756,7 @@ cozypad/
 ## 17. 待確認但不阻塞架構
 
 - `agy` 的完整產品名稱、CLI command 與 protocol。
-- Mobile 第一版採 paired Desktop 或獨立 gateway。
+- iOS 原生 SSH plugin 與 authenticated gateway 的實作優先順序。
 - Codex app-server 穩定後，是否淘汰 JSONL exec fallback。
 - 是否在遠端部署常駐 bridge；Phase 0 先以 SSH channels 與 durable event files 驗證。
 

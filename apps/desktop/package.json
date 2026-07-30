@@ -1,7 +1,7 @@
 {
   "name": "@cozypad/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.6-alpha",
   "description": "CozyPad - remote agent workstation over SSH",
   "author": "youchengchao",
   "main": "dist/main.cjs",
@@ -11,7 +11,8 @@
     "dev:ssh": "node scripts/dev.mjs --ssh",
     "start": "node scripts/start.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "package": "node esbuild.mjs && electron-builder --win",
+    "package": "node scripts/build-package.mjs",
+    "package:unsigned": "node esbuild.mjs && electron-builder --win",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -22,7 +23,8 @@
       "output": "release"
     },
     "files": [
-      "dist/**"
+      "dist/**",
+      "!dist/**/*.map"
     ],
     "extraResources": [
       {

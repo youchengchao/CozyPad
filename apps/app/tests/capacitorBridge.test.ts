@@ -17,16 +17,86 @@ function createNativePlugins(): {
   ssh: SshPlugin;
   store: SecureStorePlugin;
   exec: ReturnType<typeof vi.fn>;
+  connect: ReturnType<typeof vi.fn>;
+  values: Map<string, string>;
+  nativeCredentials: Map<string, Record<string, unknown>>;
 } {
   const values = new Map<string, string>();
+  const nativeCredentials = new Map<string, Record<string, unknown>>();
   const exec = vi.fn(async ({ command }: { command: string }) => {
     if (command.includes('/proc/stat')) return { output: cpuOutput };
     if (command.includes('free -m')) return { output: '100,200' };
     return { output: '' };
   });
+  const connect = vi.fn(async () => undefined);
 
   const ssh = {
-    connect: vi.fn(async () => undefined),
+    connect,
+    configureCredential: vi.fn(
+      async (options: {
+        profileId: string;
+        host: string;
+        port: number;
+        username: string;
+        authMethod: 'password' | 'privateKey';
+        rememberCredential: boolean;
+        password?: string;
+        privateKey?: string;
+        passphrase?: string;
+      }) => {
+        const supplied =
+          options.authMethod === 'password'
+            ? options.password !== undefined
+            : options.privateKey !== undefined;
+        if (supplied) {
+          nativeCredentials.set(options.profileId, { ...options });
+        } else {
+          const existing = nativeCredentials.get(options.profileId);
+          const matches =
+            existing?.authMethod === options.authMethod &&
+            existing.host === options.host &&
+            existing.port === options.port &&
+            existing.username === options.username;
+          if (!matches) {
+            nativeCredentials.delete(options.profileId);
+          } else if (options.rememberCredential && existing !== undefined) {
+            nativeCredentials.set(options.profileId, {
+              ...existing,
+              rememberCredential: true,
+            });
+          } else if (existing?.rememberCredential === true) {
+            nativeCredentials.delete(options.profileId);
+          }
+        }
+        const current = nativeCredentials.get(options.profileId);
+        return {
+          hasCredential: current !== undefined,
+          credentialPersisted: current?.rememberCredential === true,
+        };
+      },
+    ),
+    hasCredential: vi.fn(
+      async (options: {
+        profileId: string;
+        host: string;
+        port: number;
+        username: string;
+        authMethod: 'password' | 'privateKey';
+      }) => {
+        const existing = nativeCredentials.get(options.profileId);
+        return {
+          hasCredential:
+            existing?.authMethod === options.authMethod &&
+            existing.host === options.host &&
+            existing.port === options.port &&
+            existing.username === options.username,
+          credentialPersisted: existing?.rememberCredential === true,
+        };
+      },
+    ),
+    deleteCredential: vi.fn(async ({ profileId }: { profileId: string }) => {
+      nativeCredentials.delete(profileId);
+    }),
     disconnect: vi.fn(async () => undefined),
     exec,
     openTerminal: vi.fn(async () => ({ terminalId: 'mobile-test' })),
@@ -50,7 +120,7 @@ function createNativePlugins(): {
     }),
   } satisfies SecureStorePlugin;
 
-  return { ssh, store, exec };
+  return { ssh, store, exec, connect, values, nativeCredentials };
 }
 
 describe('createCapacitorBridge telemetry', () => {
@@ -70,8 +140,9 @@ describe('createCapacitorBridge telemetry', () => {
       host: 'example.test',
       port: 22,
       username: 'cozy',
+      authMethod: 'password',
       password: 'test-only',
-      rememberPassword: true,
+      rememberCredential: true,
     });
 
     let unsubscribe = (): void => undefined;
@@ -90,5 +161,102 @@ describe('createCapacitorBridge telemetry', () => {
 
     unsubscribe();
     await bridge.disconnect({ profileId: profile.id });
+  });
+
+  it('keeps a remembered private key native-only after the initial save', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { ssh, store, connect, values, nativeCredentials } = createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store);
+    const privateKey = 'test-private-key-material';
+    const passphrase = 'test-passphrase';
+
+    const passwordProfile = await bridge.saveProfile({
+      name: 'Key host',
+      host: 'key.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-password',
+      rememberCredential: true,
+    });
+    const profile = await bridge.saveProfile({
+      id: passwordProfile.id,
+      name: 'Key host',
+      host: 'key.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'privateKey',
+      privateKey,
+      passphrase,
+      rememberCredential: true,
+    });
+    await bridge.connect({ profileId: profile.id });
+
+    expect(ssh.configureCredential).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        authMethod: 'privateKey',
+        privateKey,
+        passphrase,
+      }),
+    );
+    expect(connect).toHaveBeenCalledWith({
+      profileId: profile.id,
+      host: 'key.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'privateKey',
+    });
+    expect(JSON.stringify(connect.mock.calls)).not.toContain(privateKey);
+    expect(JSON.stringify(connect.mock.calls)).not.toContain(passphrase);
+    expect(JSON.stringify(await bridge.listProfiles())).not.toContain(privateKey);
+    expect(JSON.stringify(await bridge.listProfiles())).not.toContain(passphrase);
+    expect(JSON.stringify([...values.entries()])).not.toContain(privateKey);
+    expect(JSON.stringify([...values.entries()])).not.toContain(passphrase);
+    expect(nativeCredentials.get(profile.id)).toMatchObject({ privateKey, passphrase });
+    expect(profile).toMatchObject({
+      authMethod: 'privateKey',
+      hasPassword: false,
+      hasPrivateKey: true,
+      credentialPersisted: true,
+    });
+  });
+
+  it('preserves a transient credential when profile metadata is edited', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { ssh, store, nativeCredentials } = createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store);
+    const saved = await bridge.saveProfile({
+      name: 'Transient host',
+      host: 'transient.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: false,
+    });
+    const updated = await bridge.saveProfile({
+      id: saved.id,
+      name: 'Renamed transient host',
+      host: saved.host,
+      port: saved.port,
+      username: saved.username,
+      authMethod: 'password',
+      rememberCredential: false,
+    });
+
+    expect(updated).toMatchObject({
+      hasPassword: true,
+      credentialPersisted: false,
+    });
+    expect(nativeCredentials.get(saved.id)).toMatchObject({
+      password: 'test-only',
+      rememberCredential: false,
+    });
   });
 });

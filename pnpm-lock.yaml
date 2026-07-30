@@ -29,9 +29,15 @@ importers:
       '@cozypad/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@cozypad/remote-services':
+        specifier: workspace:*
+        version: link:../../packages/remote-services
       '@cozypad/test-fixtures':
         specifier: workspace:*
         version: link:../../packages/test-fixtures
+      '@cozypad/tmux-runtime':
+        specifier: workspace:*
+        version: link:../../packages/tmux-runtime
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -81,6 +87,9 @@ importers:
       '@cozypad/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@cozypad/remote-services':
+        specifier: workspace:*
+        version: link:../../packages/remote-services
       '@cozypad/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
@@ -153,6 +162,25 @@ importers:
     devDependencies:
       typescript:
         specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@26.1.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0))
+
+  packages/remote-services:
+    dependencies:
+      '@cozypad/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@cozypad/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+      '@cozypad/tmux-runtime':
+        specifier: workspace:*
+        version: link:../tmux-runtime
+    devDependencies:
+      typescript:
+        specifier: ^6
         version: 6.0.3
       vitest:
         specifier: ^4.1.10

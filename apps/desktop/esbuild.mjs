@@ -1,11 +1,20 @@
 import { build } from 'esbuild';
+import { rm } from 'node:fs/promises';
+
+const includeSourceMap = process.argv.includes('--sourcemap');
+if (!includeSourceMap) {
+  await Promise.all([
+    rm('dist/main.cjs.map', { force: true }),
+    rm('dist/preload.cjs.map', { force: true }),
+  ]);
+}
 
 const shared = {
   bundle: true,
   platform: 'node',
   target: 'node22',
   format: 'cjs',
-  sourcemap: true,
+  sourcemap: includeSourceMap,
   logLevel: 'info',
 };
 

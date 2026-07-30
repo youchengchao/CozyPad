@@ -6,7 +6,10 @@ import type {
   Ssh2ExecStreamLike,
   Ssh2ShellStreamLike,
 } from '../src/main/transport/ssh2Transport';
-import { Ssh2Transport } from '../src/main/transport/ssh2Transport';
+import {
+  SSH_ALGORITHMS,
+  Ssh2Transport,
+} from '../src/main/transport/ssh2Transport';
 import type { TransportEvents } from '../src/main/transport/TransportPort';
 
 class FakeShellStream implements Ssh2ShellStreamLike {
@@ -165,6 +168,7 @@ const PROFILE = {
   host: '192.168.1.10',
   port: 2222,
   username: 'ycchao',
+  authMethod: 'password' as const,
 };
 
 function flushMicrotasks(): Promise<void> {
@@ -180,7 +184,7 @@ async function connectedTransport(): Promise<{
   const recorder = createRecorder();
   const transport = new Ssh2Transport({
     getProfile: () => PROFILE,
-    getPassword: () => 'hunter2',
+    getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
     clientFactory: () => client,
   });
   transport.setEvents(recorder);
@@ -206,7 +210,13 @@ describe('Ssh2Transport', () => {
       password: 'hunter2',
       readyTimeout: 12000,
       keepaliveInterval: 10000,
+      algorithms: SSH_ALGORITHMS,
     });
+  });
+
+  it('does not offer legacy SSH algorithms', () => {
+    const offered = Object.values(SSH_ALGORITHMS).flat().join(',');
+    expect(offered).not.toMatch(/sha1|ssh-rsa|ssh-dss|cbc|3des|arcfour|md5/iu);
   });
 
   it('walks connecting → connected on success', async () => {
@@ -222,6 +232,7 @@ describe('Ssh2Transport', () => {
     const recorder = createRecorder();
     const transport = new Ssh2Transport({
       getProfile: () => PROFILE,
+      getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
       clientFactory: () => client,
     });
     transport.setEvents(recorder);
@@ -362,6 +373,7 @@ describe('Ssh2Transport', () => {
     const verified: Uint8Array[] = [];
     const transport = new Ssh2Transport({
       getProfile: () => PROFILE,
+      getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
       verifyHostKey: (profile, key) => {
         expect(profile.host).toBe(PROFILE.host);
         verified.push(key);
@@ -383,6 +395,31 @@ describe('Ssh2Transport', () => {
     await flushMicrotasks();
     expect(results).toEqual([true]);
     expect(verified).toHaveLength(1);
+
+    client.emit('ready');
+    await connectPromise;
+  });
+
+  it('passes a private key and passphrase without a password', async () => {
+    const client = new FakeClient();
+    const profile = { ...PROFILE, authMethod: 'privateKey' as const };
+    const transport = new Ssh2Transport({
+      getProfile: () => profile,
+      getCredential: () => ({
+        authMethod: 'privateKey',
+        privateKey: 'test-private-key-material',
+        passphrase: 'test-passphrase',
+      }),
+      clientFactory: () => client,
+    });
+    const connectPromise = transport.connect(profile.id);
+    await flushMicrotasks();
+
+    expect(client.connectConfig).toMatchObject({
+      privateKey: 'test-private-key-material',
+      passphrase: 'test-passphrase',
+    });
+    expect(client.connectConfig).not.toHaveProperty('password');
 
     client.emit('ready');
     await connectPromise;

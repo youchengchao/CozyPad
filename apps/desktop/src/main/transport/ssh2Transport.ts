@@ -5,6 +5,7 @@ import type {
   TerminalOpenRequest,
 } from '@cozypad/contracts';
 import type { TransportEvents, TransportPort } from './TransportPort';
+import type { ProfileCredential } from '../profileStore';
 
 /** ssh2 實際型別的最小子集；測試以 fake 實作注入。 */
 export interface Ssh2ShellStreamLike {
@@ -40,8 +41,10 @@ export interface Ssh2ClientLike {
 
 export interface Ssh2TransportOptions {
   getProfile?: (profileId: string) => ConnectionProfile | undefined;
-  /** 密碼由 main process 持有，不經過 renderer（SPEC_V3 13）。 */
-  getPassword?: (profileId: string) => Promise<string | null> | string | null;
+  /** Secrets are resolved in the main process and never returned to the renderer. */
+  getCredential?: (
+    profileId: string,
+  ) => Promise<ProfileCredential | null> | ProfileCredential | null;
   /** SSH host key 驗證（SPEC_V3 13）；回傳 false 中止連線。 */
   verifyHostKey?: (profile: ConnectionProfile, key: Uint8Array) => Promise<boolean>;
   clientFactory?: () => Ssh2ClientLike;
@@ -49,6 +52,44 @@ export interface Ssh2TransportOptions {
 
 const READY_TIMEOUT_MS = 12_000;
 const KEEPALIVE_INTERVAL_MS = 10_000;
+
+export const SSH_ALGORITHMS = {
+  kex: [
+    'curve25519-sha256',
+    'curve25519-sha256@libssh.org',
+    'ecdh-sha2-nistp256',
+    'ecdh-sha2-nistp384',
+    'ecdh-sha2-nistp521',
+    'diffie-hellman-group-exchange-sha256',
+    'diffie-hellman-group14-sha256',
+    'diffie-hellman-group15-sha512',
+    'diffie-hellman-group16-sha512',
+    'diffie-hellman-group17-sha512',
+    'diffie-hellman-group18-sha512',
+  ],
+  cipher: [
+    'chacha20-poly1305@openssh.com',
+    'aes128-gcm@openssh.com',
+    'aes256-gcm@openssh.com',
+    'aes128-ctr',
+    'aes192-ctr',
+    'aes256-ctr',
+  ],
+  serverHostKey: [
+    'ssh-ed25519',
+    'ecdsa-sha2-nistp256',
+    'ecdsa-sha2-nistp384',
+    'ecdsa-sha2-nistp521',
+    'rsa-sha2-512',
+    'rsa-sha2-256',
+  ],
+  hmac: [
+    'hmac-sha2-256-etm@openssh.com',
+    'hmac-sha2-512-etm@openssh.com',
+    'hmac-sha2-256',
+    'hmac-sha2-512',
+  ],
+} as const;
 
 export class Ssh2Transport implements TransportPort {
   private events: TransportEvents | null = null;
@@ -72,7 +113,13 @@ export class Ssh2Transport implements TransportPort {
     if (!profile) throw new Error(`unknown profile: ${profileId}`);
     if (this.client) throw new Error('already connected; disconnect first');
 
-    const password = (await this.options.getPassword?.(profileId)) ?? null;
+    const authMethod = profile.authMethod ?? 'password';
+    const credential = (await this.options.getCredential?.(profileId)) ?? null;
+    if (credential === null || credential.authMethod !== authMethod) {
+      throw new Error(
+        authMethod === 'privateKey' ? 'SSH private key is required' : 'SSH password is required',
+      );
+    }
 
     this.emitState(profileId, 'connecting');
     const client = this.clientFactory();
@@ -108,9 +155,17 @@ export class Ssh2Transport implements TransportPort {
         host: profile.host,
         port: profile.port,
         username: profile.username,
-        ...(password === null ? {} : { password }),
+        ...(credential.authMethod === 'password'
+          ? { password: credential.password }
+          : {
+              privateKey: credential.privateKey,
+              ...(credential.passphrase === undefined
+                ? {}
+                : { passphrase: credential.passphrase }),
+            }),
         readyTimeout: READY_TIMEOUT_MS,
         keepaliveInterval: KEEPALIVE_INTERVAL_MS,
+        algorithms: SSH_ALGORITHMS,
         ...(verifyHostKey === undefined
           ? {}
           : {

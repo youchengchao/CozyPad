@@ -1,10 +1,12 @@
 {
   "name": "@cozypad/mobile",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.2.6-alpha",
   "scripts": {
     "sync": "pnpm --filter @cozypad/app build && cap sync android",
-    "apk": "pnpm run sync && cd android && .\\gradlew.bat assembleDebug"
+    "apk": "node scripts/build-release.mjs",
+    "apk:release:unsigned": "pnpm run sync && cd android && .\\gradlew.bat assembleRelease",
+    "apk:debug": "pnpm run sync && cd android && .\\gradlew.bat assembleDebug"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

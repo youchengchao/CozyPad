@@ -1,5 +1,6 @@
 import type {
   AppInfo,
+  AuthenticationMethod,
   ConnectionProfile,
   ConnectionProfileDraft,
   ConnectionState,
@@ -26,12 +27,31 @@ import { TmuxRuntime } from '@cozypad/tmux-runtime';
 /** 原生 plugin 的介面（由 apps/mobile 的 Kotlin 提供）。 */
 interface SshPlugin {
   connect(options: {
+    profileId: string;
     host: string;
     port: number;
     username: string;
-    password?: string;
-    knownFingerprint?: string;
+    authMethod: AuthenticationMethod;
   }): Promise<void>;
+  configureCredential(options: {
+    profileId: string;
+    host: string;
+    port: number;
+    username: string;
+    authMethod: AuthenticationMethod;
+    rememberCredential: boolean;
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+  }): Promise<{ hasCredential: boolean; credentialPersisted: boolean }>;
+  hasCredential(options: {
+    profileId: string;
+    host: string;
+    port: number;
+    username: string;
+    authMethod: AuthenticationMethod;
+  }): Promise<{ hasCredential: boolean; credentialPersisted: boolean }>;
+  deleteCredential(options: { profileId: string }): Promise<void>;
   disconnect(): Promise<void>;
   exec(options: {
     command: string;
@@ -76,13 +96,13 @@ export function getCapacitorPlugins(): {
 }
 
 const PROFILES_KEY = 'profiles';
-const KNOWN_HOSTS_KEY = 'known_hosts';
-/** 密碼與 profile metadata 分開存放，避免把所有密碼一起載入記憶體。 */
-const passwordKey = (profileId: string): string => `password:${profileId}`;
 
-interface StoredProfile extends ConnectionProfile {
+interface StoredProfile extends Omit<ConnectionProfile, 'authMethod'> {
+  /** Missing on profiles created before key authentication was introduced. */
+  authMethod?: AuthenticationMethod;
   /** 只記錄有沒有密碼；密碼本身另存於加密儲存。 */
   hasPassword?: boolean;
+  hasPrivateKey?: boolean;
 }
 
 /**
@@ -104,7 +124,6 @@ export function createCapacitorBridge(
   const execStreams = new Map<string, (line: string) => void>();
 
   let profiles: StoredProfile[] = [];
-  let knownHosts: Record<string, string> = {};
   let activeProfileId: string | null = null;
   let connectedProfileId: string | null = null;
   let loaded = false;
@@ -116,31 +135,43 @@ export function createCapacitorBridge(
     host: profile.host,
     port: profile.port,
     username: profile.username,
+    authMethod: profile.authMethod ?? 'password',
     hasPassword: profile.hasPassword === true,
+    hasPrivateKey: profile.hasPrivateKey === true,
+    credentialPersisted: profile.credentialPersisted === true,
   });
 
   const load = async (): Promise<void> => {
     if (loaded) return;
-    const [rawProfiles, rawHosts] = await Promise.all([
-      store.get({ key: PROFILES_KEY }),
-      store.get({ key: KNOWN_HOSTS_KEY }),
-    ]);
+    const rawProfiles = await store.get({ key: PROFILES_KEY });
     try {
       profiles = rawProfiles.value === null ? [] : (JSON.parse(rawProfiles.value) as StoredProfile[]);
     } catch {
       profiles = [];
     }
-    try {
-      knownHosts = rawHosts.value === null ? {} : (JSON.parse(rawHosts.value) as Record<string, string>);
-    } catch {
-      knownHosts = {};
-    }
+    profiles = await Promise.all(
+      profiles.map(async (profile) => {
+        const authMethod = profile.authMethod ?? 'password';
+        const { hasCredential, credentialPersisted } = await ssh.hasCredential({
+          profileId: profile.id,
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          authMethod,
+        });
+        return {
+          ...profile,
+          authMethod,
+          hasPassword: authMethod === 'password' && hasCredential,
+          hasPrivateKey: authMethod === 'privateKey' && hasCredential,
+          credentialPersisted,
+        };
+      }),
+    );
     loaded = true;
   };
 
   const persistProfiles = () => store.set({ key: PROFILES_KEY, value: JSON.stringify(profiles) });
-  const persistHosts = () =>
-    store.set({ key: KNOWN_HOSTS_KEY, value: JSON.stringify(knownHosts) });
 
   const emitState = (profileId: string, state: ConnectionState, error?: string): void => {
     const event: ConnectionStateChanged = {
@@ -177,16 +208,8 @@ export function createCapacitorBridge(
     const event: TerminalClosedEvent = { terminalId: String(payload.terminalId) };
     closedListeners.forEach((listener) => listener(event));
   });
-  /** requestId → 該次提示的主機與指紋，接受後才寫入 known hosts。 */
-  const pendingHostKeys = new Map<string, { host: string; port: number; fingerprint: string }>();
-
   void ssh.addListener('hostKeyPrompt', (payload) => {
     const previous = String(payload.previousFingerprint ?? '');
-    pendingHostKeys.set(String(payload.requestId), {
-      host: String(payload.host),
-      port: Number(payload.port),
-      fingerprint: String(payload.fingerprintSha256),
-    });
     const event: HostKeyPromptEvent = {
       requestId: String(payload.requestId),
       profileId: activeProfileId ?? '',
@@ -261,7 +284,6 @@ export function createCapacitorBridge(
       telemetryListeners.forEach((listener) => listener(snapshot)),
     );
   };
-
   return {
     kind: 'capacitor',
 
@@ -275,17 +297,30 @@ export function createCapacitorBridge(
     async saveProfile(draft: ConnectionProfileDraft) {
       await load();
       const id = draft.id ?? `mobile-${Date.now().toString(36)}`;
-      const existing = profiles.find((profile) => profile.id === id);
-
-      let hasPassword = existing?.hasPassword === true;
-      if (draft.password !== undefined && draft.password !== '' && draft.rememberPassword) {
-        // 密碼直接寫進 Android Keystore 加密儲存，不留在 profile 物件裡。
-        await store.set({ key: passwordKey(id), value: draft.password });
-        hasPassword = true;
-      } else if (!draft.rememberPassword) {
-        await store.remove({ key: passwordKey(id) });
-        hasPassword = false;
-      }
+      const authMethod = draft.authMethod;
+      const { hasCredential, credentialPersisted } = await ssh.configureCredential({
+        profileId: id,
+        host: draft.host,
+        port: draft.port,
+        username: draft.username,
+        authMethod,
+        rememberCredential: draft.rememberCredential,
+        ...(authMethod !== 'password' || draft.password === undefined || draft.password === ''
+          ? {}
+          : { password: draft.password }),
+        ...(authMethod !== 'privateKey' ||
+          draft.privateKey === undefined ||
+          draft.privateKey.trim() === ''
+          ? {}
+          : {
+              privateKey: draft.privateKey,
+              ...(draft.passphrase === undefined || draft.passphrase === ''
+                ? {}
+                : { passphrase: draft.passphrase }),
+            }),
+      });
+      const hasPassword = authMethod === 'password' && hasCredential;
+      const hasPrivateKey = authMethod === 'privateKey' && hasCredential;
 
       const stored: StoredProfile = {
         id,
@@ -293,7 +328,10 @@ export function createCapacitorBridge(
         host: draft.host,
         port: draft.port,
         username: draft.username,
+        authMethod,
         hasPassword,
+        hasPrivateKey,
+        credentialPersisted,
       };
       profiles = [...profiles.filter((profile) => profile.id !== id), stored];
       await persistProfiles();
@@ -303,7 +341,7 @@ export function createCapacitorBridge(
     async deleteProfile({ profileId }) {
       await load();
       profiles = profiles.filter((profile) => profile.id !== profileId);
-      await store.remove({ key: passwordKey(profileId) });
+      await ssh.deleteCredential({ profileId });
       await persistProfiles();
     },
 
@@ -313,19 +351,14 @@ export function createCapacitorBridge(
       if (!profile) throw new Error(`unknown profile: ${profileId}`);
       activeProfileId = profileId;
       emitState(profileId, 'connecting');
-      // 只在此刻取出密碼，用完即棄，不長駐在 JS 記憶體。
-      const password = profile.hasPassword
-        ? (await store.get({ key: passwordKey(profileId) })).value
-        : null;
+      const authMethod = profile.authMethod ?? 'password';
       try {
         await ssh.connect({
+          profileId,
           host: profile.host,
           port: profile.port,
           username: profile.username,
-          ...(password === null ? {} : { password }),
-          ...(knownHosts[`${profile.host}:${profile.port}`] === undefined
-            ? {}
-            : { knownFingerprint: knownHosts[`${profile.host}:${profile.port}`]! }),
+          authMethod,
         });
         connectedProfileId = profileId;
         startTelemetry(profileId);
@@ -412,12 +445,6 @@ export function createCapacitorBridge(
     },
 
     async respondHostKey(decision) {
-      const pending = pendingHostKeys.get(decision.requestId);
-      pendingHostKeys.delete(decision.requestId);
-      if (decision.accept && pending) {
-        knownHosts[`${pending.host}:${pending.port}`] = pending.fingerprint;
-        await persistHosts();
-      }
       await ssh.respondHostKey(decision);
     },
 

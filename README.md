@@ -8,15 +8,16 @@ Codex / agy 等 remote agent 的對話介面。Agent 全部跑在遠端 tmux 裡
 app、斷線、換裝置，工作都不會中斷。
 
 一套 **React + TypeScript** codebase，桌面包 **Electron**、Android 包
-**Capacitor**；桌面安裝包約 100MB、Android APK 約 5MB。
+**Capacitor**；桌面安裝包約 100MB、Android release APK 約 7MB
+（實際大小依版本與簽章而異）。
 
-> 完整規格見 [SPEC_V3.md](SPEC_V3.md)；本 README 只講怎麼跑起來。
+> 完整規格見 [SPEC.md](SPEC.md)；本 README 只講怎麼跑起來。
 
 ## 現在能用的功能
 
 | 功能 | 狀態 |
 | --- | --- |
-| SSH 連線管理（密碼以 OS 加密記憶、host key 首次信任／變更警告、斷線自動重連） | ✅ |
+| SSH 連線管理（密碼／SSH Key、OS 安全儲存、host key 驗證、斷線自動重連） | ✅ |
 | 多分頁終端機（xterm.js、右鍵複製貼上、常用指令面板、手機 Termux 式按鍵列） | ✅ |
 | 遠端檔案：類型圖示、symlink 跳轉、任意路徑導覽、右鍵／長按選單、兩段式複製搬移 | ✅ |
 | 檔案編輯：Monaco（VS Code 引擎）語法高亮、Ctrl+S 直接存回遠端；Markdown 預覽；PDF 內嵌檢視 | ✅ |
@@ -46,10 +47,13 @@ pnpm test         # 全綠即環境就緒
 | UI 開發（瀏覽器熱更新） | `pnpm dev` → http://localhost:5173 |
 | 桌面開發（Electron 熱更新，mock） | `pnpm dev:desktop` |
 | 桌面開發（真 SSH） | `pnpm dev:desktop:ssh` |
-| Android APK | `pnpm --filter @cozypad/mobile apk`（需 Android SDK + JDK 21） |
+| Android debug APK | `pnpm --filter @cozypad/mobile apk:debug`（需 Android SDK + JDK 21） |
+| Android signed release APK | 設定簽章環境變數後執行 `pnpm --filter @cozypad/mobile apk` |
 | 檢查 | `pnpm lint` / `pnpm typecheck` / `pnpm test` |
 
-第一次連主機：右上 **⚙** 新增連線 → Connect → 確認 host key 指紋即可。
+第一次連主機：右上 **⚙** 新增連線 → 選擇「密碼」或「SSH Key」→ Connect
+→ 核對並確認 host key 指紋。關閉「以 OS 安全儲存保留驗證資料」時，憑證只保留
+到本次 app 結束，期間仍可自動重連。
 
 更多細節：[docs/DEV_V3.md](docs/DEV_V3.md)（開發指南）、
 [docs/TUTORIAL_ELECTRON_CAPACITOR.md](docs/TUTORIAL_ELECTRON_CAPACITOR.md)
@@ -81,7 +85,7 @@ CozyPad 只寫三個地方，全部可以清乾淨：
 
 | 位置 | 內容 | 怎麼清 |
 | --- | --- | --- |
-| Windows 本機 | 程式本體 + `%APPDATA%\CozyPad`（連線設定、加密密碼、known hosts、快取） | 從「設定 → 應用程式」解除安裝即可，**app data 會一併刪除** |
+| Windows 本機 | 程式本體 + Electron user data（連線設定、加密憑證、known hosts、快取） | 從「設定 → 應用程式」解除安裝即可，**app data 會一併刪除** |
 | Android | app 私有資料 | 一般解除安裝即可（Android 保證清除私有目錄）；你主動下載的檔案留在 Downloads |
 | 遠端主機 | `~/.cozypad/`（建置暫存與 log）、shell rc 與 `~/.tmux.conf` 的 CozyPad 管理區塊、（若由 CozyPad 安裝）`~/.local/bin/tmux` | **Settings → 移除與清理 → 清除**（可選是否一併移除 tmux）；只動 CozyPad 自己的區塊，不碰你其他設定 |
 
@@ -89,7 +93,13 @@ CozyPad 只寫三個地方，全部可以清乾淨：
 
 ## 安全性
 
-- 密碼經 Electron `safeStorage`（OS keychain）加密，永不進 renderer／log
-- SSH host key 首次信任 + 變更警告（防中間人）
+- Desktop 以 Electron `safeStorage` 加密密碼、私鑰與 key passphrase；Android
+  以 Android Keystore 管理的 AES-256-GCM 金鑰加密，儲存後不再把 secret 回傳 renderer
+- 已記憶的憑證綁定 profile ID、host、port、username 與驗證方式，避免
+  profile metadata 遭竄改後把憑證送往其他主機
+- SSH host key 使用標準 OpenSSH `SHA256:` fingerprint；首次或變更時必須確認，
+  已信任資料只由 privileged platform layer 管理
+- Desktop 與 Android 僅協商現代 SSH 演算法；SHA-1、DSA、CBC、3DES、RC4 與 MD5
+  不會為相容老舊伺服器而自動降級
 - Renderer 全程 sandbox + contextIsolation + 嚴格 CSP；IPC 雙向 Zod 驗證
 - 不執行模型產生的任意 shell 字串（見 [ADR 0001](docs/adr/0001-solution-agent-bridge.md)）

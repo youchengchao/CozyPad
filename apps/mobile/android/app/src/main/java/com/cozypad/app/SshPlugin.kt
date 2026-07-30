@@ -19,7 +19,6 @@ import net.schmizz.sshj.connection.channel.direct.PTYMode
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import java.io.OutputStream
-import java.security.MessageDigest
 import java.security.PublicKey
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -37,6 +36,10 @@ import kotlin.concurrent.thread
 class SshPlugin : Plugin() {
 
     @Volatile private var client: SSHClient? = null
+    private val credentialPersistence by lazy { AndroidSshCredentialPersistence(context) }
+    private val credentialVault by lazy { SshCredentialVault(credentialPersistence) }
+    private val legacyMigration by lazy { LegacySshMigration(context, credentialPersistence) }
+    private val hostKeyStore by lazy { SshHostKeyStore(context) }
     private val shells = ConcurrentHashMap<String, ShellSession>()
     private val terminalIds = AtomicInteger(0)
     private val pendingHostKeys = ConcurrentHashMap<String, HostKeyDecision>()
@@ -50,20 +53,106 @@ class SshPlugin : Plugin() {
         val output: OutputStream,
     )
 
-    private class HostKeyDecision {
+    private class HostKeyDecision(
+        val host: String,
+        val port: Int,
+        val fingerprint: String,
+    ) {
         val latch = CountDownLatch(1)
         @Volatile var accepted = false
+    }
+
+    override fun load() {
+        super.load()
+        // Runs before the WebView app requests profile data.
+        try {
+            legacyMigration.migrateAll()
+            hostKeyStore.migrateLegacy()
+        } catch (_: Exception) {
+            // A damaged legacy store must not disable the native SSH plugin.
+        }
     }
 
     // ── 連線 ────────────────────────────────────────────────────────────────
 
     @PluginMethod
+    fun configureCredential(call: PluginCall) {
+        val profileId = call.getString("profileId") ?: return call.reject("profileId is required")
+        val target = readTarget(call) ?: return
+        val authMethod = call.getString("authMethod") ?: "password"
+        val remember = call.getBoolean("rememberCredential") ?: true
+        val supplied = when (authMethod) {
+            "password" ->
+                call.getString("password")?.takeIf { it.isNotEmpty() }?.let {
+                    SshCredential.Password(target, it)
+                }
+            "privateKey" ->
+                call.getString("privateKey")?.takeIf { it.isNotBlank() }?.let {
+                    SshCredential.PrivateKey(
+                        target,
+                        it,
+                        call.getString("passphrase")?.takeIf(String::isNotEmpty),
+                    )
+                }
+            else -> return call.reject("unsupported authMethod: $authMethod")
+        }
+
+        try {
+            credentialVault.configure(
+                profileId,
+                target,
+                authMethod,
+                remember,
+                supplied,
+            )
+            call.resolve(credentialStatusJson(credentialVault.status(profileId, target, authMethod)))
+        } catch (error: Exception) {
+            call.reject(error.message ?: "unable to store SSH credential")
+        }
+    }
+
+    @PluginMethod
+    fun hasCredential(call: PluginCall) {
+        val profileId = call.getString("profileId") ?: return call.reject("profileId is required")
+        val target = readTarget(call) ?: return
+        val authMethod = call.getString("authMethod") ?: "password"
+        try {
+            call.resolve(credentialStatusJson(credentialVault.status(profileId, target, authMethod)))
+        } catch (error: Exception) {
+            call.reject(error.message ?: "unable to inspect SSH credential")
+        }
+    }
+
+    @PluginMethod
+    fun deleteCredential(call: PluginCall) {
+        val profileId = call.getString("profileId") ?: return call.reject("profileId is required")
+        try {
+            credentialVault.remove(profileId)
+            call.resolve()
+        } catch (error: Exception) {
+            call.reject(error.message ?: "unable to remove SSH credential")
+        }
+    }
+
+    @PluginMethod
     fun connect(call: PluginCall) {
-        val host = call.getString("host") ?: return call.reject("host is required")
-        val port = call.getInt("port") ?: 22
-        val username = call.getString("username") ?: return call.reject("username is required")
-        val password = call.getString("password")
-        val knownFingerprint = call.getString("knownFingerprint")
+        val profileId = call.getString("profileId") ?: return call.reject("profileId is required")
+        val target = readTarget(call) ?: return
+        val authMethod = call.getString("authMethod") ?: "password"
+        val credential = try {
+            credentialVault.get(profileId, target, authMethod)
+        } catch (error: Exception) {
+            return call.reject(error.message ?: "invalid SSH profile")
+        } ?: return call.reject(
+            if (authMethod == "privateKey") {
+                "SSH private key is required"
+            } else {
+                "SSH password is required"
+            },
+        )
+        val host = target.host
+        val port = target.port
+        val username = target.username
 
         thread(name = "cozypad-ssh-connect") {
             try {
@@ -71,16 +160,23 @@ class SshPlugin : Plugin() {
                 SshCryptoProvider.ensureInstalled()
                 val config = DefaultConfig()
                 config.keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
+                SshSecurityPolicy.configure(config)
                 val ssh = SSHClient(config)
                 ssh.connectTimeout = 15_000
                 ssh.timeout = 0
-                ssh.addHostKeyVerifier(promptingVerifier(host, port, knownFingerprint))
+                ssh.addHostKeyVerifier(promptingVerifier(host, port))
                 SshConnectionPolicy.configureBeforeConnect(ssh)
                 ssh.connect(host, port)
-                if (password != null) {
-                    ssh.authPassword(username, password)
-                } else {
-                    ssh.authPublickey(username)
+                when (credential) {
+                    is SshCredential.PrivateKey -> {
+                        val keyProvider = SshPrivateKeyLoader.load(
+                            ssh,
+                            credential.privateKey,
+                            credential.passphrase,
+                        )
+                        ssh.authPublickey(username, keyProvider)
+                    }
+                    is SshCredential.Password -> ssh.authPassword(username, credential.password)
                 }
                 client = ssh
 
@@ -117,14 +213,46 @@ class SshPlugin : Plugin() {
      * Host key 驗證：指紋與已知值相同才靜默通過，否則交給 UI 決定
      * （首次信任／變更警告），在使用者回應前阻擋這條連線。
      */
-    private fun promptingVerifier(host: String, port: Int, known: String?): HostKeyVerifier =
+    private fun readTarget(call: PluginCall): SshTarget? {
+        val host = call.getString("host")
+        if (host.isNullOrBlank()) {
+            call.reject("host is required")
+            return null
+        }
+        val port = call.getInt("port") ?: 22
+        if (port !in 1..65535) {
+            call.reject("port must be between 1 and 65535")
+            return null
+        }
+        val username = call.getString("username")
+        if (username.isNullOrBlank()) {
+            call.reject("username is required")
+            return null
+        }
+        return SshTarget(host, port, username)
+    }
+
+    private fun credentialStatusJson(status: SshCredentialStatus): JSObject =
+        JSObject()
+            .put("hasCredential", status.hasCredential)
+            .put("credentialPersisted", status.persisted)
+
+    private fun promptingVerifier(host: String, port: Int): HostKeyVerifier =
         object : HostKeyVerifier {
             override fun verify(hostname: String, p: Int, key: PublicKey): Boolean {
-                val fingerprint = sha256Fingerprint(key)
-                if (known != null && known == fingerprint) return true
+                val fingerprint = SshHostKeyFingerprint.sha256(key)
+                val known = hostKeyStore.get(host, port)
+                when (SshHostKeyFingerprint.match(known, key)) {
+                    HostKeyFingerprintMatch.CURRENT -> return true
+                    HostKeyFingerprintMatch.LEGACY_ANDROID -> {
+                        hostKeyStore.put(host, port, fingerprint)
+                        return true
+                    }
+                    HostKeyFingerprintMatch.NONE -> Unit
+                }
 
                 val requestId = "hk-${hostKeyIds.incrementAndGet()}"
-                val decision = HostKeyDecision()
+                val decision = HostKeyDecision(host, port, fingerprint)
                 pendingHostKeys[requestId] = decision
                 notifyListeners(
                     "hostKeyPrompt",
@@ -145,16 +273,21 @@ class SshPlugin : Plugin() {
             override fun findExistingAlgorithms(hostname: String, p: Int): List<String> = emptyList()
         }
 
-    private fun sha256Fingerprint(key: PublicKey): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(key.encoded)
-        return Base64.encodeToString(digest, Base64.NO_WRAP)
-    }
-
     @PluginMethod
     fun respondHostKey(call: PluginCall) {
         val requestId = call.getString("requestId") ?: return call.reject("requestId is required")
         val accept = call.getBoolean("accept") ?: false
         pendingHostKeys[requestId]?.let {
+            if (accept) {
+                try {
+                    hostKeyStore.put(it.host, it.port, it.fingerprint)
+                } catch (error: Exception) {
+                    it.accepted = false
+                    it.latch.countDown()
+                    pendingHostKeys.remove(requestId)
+                    return call.reject(error.message ?: "unable to save SSH host key")
+                }
+            }
             it.accepted = accept
             it.latch.countDown()
         }
