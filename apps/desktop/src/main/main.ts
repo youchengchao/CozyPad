@@ -101,6 +101,7 @@ async function createServices(
 
   const knownHosts = new KnownHostsStore(
     path.join(app.getPath('userData'), 'known_hosts.json'),
+    electronProfileCrypto,
   );
   await knownHosts.load();
   const hostKeys = new HostKeyGate(knownHosts, (event) => {

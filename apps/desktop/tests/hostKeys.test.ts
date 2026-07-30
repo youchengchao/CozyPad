@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import {
   fingerprintSha256,
   parseKeyType,
 } from '../src/main/hostKeys';
+import type { ProfileCrypto } from '../src/main/profileStore';
 
 const PROFILE = {
   id: 'p1',
@@ -30,7 +31,18 @@ function ed25519KeyBlob(): Uint8Array {
 
 function tempStore(): KnownHostsStore {
   const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-hosts-'));
-  return new KnownHostsStore(path.join(dir, 'known_hosts.json'));
+  return new KnownHostsStore(path.join(dir, 'known_hosts.json'), fakeCrypto());
+}
+
+function fakeCrypto(available = true): ProfileCrypto {
+  return {
+    isAvailable: () => available,
+    encrypt: (plain) => `test-v1:${Buffer.from(plain, 'utf8').toString('base64')}`,
+    decrypt: (encrypted) => {
+      if (!encrypted.startsWith('test-v1:')) throw new Error('bad ciphertext');
+      return Buffer.from(encrypted.slice('test-v1:'.length), 'base64').toString('utf8');
+    },
+  };
 }
 
 describe('parseKeyType', () => {
@@ -124,11 +136,60 @@ describe('HostKeyGate', () => {
   it('KnownHostsStore persists across reloads', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-hosts-'));
     const file = path.join(dir, 'known_hosts.json');
-    const first = new KnownHostsStore(file);
+    const first = new KnownHostsStore(file, fakeCrypto());
     await first.set('h', 2222, 'FP');
 
-    const second = new KnownHostsStore(file);
+    const second = new KnownHostsStore(file, fakeCrypto());
     await second.load();
     expect(second.get('h', 2222)).toBe('FP');
+  });
+
+  it('encrypts host, port and fingerprint at rest', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-hosts-'));
+    const file = path.join(dir, 'known_hosts.json');
+    const store = new KnownHostsStore(file, fakeCrypto());
+    await store.set('private.example', 2222, 'SHA256:private-fingerprint');
+
+    const raw = readFileSync(file, 'utf8');
+    expect(raw).not.toContain('private.example');
+    expect(raw).not.toContain('2222');
+    expect(raw).not.toContain('private-fingerprint');
+    expect(JSON.parse(raw)).toMatchObject({
+      format: 'cozypad-known-hosts',
+      version: 2,
+    });
+  });
+
+  it('migrates legacy plaintext host trust to the encrypted store format', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-hosts-'));
+    const file = path.join(dir, 'known_hosts.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ 'legacy.example:22': 'SHA256:legacy-fingerprint' }),
+      'utf8',
+    );
+    const store = new KnownHostsStore(file, fakeCrypto());
+    await store.load();
+
+    expect(store.get('legacy.example', 22)).toBe('SHA256:legacy-fingerprint');
+    const migrated = readFileSync(file, 'utf8');
+    expect(migrated).not.toContain('legacy.example');
+    expect(JSON.parse(migrated)).toMatchObject({
+      format: 'cozypad-known-hosts',
+      version: 2,
+    });
+  });
+
+  it('fails closed without overwriting host trust when crypto is unavailable', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-hosts-'));
+    const file = path.join(dir, 'known_hosts.json');
+    const legacy = JSON.stringify({
+      'legacy.example:22': 'SHA256:legacy-fingerprint',
+    });
+    writeFileSync(file, legacy, 'utf8');
+    const store = new KnownHostsStore(file, fakeCrypto(false));
+
+    await expect(store.load()).rejects.toThrow('secure storage unavailable');
+    expect(readFileSync(file, 'utf8')).toBe(legacy);
   });
 });

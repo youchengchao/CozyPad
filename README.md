@@ -93,8 +93,10 @@ CozyPad 只寫三個地方，全部可以清乾淨：
 
 ## 安全性
 
-- Desktop 以 Electron `safeStorage` 加密密碼、私鑰與 key passphrase；Android
-  以 Android Keystore 管理的 AES-256-GCM 金鑰加密，儲存後不再把 secret 回傳 renderer
+- Desktop 以 Electron `safeStorage` 加密整份連線 profile 與 host trust（包含名稱、
+  host、port、username、密碼、私鑰與 passphrase），舊版明文 metadata 會在首次載入時
+  原子遷移；Android 以 Android Keystore 管理的 AES-256-GCM 金鑰保護 profile secret
+  與 host trust。儲存後不再把 secret 回傳 renderer／WebView
 - 已記憶的憑證綁定 profile ID、host、port、username 與驗證方式，避免
   profile metadata 遭竄改後把憑證送往其他主機
 - SSH host key 使用標準 OpenSSH `SHA256:` fingerprint；首次或變更時必須確認，

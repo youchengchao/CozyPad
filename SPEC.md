@@ -56,7 +56,7 @@ lib/hermes/rebuild/hermes_remote_runtime.dart
 | Desktop | Electron + React + TypeScript + Vite |
 | Desktop Terminal | xterm.js + `ssh2` PTY stream |
 | Desktop persistence | SQLite |
-| Desktop SSH secrets | Electron main process + `safeStorage` |
+| Desktop SSH profile / host trust | Electron main process + `safeStorage` |
 | Research analytics | Parquet artifacts + embedded DuckDB adapter |
 | Charts and tables | Apache ECharts + TanStack Table |
 | Mobile | Capacitor + 共用同一套 React + TypeScript |
@@ -590,9 +590,11 @@ cozypad/
 - SSH 驗證方式支援密碼與 private key；加密私鑰可另外提供 passphrase。
 - Profile list 與一般 metadata 不得包含密碼、私鑰或 passphrase。Secret 只能單向送進
   privileged platform layer，儲存後不得回傳 renderer／WebView 或寫入 log。
-- Desktop 記憶的 SSH secret 必須以 Electron `safeStorage` 加密；Android 必須以
-  Android Keystore 管理的 AES-256-GCM 金鑰加密。OS secure storage 不可用時必須
-  fail closed，不得退回明文儲存。
+- Desktop 必須以 Electron `safeStorage` 加密完整 profile 與 host trust，包含名稱、
+  host、port、username、驗證方式、credential 與 fingerprint；舊版明文 metadata
+  必須以原子寫入自動遷移。Android 必須以 Android Keystore 管理的 AES-256-GCM
+  金鑰保護 credential 與 host trust。OS secure storage 不可用、資料損壞或無法解密時
+  必須 fail closed，不得退回明文儲存或靜默清空。
 - 使用者不選擇記憶時，credential 僅保留在 main/native process memory，讓同一次
   app 執行期間可自動重連；process 結束後即失效。
 - Credential 必須綁定 profile ID、host、port、username 與 auth method。
@@ -604,6 +606,9 @@ cozypad/
 - Host-key prompt 必須有逾時與拒絕路徑；fingerprint 變更不得沿用先前信任。
 - Android release 禁止 cleartext traffic、系統資料備份與 WebView release debugging，
   並啟用 shrinking／obfuscation。正式 APK 與 Desktop package 缺少簽章資訊時必須拒絕建置。
+- 經產品負責人明確核准的內部原型 prerelease 可附 debug-signed APK 或 unsigned Desktop
+  installer，但檔名與 release notes 必須標示 `Internal`、列出簽章狀態與 SHA-256，
+  且不得標成正式或 latest release。
 - Agent authentication 沿用遠端 CLI 自己的 credential，不複製到 CozyPad。
 - Electron renderer 啟用 sandbox、context isolation 與嚴格 CSP。
 - 所有 IPC、remote metadata 與 provider event 都經 schema validation。
@@ -735,6 +740,8 @@ cozypad/
 - 弱演算法測試證明 SHA-1、DSA、CBC、3DES、RC4 與 MD5 不會被協商。
 - Android release manifest、R8 與簽章 gate 通過；發行資產不得包含 source map、
   keystore、簽章密碼或環境專屬絕對路徑。
+- 內部原型 prerelease 若依明確核准延後正式簽章，仍須驗證 manifest、資產內容、
+  commit 對應、SHA-256 與實際簽章狀態，並同時揭露於 release notes。
 
 ## 16. 已定案事項
 

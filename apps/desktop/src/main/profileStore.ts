@@ -37,8 +37,51 @@ interface StoredProfile {
   encryptedKeyPassphrase?: string;
 }
 
+const PROFILE_STORE_FORMAT = 'cozypad-profile-store';
+const PROFILE_STORE_VERSION = 2;
+
+interface EncryptedProfileStore {
+  format: typeof PROFILE_STORE_FORMAT;
+  version: typeof PROFILE_STORE_VERSION;
+  encryptedPayload: string;
+}
+
+interface ProfileStorePayload {
+  profiles: StoredProfile[];
+}
+
+function isStoredProfile(value: unknown): value is StoredProfile {
+  if (value === null || typeof value !== 'object') return false;
+  const profile = value as Partial<StoredProfile>;
+  return (
+    typeof profile.id === 'string' &&
+    typeof profile.name === 'string' &&
+    typeof profile.host === 'string' &&
+    Number.isInteger(profile.port) &&
+    (profile.port ?? 0) >= 1 &&
+    (profile.port ?? 0) <= 65_535 &&
+    typeof profile.username === 'string' &&
+    (profile.authMethod === undefined ||
+      profile.authMethod === 'password' ||
+      profile.authMethod === 'privateKey') &&
+    (profile.encryptedPassword === undefined ||
+      typeof profile.encryptedPassword === 'string') &&
+    (profile.encryptedPrivateKey === undefined ||
+      typeof profile.encryptedPrivateKey === 'string') &&
+    (profile.encryptedKeyPassphrase === undefined ||
+      typeof profile.encryptedKeyPassphrase === 'string')
+  );
+}
+
+function parseProfiles(value: unknown): StoredProfile[] {
+  if (!Array.isArray(value) || !value.every(isStoredProfile)) {
+    throw new Error('Desktop profile store contains invalid profile data');
+  }
+  return value;
+}
+
 /**
- * Profile 持久化：metadata 存 JSON，SSH credentials 經 Electron safeStorage 加密。
+ * Profile 持久化：整份 profile（metadata 與 credentials）經 Electron safeStorage 加密。
  * 「不記住」的 credential 只留在記憶體，app 關閉即消失；內容永不回傳 renderer。
  */
 export class ProfileStore implements ProfileStorePort {
@@ -51,12 +94,51 @@ export class ProfileStore implements ProfileStorePort {
   ) {}
 
   async load(): Promise<void> {
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.filePath, 'utf8');
-      const parsed: unknown = JSON.parse(raw);
-      this.profiles = Array.isArray(parsed) ? (parsed as StoredProfile[]) : [];
+      raw = await fs.readFile(this.filePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.profiles = [];
+        return;
+      }
+      throw new Error('Unable to read the Desktop profile store');
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('Desktop profile store is corrupt');
+    }
+
+    if (Array.isArray(parsed)) {
+      // v1 stored metadata as plaintext and encrypted only credentials.
+      // Rewriting immediately migrates it to the encrypted v2 envelope.
+      this.profiles = parseProfiles(parsed);
+      await this.persist();
+      return;
+    }
+
+    if (parsed === null || typeof parsed !== 'object') {
+      throw new Error('Unsupported Desktop profile store format');
+    }
+    const envelope = parsed as Partial<EncryptedProfileStore>;
+    if (
+      envelope.format !== PROFILE_STORE_FORMAT ||
+      envelope.version !== PROFILE_STORE_VERSION ||
+      typeof envelope.encryptedPayload !== 'string'
+    ) {
+      throw new Error('Unsupported Desktop profile store format or version');
+    }
+
+    this.requireCrypto();
+    try {
+      const payload = JSON.parse(this.crypto.decrypt(envelope.encryptedPayload)) as Partial<ProfileStorePayload>;
+      this.profiles = parseProfiles(payload.profiles);
     } catch {
       this.profiles = [];
+      throw new Error('Unable to decrypt the Desktop profile store');
     }
   }
 
@@ -70,6 +152,7 @@ export class ProfileStore implements ProfileStorePort {
   }
 
   async save(draft: ConnectionProfileDraft): Promise<ConnectionProfile> {
+    this.requireCrypto();
     const id = draft.id ?? randomUUID();
     const existing = this.profiles.find((profile) => profile.id === id);
     const authMethod = draft.authMethod;
@@ -94,18 +177,11 @@ export class ProfileStore implements ProfileStorePort {
       ? existing?.encryptedKeyPassphrase
       : undefined;
 
-    const requireCrypto = (): void => {
-      if (!this.crypto.isAvailable()) {
-        throw new Error('OS secure storage unavailable — refusing to persist SSH credentials');
-      }
-    };
-
     if (authMethod === 'password') {
       encryptedPrivateKey = undefined;
       encryptedKeyPassphrase = undefined;
       if (draft.password !== undefined && draft.password !== '') {
         if (draft.rememberCredential) {
-          requireCrypto();
           encryptedPassword = this.crypto.encrypt(draft.password);
           this.transientCredentials.delete(id);
         } else {
@@ -116,7 +192,6 @@ export class ProfileStore implements ProfileStorePort {
         draft.rememberCredential &&
         existingTransient?.authMethod === authMethod
       ) {
-        requireCrypto();
         encryptedPassword = this.crypto.encrypt(existingTransient.password);
         this.transientCredentials.delete(id);
       } else if (!draft.rememberCredential && existingTransient === undefined) {
@@ -133,7 +208,6 @@ export class ProfileStore implements ProfileStorePort {
             : { passphrase: draft.passphrase }),
         };
         if (draft.rememberCredential) {
-          requireCrypto();
           encryptedPrivateKey = this.crypto.encrypt(credential.privateKey);
           encryptedKeyPassphrase =
             credential.passphrase === undefined
@@ -149,7 +223,6 @@ export class ProfileStore implements ProfileStorePort {
         draft.rememberCredential &&
         existingTransient?.authMethod === authMethod
       ) {
-        requireCrypto();
         encryptedPrivateKey = this.crypto.encrypt(existingTransient.privateKey);
         encryptedKeyPassphrase =
           existingTransient.passphrase === undefined
@@ -179,6 +252,7 @@ export class ProfileStore implements ProfileStorePort {
   }
 
   async remove(profileId: string): Promise<void> {
+    this.requireCrypto();
     this.profiles = this.profiles.filter((profile) => profile.id !== profileId);
     this.transientCredentials.delete(profileId);
     await this.persist();
@@ -233,11 +307,27 @@ export class ProfileStore implements ProfileStorePort {
     };
   }
 
+  private requireCrypto(): void {
+    if (!this.crypto.isAvailable()) {
+      throw new Error(
+        'OS secure storage unavailable — refusing to persist Desktop connection profiles',
+      );
+    }
+  }
+
   /** 先寫暫存檔再 rename：寫入中途當機不會留下半截的設定檔。 */
   private async persist(): Promise<void> {
+    this.requireCrypto();
+    const envelope: EncryptedProfileStore = {
+      format: PROFILE_STORE_FORMAT,
+      version: PROFILE_STORE_VERSION,
+      encryptedPayload: this.crypto.encrypt(
+        JSON.stringify({ profiles: this.profiles } satisfies ProfileStorePayload),
+      ),
+    };
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const temp = `${this.filePath}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(this.profiles, null, 2), 'utf8');
+    await fs.writeFile(temp, JSON.stringify(envelope, null, 2), 'utf8');
     await fs.rename(temp, this.filePath);
   }
 }

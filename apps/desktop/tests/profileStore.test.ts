@@ -8,11 +8,10 @@ import type { ProfileCrypto } from '../src/main/profileStore';
 function fakeCrypto(available = true): ProfileCrypto {
   return {
     isAvailable: () => available,
-    encrypt: (plain) => `enc(${plain})`,
+    encrypt: (plain) => `test-v1:${Buffer.from(plain, 'utf8').toString('base64')}`,
     decrypt: (encrypted) => {
-      const match = /^enc\((.*)\)$/.exec(encrypted);
-      if (!match) throw new Error('bad ciphertext');
-      return match[1]!;
+      if (!encrypted.startsWith('test-v1:')) throw new Error('bad ciphertext');
+      return Buffer.from(encrypted.slice('test-v1:'.length), 'base64').toString('utf8');
     },
   };
 }
@@ -75,9 +74,35 @@ describe('ProfileStore', () => {
     });
   });
 
-  it('loads password profiles created before authMethod was introduced', async () => {
+  it('encrypts all profile metadata and credentials at rest', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
     const file = path.join(dir, 'profiles.json');
+    const store = new ProfileStore(file, fakeCrypto());
+    await store.save({
+      ...DRAFT,
+      password: 's3cret',
+      rememberCredential: true,
+    });
+
+    const raw = readFileSync(file, 'utf8');
+    for (const sensitiveValue of [
+      DRAFT.name,
+      DRAFT.host,
+      DRAFT.username,
+      's3cret',
+    ]) {
+      expect(raw).not.toContain(sensitiveValue);
+    }
+    expect(JSON.parse(raw)).toMatchObject({
+      format: 'cozypad-profile-store',
+      version: 2,
+    });
+  });
+
+  it('migrates legacy plaintext metadata to the encrypted store format', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
+    const file = path.join(dir, 'profiles.json');
+    const crypto = fakeCrypto();
     writeFileSync(
       file,
       JSON.stringify([
@@ -85,12 +110,12 @@ describe('ProfileStore', () => {
           id: 'legacy-profile',
           ...DRAFT,
           authMethod: undefined,
-          encryptedPassword: 'enc(legacy-password)',
+          encryptedPassword: crypto.encrypt('legacy-password'),
         },
       ]),
       'utf8',
     );
-    const store = new ProfileStore(file, fakeCrypto());
+    const store = new ProfileStore(file, crypto);
     await store.load();
 
     expect(store.get('legacy-profile')).toMatchObject({
@@ -101,6 +126,13 @@ describe('ProfileStore', () => {
     expect(store.getCredential('legacy-profile')).toEqual({
       authMethod: 'password',
       password: 'legacy-password',
+    });
+    const migrated = readFileSync(file, 'utf8');
+    expect(migrated).not.toContain('legacy-profile');
+    expect(migrated).not.toContain(DRAFT.host);
+    expect(JSON.parse(migrated)).toMatchObject({
+      format: 'cozypad-profile-store',
+      version: 2,
     });
   });
 
@@ -144,6 +176,24 @@ describe('ProfileStore', () => {
     ).rejects.toThrow('secure storage unavailable');
   });
 
+  it('refuses to persist metadata when OS crypto is unavailable', async () => {
+    const store = tempStore(false);
+    await expect(
+      store.save({ ...DRAFT, rememberCredential: false }),
+    ).rejects.toThrow('secure storage unavailable');
+  });
+
+  it('leaves a legacy store untouched when secure migration is unavailable', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
+    const file = path.join(dir, 'profiles.json');
+    const legacy = JSON.stringify([{ id: 'legacy-profile', ...DRAFT }]);
+    writeFileSync(file, legacy, 'utf8');
+
+    const store = new ProfileStore(file, fakeCrypto(false));
+    await expect(store.load()).rejects.toThrow('secure storage unavailable');
+    expect(readFileSync(file, 'utf8')).toBe(legacy);
+  });
+
   it('removes profiles and their passwords', async () => {
     const store = tempStore();
     const saved = await store.save({
@@ -165,15 +215,38 @@ describe('ProfileStore', () => {
     // 寫入完成後不得留下暫存檔，且內容必須是完整可解析的 JSON。
     expect(existsSync(`${file}.tmp`)).toBe(false);
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
-    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toMatchObject({
+      format: 'cozypad-profile-store',
+      version: 2,
+    });
   });
 
-  it('recovers from a corrupt profiles file instead of crashing', async () => {
+  it('fails closed without overwriting a corrupt profiles file', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
     const file = path.join(dir, 'profiles.json');
-    writeFileSync(file, '{ this is not json', 'utf8');
+    const corrupt = '{ this is not json';
+    writeFileSync(file, corrupt, 'utf8');
     const store = new ProfileStore(file, fakeCrypto());
-    await store.load();
+    await expect(store.load()).rejects.toThrow('profile store is corrupt');
+    expect(store.list()).toEqual([]);
+    expect(readFileSync(file, 'utf8')).toBe(corrupt);
+  });
+
+  it('fails closed when encrypted profile data cannot be decrypted', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
+    const file = path.join(dir, 'profiles.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        format: 'cozypad-profile-store',
+        version: 2,
+        encryptedPayload: 'not-valid-ciphertext',
+      }),
+      'utf8',
+    );
+    const store = new ProfileStore(file, fakeCrypto());
+
+    await expect(store.load()).rejects.toThrow('Unable to decrypt');
     expect(store.list()).toEqual([]);
   });
 

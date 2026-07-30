@@ -65,8 +65,9 @@ lib/ 等       舊 Flutter 版（V3 cutover 前保持可發佈，不要動）
 - UI 支援密碼與 SSH private key；加密 private key 可另填 passphrase。
 - Secret 只會單向提交 privileged bridge。Profile list 只回傳
   `hasPassword`／`hasPrivateKey`，不得回傳內容。
-- Desktop 在 Electron main process 使用 `safeStorage`；Android 使用 native
-  credential vault 與 Android Keystore AES-256-GCM。
+- Desktop 在 Electron main process 使用 `safeStorage` 加密完整 profile 與 host trust；
+  舊版明文 `profiles.json`／`known_hosts.json` 會自動原子遷移。Android 使用 native
+  credential vault 與 Android Keystore AES-256-GCM 保護 credential 與 host trust。
 - Desktop 與 Android credential 均綁定 profile ID、host、port、username 與
   auth method；target 改變後必須重新輸入。
 - 關閉「以 OS 安全儲存保留驗證資料」時，secret 只保留在 main/native process
@@ -116,6 +117,8 @@ $env:CSC_KEY_PASSWORD = "<CI or local secret>"
 pnpm.cmd --filter @cozypad/desktop package
 ```
 
-`apk:release:unsigned` 與 `package:unsigned` 只供本機驗證，禁止上傳 release。
+`apk:release:unsigned` 與 `package:unsigned` 預設只供本機驗證。只有產品負責人明確
+核准的內部原型 prerelease 才可附 debug-signed APK 或 unsigned Desktop installer，
+且檔名與 release notes 必須標示 `Internal`、簽章狀態與 SHA-256；不得標成正式或 latest。
 Keystore、certificate、password、`.env`、SDK/JDK 絕對路徑與 live-reload
 `server.url` 都不得提交。

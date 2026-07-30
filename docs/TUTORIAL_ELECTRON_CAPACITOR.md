@@ -79,6 +79,11 @@ fingerprint；若 fingerprint 變更，先在主機端確認原因，不要直�
 期間仍可用於斷線重連。Android 持久 credential 與 host trust 均由原生 Keystore
 保護，不會從 profile list 回傳 WebView。
 
+Desktop 的完整 profile 與 host trust（包含名稱、host、port、username、credential
+與 fingerprint）由 Electron `safeStorage` 加密；舊版明文儲存會在首次啟動時自動
+原子遷移。OS secure storage 不可用或資料無法解密時會停止載入，不會退回明文或
+把原檔靜默清空。
+
 ### 2.5 Signed release APK
 
 正式 `apk` 命令要求四個簽章環境變數，缺少任一項就停止：
@@ -94,6 +99,21 @@ pnpm.cmd --filter @cozypad/mobile apk
 產物：`apps/mobile/android/app/build/outputs/apk/release/app-release.apk`。
 `apk:release:unsigned` 只供本機驗證，禁止上傳 release。Keystore 與密碼只能放在
 本機環境變數或 CI secrets。
+
+### 2.6 Signed Desktop package
+
+正式 Windows 安裝檔必須提供 code-signing certificate：
+
+```powershell
+$env:CSC_LINK = "<certificate path or encoded certificate>"
+$env:CSC_KEY_PASSWORD = "<CI or local secret>"
+pnpm.cmd --filter @cozypad/app build
+pnpm.cmd --filter @cozypad/desktop package
+```
+
+`package:unsigned` 預設只供本機驗證。若產品負責人明確核准延後原型簽章，內部
+prerelease 的檔名與 release notes 必須清楚標示 `Internal`、unsigned 與 SHA-256；
+不得當作正式或 latest release。
 
 ## 3. Flutter ↔ 本專案指令對照
 
