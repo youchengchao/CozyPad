@@ -3,12 +3,13 @@ import { TMUX_TARGET_VERSION } from '@cozypad/contracts';
 import type { RemoteExec } from './runtime';
 
 /**
- * 從原始碼建置 tmux 實際需要的工具。
- * yacc/bison 與 pkg-config 是最常見的缺件——沒檢查就會在 configure 階段才炸。
+ * 真正無法繞過的工具——沒有這些就不能從原始碼建置任何東西。
+ * yacc/bison 與 pkg-config 刻意不列入：前者缺少時我們順便建置 bison，
+ * 後者可用顯式的 CFLAGS/LIBS 取代。
  */
-const REQUIRED_TOOLS = ['curl', 'tar', 'make', 'cc', 'pkg-config'];
-/** 這些是等價選項，只要其中一個存在即可。 */
-const REQUIRED_ANY = [['yacc', 'bison', 'byacc']];
+const REQUIRED_TOOLS = ['curl', 'tar', 'make', 'cc'];
+/** bison 建置需要 m4；缺 m4 又缺 yacc 才是真的擋住。 */
+const REQUIRED_ANY: string[][] = [];
 
 export const TMUX_INSTALL_LOG = '$HOME/.cozypad/tmux-install.log';
 /** 建置暫存目錄；安裝成功後預設清除，避免在使用者主機留下數百 MB。 */
@@ -54,11 +55,22 @@ for tool in ${REQUIRED_TOOLS.join(' ')}; do
   command -v "$tool" >/dev/null 2>&1 || printf '__MISSING__\\t%s\\n' "$tool"
 done
 ${anyChecks}
+# yacc 缺少時我們會自行建置 bison，但那需要 m4；兩者都缺才無解。
+if ! command -v yacc >/dev/null 2>&1 && ! command -v bison >/dev/null 2>&1 && ! command -v byacc >/dev/null 2>&1; then
+  if command -v m4 >/dev/null 2>&1; then
+    printf '__EXTRA_BUILD__\\tbison\\n'
+  else
+    printf '__MISSING__\\tm4（yacc/bison 亦缺少，無法自行建置）\\n'
+  fi
+fi
 `;
   const output = await exec(command, 8000);
   const pathMatch = /__PATH__\t(.*)/.exec(output);
   const versionMatch = /__VERSION__\t(.*)/.exec(output);
   const missingTools = [...output.matchAll(/__MISSING__\t(\S+)/g)].map((match) => match[1]!);
+  const extraBuilds = [...output.matchAll(/__EXTRA_BUILD__\t(\S+)/g)].map(
+    (match) => match[1]!,
+  );
 
   const binaryPath = pathMatch?.[1]?.trim() ?? '';
   const version = versionMatch ? parseTmuxVersion(versionMatch[1] ?? '') : null;
@@ -73,6 +85,7 @@ ${anyChecks}
     targetVersion: TMUX_TARGET_VERSION,
     canInstall: missingTools.length === 0,
     missingTools,
+    extraBuilds,
   };
 }
 
@@ -91,6 +104,7 @@ export function buildTmuxInstallScript(
 ): string {
   const libevent = '2.1.12-stable';
   const ncurses = '6.4';
+  const bison = '3.8.2';
   return `PREFIX="$HOME/.local"
 SRC="${TMUX_BUILD_DIR}"
 LOG="${TMUX_INSTALL_LOG}"
@@ -123,15 +137,39 @@ stage downloading 11 "下載 tmux ${version}"
 
 JOBS="$(nproc 2>/dev/null || echo 2)"
 
-stage building 14 "解壓 libevent"
+# 遠端沒有 yacc/bison 時自行建置一份（僅供這次建置使用）。
+NEED_BISON=0
+if ! command -v yacc >/dev/null 2>&1 && ! command -v bison >/dev/null 2>&1 && ! command -v byacc >/dev/null 2>&1; then
+  NEED_BISON=1
+fi
+if [ "$NEED_BISON" = "1" ]; then
+  stage downloading 12 "遠端缺少 yacc，下載 bison"
+  [ -f bison.tar.gz ] || run "download bison" curl -fsSL --retry 3 -o bison.tar.gz \\
+    "https://ftp.gnu.org/gnu/bison/bison-${bison}.tar.gz"
+  stage building 14 "解壓 bison"
+  rm -rf bison-${bison}
+  run "extract bison" tar xzf bison.tar.gz
+  cd bison-${bison}
+  stage building 16 "設定 bison"
+  run "configure bison" ./configure --prefix="$PREFIX"
+  stage building 19 "編譯 bison（約 1-3 分鐘）"
+  run "make bison" make -j"$JOBS"
+  stage building 21 "安裝 bison"
+  run "install bison" make install
+  cd "$SRC"
+  export PATH="$PREFIX/bin:$PATH"
+  export YACC="$PREFIX/bin/bison -y"
+fi
+
+stage building 23 "解壓 libevent"
 rm -rf libevent-${libevent}
 run "extract libevent" tar xzf libevent.tar.gz
 cd libevent-${libevent}
-stage building 18 "設定 libevent"
+stage building 26 "設定 libevent"
 run "configure libevent" ./configure --prefix="$PREFIX" --disable-shared --disable-openssl --disable-samples
-stage building 24 "編譯 libevent（約 1-2 分鐘）"
+stage building 30 "編譯 libevent（約 1-2 分鐘）"
 run "make libevent" make -j"$JOBS"
-stage building 33 "安裝 libevent"
+stage building 34 "安裝 libevent"
 run "install libevent" make install
 cd "$SRC"
 
@@ -154,10 +192,13 @@ rm -rf tmux-${version}
 run "extract tmux" tar xzf tmux.tar.gz
 cd tmux-${version}
 stage building 76 "設定 tmux"
+# 顯式提供 libevent/ncurses 旗標，遠端沒有 pkg-config 也能設定成功。
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" run "configure tmux" ./configure --prefix="$PREFIX" \\
   CFLAGS="-I$PREFIX/include -I$PREFIX/include/ncurses" \\
   LDFLAGS="-L$PREFIX/lib" \\
-  LIBEVENT_CFLAGS="-I$PREFIX/include" LIBEVENT_LIBS="-L$PREFIX/lib -levent"
+  LIBEVENT_CFLAGS="-I$PREFIX/include" LIBEVENT_LIBS="-L$PREFIX/lib -levent" \\
+  NCURSES_CFLAGS="-I$PREFIX/include -I$PREFIX/include/ncurses" \\
+  NCURSES_LIBS="-L$PREFIX/lib -lncursesw -ltinfow"
 stage building 82 "編譯 tmux（約 1-2 分鐘）"
 run "make tmux" make -j"$JOBS"
 stage installing 90 "安裝 tmux"

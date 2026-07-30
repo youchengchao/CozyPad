@@ -130,6 +130,7 @@ export class MockTmuxProvisioner implements TmuxProvisionerPort {
     targetVersion: '3.5a',
     canInstall: true,
     missingTools: [],
+    extraBuilds: [],
   };
 
   status(): Promise<TmuxStatus> {

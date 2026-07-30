@@ -72,17 +72,27 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
 
         {!status.canInstall ? (
           <div className="error-banner">
-            遠端缺少建置工具：{status.missingTools.join('、')}
-            ——無法自動安裝，請先請管理者安裝這些工具或直接安裝 tmux。
+            遠端缺少基本建置工具：{status.missingTools.join('、')}
+            ——這些無法自行補齊，請先請管理者安裝，或直接安裝 tmux。
           </div>
         ) : (
           <p className="hint">
             自動安裝會以<strong>使用者層級</strong>建置 tmux {status.targetVersion}
-            （libevent + ncurses + tmux）到 <span className="mono">~/.local</span>，
-            不需要 sudo、不影響系統其他使用者，並把 <span className="mono">~/.local/bin</span>
-            加進 shell PATH。整個過程約 3-10 分鐘。
+            （libevent + ncurses + tmux
+            {status.extraBuilds.length > 0 ? ` + ${status.extraBuilds.join(' + ')}` : ''}
+            ）到 <span className="mono">~/.local</span>，不需要 sudo、不影響系統其他使用者，
+            並把 <span className="mono">~/.local/bin</span> 加進 shell PATH。
+            建置暫存在完成後會自動刪除。整個過程約
+            {status.extraBuilds.length > 0 ? ' 5-15 ' : ' 3-10 '}分鐘。
           </p>
         )}
+
+        {status.canInstall && status.extraBuilds.length > 0 ? (
+          <p className="hint">
+            偵測到遠端缺少 <span className="mono">yacc</span>，安裝時會一併建置{' '}
+            <span className="mono">{status.extraBuilds.join('、')}</span>——不需要你另外處理。
+          </p>
+        ) : null}
 
         {latest !== undefined ? (
           <div className="install-progress">

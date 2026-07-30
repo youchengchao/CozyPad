@@ -66,23 +66,32 @@ describe('detectTmux', () => {
     expect(status.missingTools).toEqual(['cc', 'make']);
   });
 
-  it('checks for the tools that actually break the build (yacc, pkg-config, tar)', async () => {
+  it('checks the tools that actually break the build', async () => {
     let sent = '';
     await detectTmux((command) => {
       sent = command;
       return Promise.resolve('__PATH__\t\n__VERSION__\t\n');
     });
-    expect(sent).toContain('pkg-config');
     expect(sent).toContain('tar');
     expect(sent).toContain('yacc');
     expect(sent).toContain('bison');
+    expect(sent).toContain('m4');
   });
 
-  it('treats yacc/bison/byacc as interchangeable', async () => {
+  it('missing yacc is not a blocker - bison gets built alongside', async () => {
     const status = await detectTmux(
-      fakeExec('__PATH__\t\n__VERSION__\t\n__MISSING__\tyacc/bison/byacc\n'),
+      fakeExec('__PATH__\t\n__VERSION__\t\n__EXTRA_BUILD__\tbison\n'),
     );
-    expect(status.missingTools).toEqual(['yacc/bison/byacc']);
+    expect(status.canInstall).toBe(true);
+    expect(status.missingTools).toEqual([]);
+    expect(status.extraBuilds).toEqual(['bison']);
+  });
+
+  it('missing yacc AND m4 is a genuine blocker', async () => {
+    const status = await detectTmux(
+      fakeExec('__PATH__\t\n__VERSION__\t\n__MISSING__\tm4（yacc/bison\n'),
+    );
+    expect(status.canInstall).toBe(false);
   });
 });
 
@@ -100,6 +109,18 @@ describe('buildTmuxInstallScript', () => {
     expect(script).toContain(`tmux-${TMUX_TARGET_VERSION}.tar.gz`);
   });
 
+  it('builds bison only when the host has no yacc', () => {
+    expect(script).toContain('NEED_BISON=1');
+    expect(script).toContain('bison-3.8.2.tar.gz');
+    expect(script).toContain('if [ "$NEED_BISON" = "1" ]; then');
+    expect(script).toContain('export YACC="$PREFIX/bin/bison -y"');
+  });
+
+  it('passes explicit ncurses/libevent flags so pkg-config is not required', () => {
+    expect(script).toContain('NCURSES_LIBS=');
+    expect(script).toContain('LIBEVENT_LIBS=');
+  });
+
   it('adds ~/.local/bin to shell rc files via a managed block', () => {
     expect(script).toContain('# >>> cozypad path >>>');
     expect(script).toContain('export PATH="$HOME/.local/bin:$PATH"');
@@ -112,8 +133,14 @@ describe('buildTmuxInstallScript', () => {
   });
 
   it('keeps build output in a log instead of discarding it', () => {
-    // 失敗時必須拿得到真正的錯誤，不能 >/dev/null 吞掉。
-    expect(script).not.toContain('>/dev/null 2>&1');
+    // 失敗時必須拿得到真正的錯誤：建置指令不得把輸出丟進 /dev/null。
+    const buildLines = script
+      .split('\n')
+      .filter((line) => /(\.\/configure|make -j|make install|curl -fsSL)/.test(line));
+    expect(buildLines.length).toBeGreaterThan(8);
+    for (const line of buildLines) {
+      expect(line).not.toContain('/dev/null');
+    }
     expect(script).toContain('LOG="$HOME/.cozypad/tmux-install.log"');
     expect(script).toContain('tail -n 40 "$LOG"');
     expect(script).toContain('__FAILED__');

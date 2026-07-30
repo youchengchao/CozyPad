@@ -12,9 +12,11 @@ export const TmuxStatusSchema = z.object({
   /** 版本是否達到 TMUX_TARGET_VERSION。 */
   satisfiesTarget: z.boolean(),
   targetVersion: z.string(),
-  /** 是否具備自動安裝所需的工具（curl/make/cc）。 */
+  /** 是否具備自動安裝所需的工具（curl/tar/make/cc）。 */
   canInstall: z.boolean(),
   missingTools: z.array(z.string()),
+  /** 安裝時會順便建置的相依工具（例如遠端缺 yacc 時的 bison）。 */
+  extraBuilds: z.array(z.string()).default([]),
 });
 export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
 

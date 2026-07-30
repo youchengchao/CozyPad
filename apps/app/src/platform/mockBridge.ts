@@ -34,6 +34,7 @@ const MOCK_TMUX_STATUS: TmuxStatus = {
   targetVersion: '3.5a',
   canInstall: true,
   missingTools: [],
+  extraBuilds: [],
 };
 
 function delay(ms: number): Promise<void> {
