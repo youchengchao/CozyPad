@@ -13,7 +13,8 @@ await build({
   ...shared,
   entryPoints: ['src/main/main.ts'],
   outfile: 'dist/main.cjs',
-  external: ['electron', 'ssh2'],
+  // ssh2 直接打進 bundle（純 JS）；cpu-features 是其選用原生加速，缺少時 try/catch 落空。
+  external: ['electron', 'cpu-features', './crypto/build/Release/sshcrypto.node'],
 });
 
 await build({

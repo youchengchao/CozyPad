@@ -7,3 +7,4 @@ allowBuilds:
   ssh2: true
   electron: true
   esbuild: true
+  electron-winstaller: true

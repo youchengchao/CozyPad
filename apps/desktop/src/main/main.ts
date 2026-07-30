@@ -147,6 +147,8 @@ function createWindow(): BrowserWindow {
 
   if (DEV_URL) {
     void win.loadURL(DEV_URL);
+  } else if (app.isPackaged) {
+    void win.loadFile(path.join(process.resourcesPath, 'app-dist', 'index.html'));
   } else {
     void win.loadFile(path.join(__dirname, '../../app/dist/index.html'));
   }

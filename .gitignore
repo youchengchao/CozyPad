@@ -50,4 +50,5 @@ app.*.map.json
 # Node / pnpm (V3 monorepo)
 node_modules/
 apps/**/dist/
+apps/desktop/release*/
 *.tsbuildinfo
