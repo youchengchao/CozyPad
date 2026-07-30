@@ -59,6 +59,31 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   };
 
+  /**
+   * 終端機輸出合併：`cat` 大檔或編譯輸出時，PTY 會以極小的 chunk 高頻回傳，
+   * 一個 chunk 一次 IPC 會把 renderer 淹掉。以 16ms（約一幀）為窗口合併。
+   */
+  const outputBuffers = new Map<string, Uint8Array[]>();
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushTerminalOutput = (): void => {
+    flushTimer = null;
+    for (const [terminalId, chunks] of outputBuffers) {
+      if (chunks.length === 0) continue;
+      const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      send(IpcChannels.terminalOutput, {
+        terminalId,
+        dataBase64: bytesToBase64(merged),
+      });
+    }
+    outputBuffers.clear();
+  };
+
   transport.setEvents({
     onConnectionState: (event) => {
       send(IpcChannels.connectionState, event);
@@ -81,17 +106,20 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
         send(IpcChannels.tmuxSessionsChanged, []);
       }
     },
-    onTerminalOutput: (terminalId, data) =>
-      send(IpcChannels.terminalOutput, {
-        terminalId,
-        dataBase64: bytesToBase64(data),
-      }),
-    onTerminalClosed: (terminalId, exitCode, reason) =>
+    onTerminalOutput: (terminalId, data) => {
+      const chunks = outputBuffers.get(terminalId) ?? [];
+      chunks.push(data);
+      outputBuffers.set(terminalId, chunks);
+      flushTimer ??= setTimeout(flushTerminalOutput, 16);
+    },
+    onTerminalClosed: (terminalId, exitCode, reason) => {
+      flushTerminalOutput();
       send(IpcChannels.terminalClosed, {
         terminalId,
         exitCode,
         ...(reason === undefined ? {} : { reason }),
-      }),
+      });
+    },
   });
 
   const assertSender = (event: IpcMainInvokeEvent | IpcMainEvent): void => {

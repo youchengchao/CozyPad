@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -101,6 +101,27 @@ describe('ProfileStore', () => {
     await store.remove(saved.id);
     expect(store.list()).toHaveLength(0);
     expect(store.getPassword(saved.id)).toBeNull();
+  });
+
+  it('writes atomically so a crash cannot leave a half-written file', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
+    const file = path.join(dir, 'profiles.json');
+    const store = new ProfileStore(file, fakeCrypto());
+    await store.save({ ...DRAFT, rememberPassword: false });
+
+    // 寫入完成後不得留下暫存檔，且內容必須是完整可解析的 JSON。
+    expect(existsSync(`${file}.tmp`)).toBe(false);
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('recovers from a corrupt profiles file instead of crashing', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cozypad-profiles-'));
+    const file = path.join(dir, 'profiles.json');
+    writeFileSync(file, '{ this is not json', 'utf8');
+    const store = new ProfileStore(file, fakeCrypto());
+    await store.load();
+    expect(store.list()).toEqual([]);
   });
 
   it('updates an existing profile without losing the stored password', async () => {

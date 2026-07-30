@@ -2435,6 +2435,38 @@ button.danger:hover {
   gap: 10px;
 }
 
+.crash-screen {
+  max-width: 760px;
+  margin: 60px auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.crash-screen h2 {
+  margin: 0;
+  color: var(--red);
+}
+
+.crash-screen .form-actions {
+  justify-content: flex-start;
+}
+
+.crash-screen button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 14px;
+  color: var(--text-dim);
+}
+
+.crash-screen .primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
 .install-console {
   background: #0b0c0d;
   border: 1px solid var(--border);

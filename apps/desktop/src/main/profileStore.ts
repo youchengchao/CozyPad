@@ -122,9 +122,12 @@ export class ProfileStore implements ProfileStorePort {
     };
   }
 
+  /** 先寫暫存檔再 rename：寫入中途當機不會留下半截的設定檔。 */
   private async persist(): Promise<void> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(this.profiles, null, 2), 'utf8');
+    const temp = `${this.filePath}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(this.profiles, null, 2), 'utf8');
+    await fs.rename(temp, this.filePath);
   }
 }
 

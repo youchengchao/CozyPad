@@ -211,7 +211,30 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
   }
 }
 
+// 第二個實例會與第一個爭寫 profiles.json / known_hosts.json，直接把焦點還給既有視窗。
+const gotLock = SMOKE_TEST || app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+}
+
+app.on('second-instance', () => {
+  const [existing] = BrowserWindow.getAllWindows();
+  if (existing) {
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
+  }
+});
+
+// main process 的例外不該讓 app 無聲消失。
+process.on('uncaughtException', (error) => {
+  console.error('[cozypad] uncaught exception:', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[cozypad] unhandled rejection:', reason);
+});
+
 app.whenReady().then(async () => {
+  if (!gotLock) return;
   console.log(
     `[cozypad] transport mode: ${USE_MOCK ? 'MOCK' : 'SSH'} (COZYPAD_MOCK=${process.env.COZYPAD_MOCK ?? '(unset)'})`,
   );

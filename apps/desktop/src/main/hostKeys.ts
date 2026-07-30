@@ -44,7 +44,10 @@ export class KnownHostsStore {
   async set(host: string, port: number, fingerprint: string): Promise<void> {
     this.entries[`${host}:${port}`] = fingerprint;
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(this.entries, null, 2), 'utf8');
+    // 原子寫入：中途當機不會讓 known hosts 變成半截檔而失去信任記錄。
+    const temp = `${this.filePath}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(this.entries, null, 2), 'utf8');
+    await fs.rename(temp, this.filePath);
   }
 }
 

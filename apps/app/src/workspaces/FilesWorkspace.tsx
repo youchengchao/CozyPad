@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { RemoteFileItem } from '@cozypad/contracts';
@@ -105,6 +105,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [menu, setMenu] = useState<{ item: RemoteFileItem; x: number; y: number } | null>(
     null,
   );
+  /** openRoot 定義在 confirmDiscard 之前，用 ref 打通順序。 */
+  const confirmDiscardRef = useRef<() => boolean>(() => true);
   /** 遠端剪貼簿：Copy/Move 兩段式操作的暫存（Flutter 版同款行為）。 */
   const [clipboard, setClipboard] = useState<{
     item: RemoteFileItem;
@@ -157,6 +159,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   /** 切換樹的根目錄（Home、/、或任意路徑）。 */
   const openRoot = useCallback(
     async (path: string) => {
+      if (!confirmDiscardRef.current()) return;
       const resolved = await loadDir(path);
       if (resolved === null) return;
       setRootPath(resolved);
@@ -228,7 +231,16 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .catch(report);
   };
 
+  /** 有未存檔變更時先確認，避免切換檔案靜默丟失編輯內容。 */
+  const confirmDiscard = (): boolean => {
+    if (draft === null || draft.text === draft.saved) return true;
+    return window.confirm(
+      `${draft.path.slice(draft.path.lastIndexOf('/') + 1)} 有未儲存的變更，要放棄嗎？`,
+    );
+  };
+
   const openFile = (item: RemoteFileItem) => {
+    if (!confirmDiscard()) return;
     if (item.type === 'l') {
       setSelected(item);
       setDraft(null);
@@ -385,6 +397,17 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         : parentOf(selected.path);
 
   const dirty = draft !== null && draft.text !== draft.saved;
+  confirmDiscardRef.current = confirmDiscard;
+
+  // 有未存檔內容時關閉 app／重新整理要先提醒。
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
 
   const renderTree = (dirPath: string, depth: number) => {
     const items = children[dirPath];

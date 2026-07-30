@@ -52,6 +52,16 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
     if (element && stickToBottom.current) element.scrollTop = element.scrollHeight;
   }, [logLines]);
 
+  // 安裝跑在這條 SSH 連線上：關掉視窗會中斷建置。
+  useEffect(() => {
+    if (!installing) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [installing]);
+
   const install = () => {
     setInstalling(true);
     setFailure(null);
@@ -190,6 +200,13 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
               複製錯誤訊息
             </button>
           </>
+        ) : null}
+
+        {installing ? (
+          <p className="hint install-keepopen">
+            安裝在這條 SSH 連線上執行——請保持視窗開啟並維持連線；中斷後可重新安裝，
+            已完成的部分會被重用。
+          </p>
         ) : null}
 
         <div className="form-actions">
