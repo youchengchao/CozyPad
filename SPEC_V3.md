@@ -63,7 +63,7 @@ lib/hermes/rebuild/hermes_remote_runtime.dart
 | Monorepo | pnpm workspace |
 | Remote process supervisor | tmux |
 | Remote agent integration | 每個 agent 一個 adapter |
-| Transport | SSH；Mobile 使用配對 Desktop 或未來的 authenticated WSS gateway |
+| Transport | SSH；Mobile 可選原生 SSH plugin（直連，與 Flutter 版同等）或配對 Desktop／authenticated WSS gateway |
 | Python | CozyPad 核心不內嵌；遠端研究專案可自由使用 |
 | Rust | V3 第一版不需要 |
 
@@ -638,7 +638,11 @@ cozypad/
 ### Phase 7：Mobile
 
 - 以 Capacitor 包裝共用的 React app；共用 contracts、session list 與 chat UI primitives。
-- Mobile 透過配對 Desktop 或 authenticated gateway 連線。
+- **Transport 有兩條路，不互斥：**
+  - **原生 SSH plugin（直連）**：Capacitor plugin 包 Android sshj／iOS libssh2，實作
+    同一個 `PlatformBridge`。WebView 本身沒有 raw TCP，必須由原生層提供；
+    Flutter 版以 `dartssh2` 達成的直連能力即由此對應。UI 完全不需改動。
+  - **配對 Desktop 或 authenticated gateway**：適合不想在手機上管理金鑰／密碼的情境。
 - Mobile 不直接解析 agent raw protocol。
 
 ### Phase 8：Cutover
