@@ -36,7 +36,7 @@ import kotlin.concurrent.thread
 @CapacitorPlugin(name = "CozyPadSsh")
 class SshPlugin : Plugin() {
 
-    private var client: SSHClient? = null
+    @Volatile private var client: SSHClient? = null
     private val shells = ConcurrentHashMap<String, ShellSession>()
     private val terminalIds = AtomicInteger(0)
     private val pendingHostKeys = ConcurrentHashMap<String, HostKeyDecision>()
@@ -75,29 +75,24 @@ class SshPlugin : Plugin() {
                 ssh.connectTimeout = 15_000
                 ssh.timeout = 0
                 ssh.addHostKeyVerifier(promptingVerifier(host, port, knownFingerprint))
+                SshConnectionPolicy.configureBeforeConnect(ssh)
                 ssh.connect(host, port)
                 if (password != null) {
                     ssh.authPassword(username, password)
                 } else {
                     ssh.authPublickey(username)
                 }
-                ssh.connection.keepAlive.keepAliveInterval = 10
                 client = ssh
 
                 // 網路掉線或對端關閉時也要通知 UI，而不是靜靜地失效。
                 thread(name = "cozypad-ssh-watch") {
                     try {
-                        while (ssh.isConnected) {
-                            Thread.sleep(3_000)
+                        while (SshConnectionPolicy.isAlive(ssh)) {
+                            Thread.sleep(SshConnectionPolicy.WATCH_INTERVAL_MS)
                         }
                     } catch (_: Exception) {
                     } finally {
-                        if (client === ssh) {
-                            client = null
-                            closeAllShells()
-                            stopBackgroundService()
-                            notifyListeners("connectionState", JSObject().put("state", "disconnected"))
-                        }
+                        markDisconnected(ssh)
                     }
                 }
 
@@ -221,7 +216,7 @@ class SshPlugin : Plugin() {
     /** 連線是否仍活著；程序被凍結後回到前景時用來確認。 */
     @PluginMethod
     fun isConnected(call: PluginCall) {
-        call.resolve(JSObject().put("connected", client?.isConnected == true))
+        call.resolve(JSObject().put("connected", SshConnectionPolicy.isAlive(client)))
     }
 
     private fun stopBackgroundService() {
@@ -232,12 +227,38 @@ class SshPlugin : Plugin() {
     }
 
     private fun disconnectInternal() {
+        val ssh = synchronized(this) {
+            val current = client
+            client = null
+            current
+        }
         closeAllShells()
         try {
-            client?.disconnect()
+            ssh?.disconnect()
         } catch (_: Exception) {
         }
-        client = null
+    }
+
+    private fun markDisconnected(ssh: SSHClient, error: String? = null) {
+        val wasCurrent = synchronized(this) {
+            if (client !== ssh) {
+                false
+            } else {
+                client = null
+                true
+            }
+        }
+        if (!wasCurrent) return
+
+        try {
+            ssh.disconnect()
+        } catch (_: Exception) {
+        }
+        closeAllShells()
+        stopBackgroundService()
+        val event = JSObject().put("state", "disconnected")
+        if (!error.isNullOrBlank()) event.put("error", error)
+        notifyListeners("connectionState", event)
     }
 
     private fun closeAllShells() {
@@ -315,6 +336,9 @@ class SshPlugin : Plugin() {
                 if (timedOut) {
                     call.reject("remote command timed out after ${timeoutMs}ms")
                 } else {
+                    if (!SshConnectionPolicy.isAlive(ssh)) {
+                        markDisconnected(ssh, error.message)
+                    }
                     call.reject(error.message ?: "exec failed", error)
                 }
             } finally {

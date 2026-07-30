@@ -26,6 +26,7 @@ import { MonitorWorkspace } from './workspaces/MonitorWorkspace';
 import { ResearchWorkspace } from './workspaces/ResearchWorkspace';
 import { SettingsWorkspace } from './workspaces/SettingsWorkspace';
 import { TerminalWorkspace } from './workspaces/TerminalWorkspace';
+import { reconnectDelayMs } from './reconnectPolicy';
 
 type WorkspaceId = 'agents' | 'research' | 'terminal' | 'files' | 'monitor' | 'settings';
 
@@ -38,7 +39,7 @@ const NAV_ITEMS: { id: WorkspaceId; label: string; icon: () => React.ReactElemen
   { id: 'settings', label: 'Settings', icon: () => <SettingsIcon /> },
 ];
 
-const RECONNECT_DELAYS_MS = [2000, 5000, 10000];
+const INITIAL_CONNECT_MAX_ATTEMPTS = 3;
 
 export function App() {
   const bridge = useMemo(() => getBridge(), []);
@@ -61,12 +62,18 @@ export function App() {
   const manualDisconnect = useRef(true);
   const wasConnected = useRef(false);
   const attempts = useRef(0);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const connectInFlight = useRef(false);
+  const reconnectScheduled = useRef(false);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTicker = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const clearTimers = () => {
-    timers.current.forEach((timer) => clearTimeout(timer));
-    timers.current = [];
-  };
+  const clearTimers = useCallback(() => {
+    if (reconnectTimer.current !== null) clearTimeout(reconnectTimer.current);
+    if (reconnectTicker.current !== null) clearInterval(reconnectTicker.current);
+    reconnectTimer.current = null;
+    reconnectTicker.current = null;
+    reconnectScheduled.current = false;
+  }, []);
 
   const refreshProfiles = useCallback(async () => {
     const list = await bridge.listProfiles();
@@ -99,26 +106,35 @@ export function App() {
 
   const doConnect = useCallback(
     (profileId: string) => {
+      if (connectInFlight.current) return;
+      connectInFlight.current = true;
       manualDisconnect.current = false;
       setError(null);
-      void bridge.connect({ profileId }).catch((err: unknown) => {
-        setState('error');
-        setError(String(err));
-        scheduleRef.current(profileId);
-      });
+      void bridge
+        .connect({ profileId })
+        .then(() => {
+          connectInFlight.current = false;
+        })
+        .catch((err: unknown) => {
+          connectInFlight.current = false;
+          setState('error');
+          setError(String(err));
+          scheduleRef.current(profileId);
+        });
     },
     [bridge],
   );
 
   const scheduleReconnect = useCallback(
     (profileId: string) => {
-      if (manualDisconnect.current) return;
-      if (attempts.current >= RECONNECT_DELAYS_MS.length) {
+      if (manualDisconnect.current || reconnectScheduled.current || connectInFlight.current) return;
+      if (!wasConnected.current && attempts.current >= INITIAL_CONNECT_MAX_ATTEMPTS) {
         setReconnect(null);
         setError('自動重連失敗（3 次）——請手動重新連線');
         return;
       }
-      const delayMs = RECONNECT_DELAYS_MS[attempts.current]!;
+      reconnectScheduled.current = true;
+      const delayMs = reconnectDelayMs(attempts.current);
       attempts.current += 1;
       const attempt = attempts.current;
       let secondsLeft = Math.round(delayMs / 1000);
@@ -127,13 +143,16 @@ export function App() {
         secondsLeft -= 1;
         if (secondsLeft > 0) setReconnect({ attempt, secondsLeft });
       }, 1000);
-      timers.current.push(ticker as unknown as ReturnType<typeof setTimeout>);
+      reconnectTicker.current = ticker;
       const timer = setTimeout(() => {
         clearInterval(ticker);
+        reconnectTicker.current = null;
+        reconnectTimer.current = null;
+        reconnectScheduled.current = false;
         setReconnect(null);
         doConnect(profileId);
       }, delayMs);
-      timers.current.push(timer);
+      reconnectTimer.current = timer;
     },
     [doConnect],
   );
@@ -146,6 +165,7 @@ export function App() {
       setState(event.state);
       setError(event.error ?? null);
       if (event.state === 'connected') {
+        connectInFlight.current = false;
         wasConnected.current = true;
         attempts.current = 0;
         clearTimers();
@@ -176,6 +196,7 @@ export function App() {
   const handleDisconnect = () => {
     manualDisconnect.current = true;
     wasConnected.current = false;
+    connectInFlight.current = false;
     clearTimers();
     setReconnect(null);
     if (selectedId !== null) void bridge.disconnect({ profileId: selectedId });
@@ -241,8 +262,7 @@ export function App() {
       {reconnect ? (
         <div className="reconnect-banner">
           <span>
-            連線中斷 — {reconnect.secondsLeft}s 後重試（第 {reconnect.attempt}/
-            {RECONNECT_DELAYS_MS.length} 次）
+            連線中斷 — {reconnect.secondsLeft}s 後重試（第 {reconnect.attempt} 次）
           </span>
           <button
             onClick={() => {

@@ -106,6 +106,7 @@ export function createCapacitorBridge(
   let profiles: StoredProfile[] = [];
   let knownHosts: Record<string, string> = {};
   let activeProfileId: string | null = null;
+  let connectedProfileId: string | null = null;
   let loaded = false;
   let streamCounter = 0;
 
@@ -155,8 +156,12 @@ export function createCapacitorBridge(
     const state = String(payload.state) as ConnectionState;
     // 沒有 activeProfileId 就沒有可重連的目標；帶空字串會讓自動重連連到不存在的 profile。
     if (activeProfileId === null) return;
+    if (state === 'connected') {
+      connectedProfileId = activeProfileId;
+    }
     if (state === 'disconnected' || state === 'error') {
       // 連線已死，繼續輪詢只會每 5 秒失敗一次。
+      connectedProfileId = null;
       telemetry.stop();
     }
     emitState(activeProfileId, state, payload.error as string | undefined);
@@ -210,6 +215,7 @@ export function createCapacitorBridge(
       .isConnected()
       .then(({ connected }) => {
         if (!connected) {
+          connectedProfileId = null;
           telemetry.stop();
           emitState(profileId, 'disconnected');
         }
@@ -249,6 +255,12 @@ export function createCapacitorBridge(
   const tmux = new TmuxRuntime(exec);
   const remoteSettings = new TmuxRemoteSettings(tmux);
   const provisioner = new ShellTmuxProvisioner(exec, execStream);
+  const startTelemetry = (profileId: string): void => {
+    if (telemetryListeners.size === 0) return;
+    telemetry.start(profileId, (snapshot) =>
+      telemetryListeners.forEach((listener) => listener(snapshot)),
+    );
+  };
 
   return {
     kind: 'capacitor',
@@ -315,7 +327,10 @@ export function createCapacitorBridge(
             ? {}
             : { knownFingerprint: knownHosts[`${profile.host}:${profile.port}`]! }),
         });
+        connectedProfileId = profileId;
+        startTelemetry(profileId);
       } catch (error) {
+        connectedProfileId = null;
         emitState(profileId, 'error', error instanceof Error ? error.message : String(error));
         throw error;
       }
@@ -327,6 +342,7 @@ export function createCapacitorBridge(
     },
 
     async disconnect() {
+      connectedProfileId = null;
       telemetry.stop();
       await ssh.disconnect();
     },
@@ -364,10 +380,8 @@ export function createCapacitorBridge(
 
     onTelemetry(listener) {
       telemetryListeners.add(listener);
-      if (telemetryListeners.size === 1 && activeProfileId !== null) {
-        telemetry.start(activeProfileId, (snapshot) =>
-          telemetryListeners.forEach((entry) => entry(snapshot)),
-        );
+      if (telemetryListeners.size === 1 && connectedProfileId !== null) {
+        startTelemetry(connectedProfileId);
       }
       return () => {
         telemetryListeners.delete(listener);
