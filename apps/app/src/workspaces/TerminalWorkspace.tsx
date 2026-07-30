@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { TerminalKeysBar } from '../components/TerminalKeysBar';
 import { TerminalView } from '../components/TerminalView';
-import type { TerminalHandle } from '../components/TerminalView';
+import type { TerminalHandle, TerminalModifiers } from '../components/TerminalView';
 
 interface TerminalWorkspaceProps {
   connected: boolean;
@@ -27,6 +28,16 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
   const [active, setActive] = useState<number | null>(null);
   const [quickOpen, setQuickOpen] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+  const [modifiers, setModifiers] = useState<TerminalModifiers>({
+    ctrl: false,
+    alt: false,
+  });
+  /** 特殊鍵列：觸控裝置預設開啟，桌機可用 ⌨ 切換。 */
+  const [keysBarOn, setKeysBarOn] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia('(pointer: coarse), (max-width: 600px)').matches,
+  );
   const nextId = useRef(1);
   const handles = useRef(new Map<number, TerminalHandle>());
 
@@ -100,6 +111,13 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
         <span className="spacer" />
         <span className="hint terminal-hint">右鍵：有選取＝複製、無選取＝貼上</span>
         <button
+          className={`tab-quick-toggle${keysBarOn ? ' tab-quick-toggle-on' : ''}`}
+          onClick={() => setKeysBarOn((on) => !on)}
+          title="特殊鍵列（ESC / CTRL / 方向鍵）"
+        >
+          ⌨
+        </button>
+        <button
           className={`tab-quick-toggle${quickOpen ? ' tab-quick-toggle-on' : ''}`}
           onClick={() => setQuickOpen((open) => !open)}
           title="常用指令面板"
@@ -126,6 +144,7 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
                   setToast(message);
                   setTimeout(() => setToast(null), 1600);
                 }}
+                onModifiersChange={setModifiers}
                 onHandle={(handle) => {
                   if (handle) handles.current.set(id, handle);
                   else handles.current.delete(id);
@@ -159,6 +178,21 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
           </aside>
         ) : null}
       </div>
+      {keysBarOn && tabs.length > 0 ? (
+        <TerminalKeysBar
+          modifiers={modifiers}
+          onSend={(sequence) => {
+            const handle = active !== null ? handles.current.get(active) : undefined;
+            handle?.sendRaw(sequence);
+            handle?.focus();
+          }}
+          onToggleModifier={(mod) => {
+            const handle = active !== null ? handles.current.get(active) : undefined;
+            handle?.setModifier(mod, !modifiers[mod]);
+            handle?.focus();
+          }}
+        />
+      ) : null}
       {toast !== null ? <div className="terminal-toast">{toast}</div> : null}
     </div>
   );
