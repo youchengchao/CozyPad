@@ -158,7 +158,10 @@ if [ "$NEED_BISON" = "1" ]; then
   run "install bison" make install
   cd "$SRC"
   export PATH="$PREFIX/bin:$PATH"
-  export YACC="$PREFIX/bin/bison -y"
+  # YACC 必須是 PATH 可解析的名稱：autoconf 的 AC_CHECK_PROG 會把絕對路徑
+  # 再接到各個 PATH 目錄底下尋找，導致永遠找不到。
+  export YACC="bison -y"
+  run "verify bison" command -v bison
 fi
 
 stage building 23 "解壓 libevent"

@@ -113,7 +113,14 @@ describe('buildTmuxInstallScript', () => {
     expect(script).toContain('NEED_BISON=1');
     expect(script).toContain('bison-3.8.2.tar.gz');
     expect(script).toContain('if [ "$NEED_BISON" = "1" ]; then');
-    expect(script).toContain('export YACC="$PREFIX/bin/bison -y"');
+    expect(script).toContain('run "verify bison" command -v bison');
+  });
+
+  it('exposes YACC as a PATH-resolvable name, not an absolute path', () => {
+    // autoconf 的 AC_CHECK_PROG 會把絕對路徑接到各 PATH 目錄下尋找，永遠失敗。
+    expect(script).toContain('export YACC="bison -y"');
+    expect(script).not.toMatch(/YACC="\$PREFIX/);
+    expect(script).toContain('export PATH="$PREFIX/bin:$PATH"');
   });
 
   it('passes explicit ncurses/libevent flags so pkg-config is not required', () => {
