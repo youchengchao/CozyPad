@@ -68,6 +68,7 @@ class SshPlugin : Plugin() {
         thread(name = "cozypad-ssh-connect") {
             try {
                 disconnectInternal()
+                SshCryptoProvider.ensureInstalled()
                 val config = DefaultConfig()
                 config.keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
                 val ssh = SSHClient(config)
