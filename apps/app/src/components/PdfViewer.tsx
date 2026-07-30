@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import * as pdfjs from 'pdfjs-dist';
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import PdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { beginPdfDocumentLoad, renderPdfDocument } from './pdfDocument';
 
 // 同源 worker（Vite 打包），不走 CDN，符合 Electron CSP。
-pdfjs.GlobalWorkerOptions.workerPort = new PdfWorker();
+// Let every loading task own its worker. Reusing a workerPort while its previous
+// task is still being destroyed makes pdf.js reject the next load (and zoom).
+pdfjs.GlobalWorkerOptions.workerSrc = PdfWorkerUrl;
 
 interface PdfViewerProps {
   /** 檔案內容（base64）。 */
@@ -13,55 +17,74 @@ interface PdfViewerProps {
 
 export function PdfViewer({ dataBase64, fileName }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [scale, setScale] = useState(1.2);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    let cancelled = false;
+    let disposed = false;
     setLoading(true);
     setError(null);
-    container.replaceChildren();
+    setPageCount(0);
+    setPdfDocument(null);
 
-    const binary = atob(dataBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-    const task = pdfjs.getDocument({ data: bytes });
+    let task;
+    try {
+      task = beginPdfDocumentLoad(dataBase64, pdfjs.getDocument);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+      return;
+    }
     void task.promise
-      .then(async (doc) => {
-        if (cancelled) return;
+      .then((doc) => {
+        if (disposed) return;
         setPageCount(doc.numPages);
-        for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
-          if (cancelled) return;
-          const page = await doc.getPage(pageNumber);
-          const viewport = page.getViewport({ scale });
-          const canvas = document.createElement('canvas');
-          canvas.className = 'pdf-page';
-          canvas.width = Math.floor(viewport.width);
-          canvas.height = Math.floor(viewport.height);
-          const context = canvas.getContext('2d');
-          if (!context) continue;
-          container.appendChild(canvas);
-          await page.render({ canvas, canvasContext: context, viewport }).promise;
-        }
-        if (!cancelled) setLoading(false);
+        setPdfDocument(doc);
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (!disposed) {
           setError(err instanceof Error ? err.message : String(err));
           setLoading(false);
         }
       });
 
     return () => {
-      cancelled = true;
+      disposed = true;
       void task.destroy();
     };
-  }, [dataBase64, scale]);
+  }, [dataBase64]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!pdfDocument) {
+      container.replaceChildren();
+      return;
+    }
+
+    let disposed = false;
+    setLoading(true);
+    setError(null);
+    const renderRun = renderPdfDocument(pdfDocument, scale, container);
+    void renderRun.promise
+      .then(() => {
+        if (!disposed) setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (!disposed) {
+          setError(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      disposed = true;
+      renderRun.cancel();
+    };
+  }, [pdfDocument, scale]);
 
   return (
     <div className="pdf-viewer">
@@ -69,9 +92,23 @@ export function PdfViewer({ dataBase64, fileName }: PdfViewerProps) {
         <span className="mono pdf-name">{fileName}</span>
         {pageCount > 0 ? <span className="hint">{pageCount} 頁</span> : null}
         <span className="spacer" />
-        <button onClick={() => setScale((value) => Math.max(0.5, value - 0.2))}>−</button>
+        <button
+          type="button"
+          aria-label="縮小 PDF"
+          disabled={scale <= 0.5}
+          onClick={() => setScale((value) => Math.max(0.5, value - 0.2))}
+        >
+          −
+        </button>
         <span className="hint mono">{Math.round(scale * 100)}%</span>
-        <button onClick={() => setScale((value) => Math.min(3, value + 0.2))}>＋</button>
+        <button
+          type="button"
+          aria-label="放大 PDF"
+          disabled={scale >= 3}
+          onClick={() => setScale((value) => Math.min(3, value + 0.2))}
+        >
+          ＋
+        </button>
       </div>
       {error ? <div className="error-banner">PDF 載入失敗：{error}</div> : null}
       {loading && !error ? <div className="hint pdf-loading">載入中…</div> : null}

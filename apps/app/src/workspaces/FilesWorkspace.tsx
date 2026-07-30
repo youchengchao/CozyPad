@@ -9,6 +9,7 @@ import { ContextMenu, useLongPress } from '../components/ContextMenu';
 import type { MenuAction } from '../components/ContextMenu';
 import { FileIcon, fileKindOf } from '../components/FileIcons';
 import { PdfViewer } from '../components/PdfViewer';
+import { buildFileBreadcrumbs, directoryItems } from './fileNavigation';
 
 interface FilesWorkspaceProps {
   connected: boolean;
@@ -58,7 +59,7 @@ function parentOf(path: string): string {
 
 const MAX_EDITOR_BYTES = 262144;
 
-/** 單列樹狀項目：右鍵與長按都會開動作選單。 */
+/** 單列檔案項目：右鍵與長按都會開動作選單。 */
 function TreeRow({
   item,
   className,
@@ -71,7 +72,7 @@ function TreeRow({
 }: {
   item: RemoteFileItem;
   className: string;
-  style: React.CSSProperties;
+  style?: React.CSSProperties;
   title: string;
   onClick(): void;
   onDoubleClick(): void;
@@ -96,7 +97,7 @@ function TreeRow({
 
 export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
-  const [rootPath, setRootPath] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [homePath, setHomePath] = useState<string | null>(null);
   const [children, setChildren] = useState<Record<string, RemoteFileItem[]>>({});
   const [truncatedDirs, setTruncatedDirs] = useState<Set<string>>(new Set());
@@ -105,14 +106,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [menu, setMenu] = useState<{ item: RemoteFileItem; x: number; y: number } | null>(
     null,
   );
-  /** openRoot 定義在 confirmDiscard 之前，用 ref 打通順序。 */
+  /** openPath 定義在 confirmDiscard 之前，用 ref 打通順序。 */
   const confirmDiscardRef = useRef<() => boolean>(() => true);
   /** 遠端剪貼簿：Copy/Move 兩段式操作的暫存（Flutter 版同款行為）。 */
   const [clipboard, setClipboard] = useState<{
     item: RemoteFileItem;
     mode: 'copy' | 'move';
   } | null>(null);
-  const [expanded, setExpanded] = useState(new Set<string>());
   const [selected, setSelected] = useState<RemoteFileItem | null>(null);
   const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
     null,
@@ -156,14 +156,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     [bridge],
   );
 
-  /** 切換樹的根目錄（Home、/、或任意路徑）。 */
-  const openRoot = useCallback(
+  /** 切換目前目錄（Home、/、breadcrumb 或任意路徑）。 */
+  const openPath = useCallback(
     async (path: string) => {
       if (!confirmDiscardRef.current()) return;
       const resolved = await loadDir(path);
       if (resolved === null) return;
-      setRootPath(resolved);
-      setExpanded(new Set([resolved]));
+      setCurrentPath(resolved);
       setSelected(null);
       setDraft(null);
       setPdfData(null);
@@ -173,9 +172,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
 
   useEffect(() => {
     if (!connected) {
-      setRootPath(null);
+      setCurrentPath(null);
       setChildren({});
-      setExpanded(new Set());
       setSelected(null);
       setDraft(null);
       setPwd(null);
@@ -183,28 +181,12 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     }
     void loadDir('~').then((resolved) => {
       if (resolved !== null) {
-        setRootPath(resolved);
+        setCurrentPath(resolved);
         setHomePath(resolved);
         setPwd(resolved);
-        setExpanded(new Set([resolved]));
       }
     });
   }, [connected, loadDir]);
-
-  const toggleDir = (item: RemoteFileItem) => {
-    setSelected(item);
-    setDraft(null);
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(item.path)) {
-        next.delete(item.path);
-      } else {
-        next.add(item.path);
-        if (children[item.path] === undefined) void loadDir(item.path);
-      }
-      return next;
-    });
-  };
 
   /** symlink：指向目錄就跳過去，指向檔案就開目標。 */
   const followSymlink = (item: RemoteFileItem) => {
@@ -217,7 +199,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       ? target
       : `${parentOf(item.path)}/${target}`;
     if (item.targetType === 'd') {
-      void openRoot(absolute);
+      void openPath(absolute);
       showFlash('已跳到連結目標');
       return;
     }
@@ -274,7 +256,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
 
   const refreshDirs = async (...paths: (string | null)[]) => {
     for (const path of paths) {
-      if (path !== null && (children[path] !== undefined || path === rootPath)) {
+      if (path !== null && (children[path] !== undefined || path === currentPath)) {
         await loadDir(path);
       }
     }
@@ -389,12 +371,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     action.catch(report).finally(() => setBusy(false));
   };
 
-  const currentDir =
-    selected === null
-      ? (rootPath ?? pwd ?? '~')
-      : selected.type === 'd'
-        ? selected.path
-        : parentOf(selected.path);
+  const currentDir = currentPath ?? pwd ?? '~';
 
   const dirty = draft !== null && draft.text !== draft.saved;
   confirmDiscardRef.current = confirmDiscard;
@@ -409,28 +386,22 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
 
-  const renderTree = (dirPath: string, depth: number) => {
-    const items = children[dirPath];
+  const renderListing = (dirPath: string) => {
+    const items = directoryItems(children, dirPath);
     if (items === undefined) {
-      return (
-        <div className="hint tree-loading" style={{ paddingLeft: 14 + depth * 16 }}>
-          載入中…
-        </div>
-      );
+      return <div className="hint tree-loading">載入中…</div>;
     }
     const rows = items.map((item) => {
       const isDir = item.type === 'd';
-      const isOpen = expanded.has(item.path);
-      const kind = fileKindOf(item, isOpen);
+      const kind = fileKindOf(item);
       return (
         <div key={item.path}>
           <TreeRow
             item={item}
             className={`tree-row${selected?.path === item.path ? ' tree-row-active' : ''}`}
-            style={{ paddingLeft: 8 + depth * 14 }}
             onOpenMenu={(x, y) => setMenu({ item, x, y })}
             onClick={() => {
-              if (isDir) toggleDir(item);
+              if (isDir) void openPath(item.path);
               else openFile(item);
             }}
             onDoubleClick={() => {
@@ -438,12 +409,12 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             }}
             title={
               item.type === 'l'
-                ? `${item.path} → ${item.linkTarget ?? '?'}（雙擊跳轉、右鍵／長按更多）`
-                : `${item.path}（右鍵／長按更多）`
+                ? `${item.path} → ${item.linkTarget ?? '?'}（雙擊跳轉）`
+                : `${item.path}（右鍵或長按顯示選單）`
             }
           >
             <span className={`tree-caret${isDir ? '' : ' tree-caret-empty'}`}>
-              {isDir ? (isOpen ? '▾' : '▸') : ''}
+              {isDir ? '›' : ''}
             </span>
             <FileIcon kind={kind} />
             <span className="tree-name">{item.name}</span>
@@ -453,18 +424,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             ) : null}
             {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
           </TreeRow>
-          {isDir && isOpen ? renderTree(item.path, depth + 1) : null}
         </div>
       );
     });
 
     if (truncatedDirs.has(dirPath)) {
       rows.push(
-        <div
-          key={`${dirPath}__truncated`}
-          className="hint tree-truncated"
-          style={{ paddingLeft: 12 + depth * 14 }}
-        >
+        <div key={`${dirPath}__truncated`} className="hint tree-truncated">
           僅顯示前 2000 筆（目錄過大）
         </div>,
       );
@@ -480,7 +446,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   };
 
   const relativePath = (item: RemoteFileItem): string => {
-    const base = rootPath;
+    const base = currentPath;
     if (base !== null && item.path.startsWith(`${base}/`)) {
       return item.path.slice(base.length + 1);
     }
@@ -516,9 +482,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     switch (actionId) {
       case 'open':
         if (item.type === 'd') {
-          setExpanded((current) => new Set(current).add(item.path));
-          if (children[item.path] === undefined) void loadDir(item.path);
-          setSelected(item);
+          void openPath(item.path);
         } else if (item.type === 'l') {
           followSymlink(item);
         } else {
@@ -589,18 +553,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .finally(() => setBusy(false));
   };
 
-  const breadcrumbs = (() => {
-    const path = currentDir;
-    if (!path.startsWith('/')) return [];
-    const segments = path.split('/').filter((segment) => segment !== '');
-    const crumbs = [{ label: '/', path: '/' }];
-    let accumulated = '';
-    for (const segment of segments) {
-      accumulated += `/${segment}`;
-      crumbs.push({ label: segment, path: accumulated });
-    }
-    return crumbs;
-  })();
+  const breadcrumbs = buildFileBreadcrumbs(currentDir);
+
 
   if (!connected) {
     return (
@@ -616,21 +570,21 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       <aside className="files-tree">
         <div className="files-roots">
           <button
-            className={rootPath !== null && rootPath === homePath ? 'root-active' : ''}
-            onClick={() => void openRoot('~')}
+            className={currentPath !== null && currentPath === homePath ? 'root-active' : ''}
+            onClick={() => void openPath('~')}
             title="家目錄"
           >
             ⌂ Home
           </button>
           <button
-            className={rootPath === '/' ? 'root-active' : ''}
-            onClick={() => void openRoot('/')}
+            className={currentPath === '/' ? 'root-active' : ''}
+            onClick={() => void openPath('/')}
             title="根目錄"
           >
             / Root
           </button>
-          {pwd !== null && pwd !== rootPath ? (
-            <button onClick={() => void openRoot(pwd)} title="切換到 pwd">
+          {pwd !== null && pwd !== currentPath ? (
+            <button onClick={() => void openPath(pwd)} title="切換到 pwd">
               ↦ pwd
             </button>
           ) : null}
@@ -677,18 +631,29 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           </div>
         ) : null}
         <div className="tree-scroll">
-          {rootPath !== null ? (
+          {currentPath !== null ? (
             <>
               <button
                 className={`tree-row tree-root-row${selected === null ? ' tree-row-active' : ''}`}
-                onClick={() => void refreshDirs(rootPath)}
-                title={rootPath}
+                onClick={() => void refreshDirs(currentPath)}
+                title={`${currentPath}（重新整理）`}
               >
-                <span className="tree-caret">▾</span>
+                <span className="tree-caret">↻</span>
                 <FileIcon kind="folder-open" />
-                <span className="tree-name mono">{rootPath}</span>
+                <span className="tree-name mono">{currentPath}</span>
               </button>
-              {renderTree(rootPath, 1)}
+              {currentPath !== '/' ? (
+                <button
+                  className="tree-row tree-parent-row"
+                  onClick={() => void openPath(parentOf(currentPath))}
+                  title={parentOf(currentPath)}
+                >
+                  <span className="tree-caret">↑</span>
+                  <FileIcon kind="folder" />
+                  <span className="tree-name">..</span>
+                </button>
+              ) : null}
+              {renderListing(currentPath)}
             </>
           ) : (
             <div className="hint tree-loading">載入中…</div>
@@ -700,7 +665,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           {breadcrumbs.map((crumb, index) => (
             <span key={crumb.path} className="crumb-wrap">
               {index > 0 ? <span className="crumb-sep">/</span> : null}
-              <button className="crumb" onClick={() => void openRoot(crumb.path)}>
+              <button className="crumb" onClick={() => void openPath(crumb.path)}>
                 {crumb.label}
               </button>
             </span>
@@ -849,7 +814,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
               onChange={(event) => setJumpValue(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && jumpValue.trim() !== '') {
-                  void openRoot(jumpValue.trim());
+                  void openPath(jumpValue.trim());
                   setJumpOpen(false);
                 }
               }}
@@ -861,7 +826,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 className="primary"
                 disabled={jumpValue.trim() === ''}
                 onClick={() => {
-                  void openRoot(jumpValue.trim());
+                  void openPath(jumpValue.trim());
                   setJumpOpen(false);
                 }}
               >
@@ -906,7 +871,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                   value={dialogInput}
                   placeholder={
                     dialog.kind === 'move' || dialog.kind === 'copy-to'
-                      ? (rootPath ?? '~')
+                      ? currentDir
                       : dialog.kind === 'rename'
                         ? dialog.item.name
                         : '名稱'
