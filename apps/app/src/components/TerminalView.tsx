@@ -11,14 +11,49 @@ export interface TerminalHandle {
   focus(): void;
 }
 
+/** 右鍵行為：有選取＝複製選取，無選取＝貼上剪貼簿（Flutter 版同款）。 */
+async function handleTerminalContextMenu(
+  term: Terminal,
+  paste: (text: string) => void,
+  notify: (message: string) => void,
+): Promise<void> {
+  const bridge = getBridge();
+  const selection = term.getSelection();
+  if (selection !== '') {
+    try {
+      await bridge.writeClipboard(selection);
+      term.clearSelection();
+      notify('已複製選取內容');
+    } catch {
+      notify('複製失敗');
+    }
+    return;
+  }
+  try {
+    const text = await bridge.readClipboard();
+    if (text !== '') paste(text);
+    else notify('剪貼簿是空的');
+  } catch {
+    notify('貼上失敗');
+  }
+}
+
 interface TerminalViewProps {
   profileId: string;
   onExit?: () => void;
   onHandle?: (handle: TerminalHandle | null) => void;
+  onNotify?: (message: string) => void;
 }
 
-export function TerminalView({ profileId, onExit, onHandle }: TerminalViewProps) {
+export function TerminalView({
+  profileId,
+  onExit,
+  onHandle,
+  onNotify,
+}: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onNotifyRef = useRef(onNotify);
+  onNotifyRef.current = onNotify;
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
   const onHandleRef = useRef(onHandle);
@@ -53,6 +88,21 @@ export function TerminalView({ profileId, onExit, onHandle }: TerminalViewProps)
     let terminalId: string | null = null;
     let disposed = false;
     const unsubscribes: (() => void)[] = [];
+
+    const pasteToTerminal = (text: string): void => {
+      if (terminalId !== null) {
+        bridge.writeTerminal({ terminalId, dataBase64: textToBase64(text) });
+      }
+    };
+
+    // 右鍵在 terminal 建立時就綁定，即使開啟 session 失敗仍可複製畫面內容。
+    const onContextMenu = (event: MouseEvent): void => {
+      event.preventDefault();
+      void handleTerminalContextMenu(term, pasteToTerminal, (message) =>
+        onNotifyRef.current?.(message),
+      );
+    };
+    container.addEventListener('contextmenu', onContextMenu);
 
     unsubscribes.push(
       bridge.onTerminalOutput((event) => {
@@ -89,14 +139,9 @@ export function TerminalView({ profileId, onExit, onHandle }: TerminalViewProps)
         }
         terminalId = opened.terminalId;
         term.focus();
-        const paste = (text: string) => {
-          if (terminalId) {
-            bridge.writeTerminal({ terminalId, dataBase64: textToBase64(text) });
-          }
-        };
         onHandleRef.current?.({
-          paste,
-          run: (command) => paste(command + '\r'),
+          paste: pasteToTerminal,
+          run: (command) => pasteToTerminal(command + '\r'),
           focus: () => term.focus(),
         });
       })
@@ -110,6 +155,7 @@ export function TerminalView({ profileId, onExit, onHandle }: TerminalViewProps)
     return () => {
       disposed = true;
       onHandleRef.current?.(null);
+      container.removeEventListener('contextmenu', onContextMenu);
       observer.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();

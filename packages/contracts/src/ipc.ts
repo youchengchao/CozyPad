@@ -32,6 +32,8 @@ export const IpcChannels = {
   tmuxInstall: 'cozypad:tmux:install',
   tmuxInstallProgress: 'cozypad:tmux:install-progress',
   tmuxSessionsChanged: 'cozypad:tmux:sessions-changed',
+  clipboardRead: 'cozypad:clipboard:read',
+  clipboardWrite: 'cozypad:clipboard:write',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

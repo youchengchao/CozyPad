@@ -5,6 +5,8 @@ import type { RemoteFileItem } from '@cozypad/contracts';
 import { base64ToBytes, textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 import { CodeEditor } from '../components/CodeEditor';
+import { ContextMenu, useLongPress } from '../components/ContextMenu';
+import type { MenuAction } from '../components/ContextMenu';
 import { FileIcon, fileKindOf } from '../components/FileIcons';
 import { PdfViewer } from '../components/PdfViewer';
 
@@ -56,6 +58,42 @@ function parentOf(path: string): string {
 
 const MAX_EDITOR_BYTES = 262144;
 
+/** 單列樹狀項目：右鍵與長按都會開動作選單。 */
+function TreeRow({
+  item,
+  className,
+  style,
+  title,
+  onClick,
+  onDoubleClick,
+  onOpenMenu,
+  children,
+}: {
+  item: RemoteFileItem;
+  className: string;
+  style: React.CSSProperties;
+  title: string;
+  onClick(): void;
+  onDoubleClick(): void;
+  onOpenMenu(x: number, y: number): void;
+  children: React.ReactNode;
+}) {
+  const longPress = useLongPress(onOpenMenu);
+  return (
+    <button
+      className={className}
+      style={style}
+      title={title}
+      data-path={item.path}
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+      {...longPress}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [rootPath, setRootPath] = useState<string | null>(null);
@@ -64,6 +102,14 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [truncatedDirs, setTruncatedDirs] = useState<Set<string>>(new Set());
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpValue, setJumpValue] = useState('');
+  const [menu, setMenu] = useState<{ item: RemoteFileItem; x: number; y: number } | null>(
+    null,
+  );
+  /** 遠端剪貼簿：Copy/Move 兩段式操作的暫存（Flutter 版同款行為）。 */
+  const [clipboard, setClipboard] = useState<{
+    item: RemoteFileItem;
+    mode: 'copy' | 'move';
+  } | null>(null);
   const [expanded, setExpanded] = useState(new Set<string>());
   const [selected, setSelected] = useState<RemoteFileItem | null>(null);
   const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
@@ -236,17 +282,18 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .finally(() => setBusy(false));
   };
 
-  const download = () => {
-    if (!selected || selected.type === 'd') return;
+  const download = (target?: RemoteFileItem) => {
+    const item = target ?? selected;
+    if (!item || item.type === 'd') return;
     setBusy(true);
     bridge
-      .fsReadBytes({ path: selected.path })
+      .fsReadBytes({ path: item.path })
       .then(({ dataBase64 }) => {
         const blob = new Blob([new Uint8Array(base64ToBytes(dataBase64))]);
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = selected.name;
+        anchor.download = item.name;
         anchor.click();
         URL.revokeObjectURL(url);
       })
@@ -254,14 +301,15 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .finally(() => setBusy(false));
   };
 
-  const duplicate = () => {
-    if (!selected) return;
+  const duplicate = (target?: RemoteFileItem) => {
+    const item = target ?? selected;
+    if (!item) return;
     setBusy(true);
     bridge
-      .fsDuplicate({ path: selected.path })
+      .fsDuplicate({ path: item.path })
       .then(() => {
         showFlash('已建立副本');
-        void refreshDirs(parentOf(selected.path));
+        void refreshDirs(parentOf(item.path));
       })
       .catch(report)
       .finally(() => setBusy(false));
@@ -353,12 +401,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       const kind = fileKindOf(item, isOpen);
       return (
         <div key={item.path}>
-          <button
+          <TreeRow
+            item={item}
             className={`tree-row${selected?.path === item.path ? ' tree-row-active' : ''}`}
             style={{ paddingLeft: 8 + depth * 14 }}
+            onOpenMenu={(x, y) => setMenu({ item, x, y })}
             onClick={() => {
               if (isDir) toggleDir(item);
-              else if (item.type === 'l') openFile(item);
               else openFile(item);
             }}
             onDoubleClick={() => {
@@ -366,8 +415,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             }}
             title={
               item.type === 'l'
-                ? `${item.path} → ${item.linkTarget ?? '?'}（雙擊跳轉）`
-                : item.path
+                ? `${item.path} → ${item.linkTarget ?? '?'}（雙擊跳轉、右鍵／長按更多）`
+                : `${item.path}（右鍵／長按更多）`
             }
           >
             <span className={`tree-caret${isDir ? '' : ' tree-caret-empty'}`}>
@@ -380,7 +429,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
               <span className="tree-badge tree-badge-exec">x</span>
             ) : null}
             {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
-          </button>
+          </TreeRow>
           {isDir && isOpen ? renderTree(item.path, depth + 1) : null}
         </div>
       );
@@ -398,6 +447,123 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       );
     }
     return rows;
+  };
+
+  const copyToClipboardText = (text: string, label: string) => {
+    void bridge
+      .writeClipboard(text)
+      .then(() => showFlash(label))
+      .catch(report);
+  };
+
+  const relativePath = (item: RemoteFileItem): string => {
+    const base = rootPath;
+    if (base !== null && item.path.startsWith(`${base}/`)) {
+      return item.path.slice(base.length + 1);
+    }
+    return item.name;
+  };
+
+  const menuActionsFor = (item: RemoteFileItem): MenuAction[] => {
+    const isDir = item.type === 'd';
+    const isLink = item.type === 'l';
+    return [
+      {
+        id: 'open',
+        label: isDir ? 'Open folder' : isLink ? 'Follow link' : 'Open / edit file',
+      },
+      { id: 'rename', label: 'Rename', separatorBefore: true },
+      { id: 'stageCopy', label: 'Copy', hint: '暫存後貼到其他資料夾' },
+      { id: 'stageMove', label: 'Move', hint: '暫存後貼到其他資料夾' },
+      { id: 'duplicate', label: 'Duplicate here', hint: '在同資料夾建立副本' },
+      { id: 'copyName', label: 'Copy name', separatorBefore: true },
+      { id: 'copyAbs', label: 'Copy abs path' },
+      { id: 'copyRel', label: 'Copy rel path' },
+      ...(isDir
+        ? [{ id: 'setPwd', label: 'Set PWD', hint: '新 Terminal／Agent 分頁的工作目錄' }]
+        : []),
+      ...(item.type === 'f'
+        ? [{ id: 'download', label: 'Download', separatorBefore: true }]
+        : []),
+      { id: 'delete', label: 'Delete', danger: true, separatorBefore: true },
+    ];
+  };
+
+  const runMenuAction = (item: RemoteFileItem, actionId: string) => {
+    switch (actionId) {
+      case 'open':
+        if (item.type === 'd') {
+          setExpanded((current) => new Set(current).add(item.path));
+          if (children[item.path] === undefined) void loadDir(item.path);
+          setSelected(item);
+        } else if (item.type === 'l') {
+          followSymlink(item);
+        } else {
+          openFile(item);
+        }
+        return;
+      case 'rename':
+        setDialogInput(item.name);
+        setDialog({ kind: 'rename', item });
+        return;
+      case 'stageCopy':
+        setClipboard({ item, mode: 'copy' });
+        showFlash(`已暫存複製：${item.name}`);
+        return;
+      case 'stageMove':
+        setClipboard({ item, mode: 'move' });
+        showFlash(`已暫存移動：${item.name}`);
+        return;
+      case 'duplicate':
+        setSelected(item);
+        duplicate(item);
+        return;
+      case 'copyName':
+        copyToClipboardText(item.name, '已複製檔名');
+        return;
+      case 'copyAbs':
+        copyToClipboardText(item.path, '已複製絕對路徑');
+        return;
+      case 'copyRel':
+        copyToClipboardText(relativePath(item), '已複製相對路徑');
+        return;
+      case 'setPwd':
+        setPwd(item.path);
+        showFlash('已設定 pwd');
+        return;
+      case 'download':
+        setSelected(item);
+        setTimeout(() => download(item), 0);
+        return;
+      case 'delete':
+        setDialog({ kind: 'delete', item });
+        return;
+    }
+  };
+
+  /** 把暫存的項目貼進目標資料夾（Copy/Move 的第二段）。 */
+  const pasteClipboard = (destination: string) => {
+    if (clipboard === null) return;
+    const { item, mode } = clipboard;
+    setBusy(true);
+    const call =
+      mode === 'copy'
+        ? bridge.fsCopy({ sourcePath: item.path, destinationDirectory: destination })
+        : bridge.fsMove({ sourcePath: item.path, destinationDirectory: destination });
+    void call
+      .then(({ path }) => {
+        showFlash(mode === 'copy' ? '已複製' : '已移動');
+        if (mode === 'move') {
+          setClipboard(null);
+          if (selected?.path === item.path) {
+            setSelected(null);
+            setDraft(null);
+          }
+        }
+        void refreshDirs(parentOf(item.path), parentOf(path), destination);
+      })
+      .catch(report)
+      .finally(() => setBusy(false));
   };
 
   const breadcrumbs = (() => {
@@ -466,6 +632,27 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             ↻
           </button>
         </div>
+        {clipboard !== null ? (
+          <div className="clipboard-bar">
+            <span className={`clip-mode clip-${clipboard.mode}`}>
+              {clipboard.mode === 'copy' ? '複製' : '移動'}
+            </span>
+            <span className="clip-name" title={clipboard.item.path}>
+              {clipboard.item.name}
+            </span>
+            <button
+              className="primary"
+              disabled={busy}
+              title={`貼到 ${currentDir}`}
+              onClick={() => pasteClipboard(currentDir)}
+            >
+              貼到此處
+            </button>
+            <button className="clip-cancel" onClick={() => setClipboard(null)} title="取消">
+              ×
+            </button>
+          </div>
+        ) : null}
         <div className="tree-scroll">
           {rootPath !== null ? (
             <>
@@ -516,17 +703,10 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                     {mdPreview ? '編輯' : '預覽'}
                   </button>
                 ) : null}
-                <button
-                  onClick={() => {
-                    void navigator.clipboard
-                      ?.writeText(selected.path)
-                      .then(() => showFlash('路徑已複製'))
-                      .catch(() => undefined);
-                  }}
-                >
+                <button onClick={() => copyToClipboardText(selected.path, '路徑已複製')}>
                   Copy path
                 </button>
-                <button disabled={busy} onClick={duplicate}>
+                <button disabled={busy} onClick={() => duplicate()}>
                   Copy
                 </button>
                 <button onClick={() => setDialog({ kind: 'copy-to', item: selected })}>
@@ -539,7 +719,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                   Rename
                 </button>
                 {selected.type !== 'd' ? (
-                  <button disabled={busy} onClick={download}>
+                  <button disabled={busy} onClick={() => download()}>
                     Download
                   </button>
                 ) : null}
@@ -616,6 +796,18 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           </div>
         )}
       </div>
+
+      {menu !== null ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          title={menu.item.name}
+          subtitle={menu.item.path}
+          actions={menuActionsFor(menu.item)}
+          onSelect={(actionId) => runMenuAction(menu.item, actionId)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
 
       {jumpOpen ? (
         <div className="modal-overlay" onClick={() => setJumpOpen(false)}>

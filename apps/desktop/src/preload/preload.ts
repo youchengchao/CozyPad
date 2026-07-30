@@ -141,6 +141,10 @@ const bridge: PlatformBridge = {
   respondHostKey: (decision) =>
     ipcRenderer.invoke(IpcChannels.hostKeyDecision, HostKeyDecisionSchema.parse(decision)),
 
+  readClipboard: () => ipcRenderer.invoke(IpcChannels.clipboardRead),
+
+  writeClipboard: (text) => ipcRenderer.invoke(IpcChannels.clipboardWrite, text),
+
   getTmuxStatus: () => ipcRenderer.invoke(IpcChannels.tmuxStatus),
 
   installTmux: () => ipcRenderer.invoke(IpcChannels.tmuxInstall),

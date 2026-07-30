@@ -230,7 +230,7 @@ export function MonitorWorkspace({ connected, host }: MonitorWorkspaceProps) {
             <div className="form-actions">
               <button
                 onClick={() => {
-                  void navigator.clipboard?.writeText(commandDialog).catch(() => undefined);
+                  void bridge.writeClipboard(commandDialog).catch(() => undefined);
                   setCommandDialog(null);
                 }}
               >

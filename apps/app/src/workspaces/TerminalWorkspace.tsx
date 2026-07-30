@@ -26,6 +26,7 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
   const [tabs, setTabs] = useState<number[]>([]);
   const [active, setActive] = useState<number | null>(null);
   const [quickOpen, setQuickOpen] = useState(true);
+  const [toast, setToast] = useState<string | null>(null);
   const nextId = useRef(1);
   const handles = useRef(new Map<number, TerminalHandle>());
 
@@ -97,6 +98,7 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
           ＋
         </button>
         <span className="spacer" />
+        <span className="hint terminal-hint">右鍵：有選取＝複製、無選取＝貼上</span>
         <button
           className={`tab-quick-toggle${quickOpen ? ' tab-quick-toggle-on' : ''}`}
           onClick={() => setQuickOpen((open) => !open)}
@@ -120,6 +122,10 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
                 // 遠端 session 結束（exit、tmux kill-session、process 死亡）時
                 // 本地分頁一併關閉，不留下空殼。
                 onExit={() => closeTab(id)}
+                onNotify={(message) => {
+                  setToast(message);
+                  setTimeout(() => setToast(null), 1600);
+                }}
                 onHandle={(handle) => {
                   if (handle) handles.current.set(id, handle);
                   else handles.current.delete(id);
@@ -153,6 +159,7 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
           </aside>
         ) : null}
       </div>
+      {toast !== null ? <div className="terminal-toast">{toast}</div> : null}
     </div>
   );
 }

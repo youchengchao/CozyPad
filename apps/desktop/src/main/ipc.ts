@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { clipboard, ipcMain } from 'electron';
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import {
   ConnectRequestSchema,
@@ -216,6 +216,17 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
   ipcMain.handle(IpcChannels.remoteSettingsSet, (event, raw: unknown) => {
     assertSender(event);
     return remoteSettings.set(RemoteSettingsPatchSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.clipboardRead, (event) => {
+    assertSender(event);
+    return clipboard.readText();
+  });
+
+  ipcMain.handle(IpcChannels.clipboardWrite, (event, raw: unknown) => {
+    assertSender(event);
+    if (typeof raw !== 'string') throw new Error('clipboard payload must be a string');
+    clipboard.writeText(raw);
   });
 
   ipcMain.handle(IpcChannels.tmuxStatus, (event) => {

@@ -83,6 +83,10 @@ export interface PlatformBridge {
   getRemoteSettings(): Promise<RemoteSettings>;
   setRemoteSettings(patch: RemoteSettingsPatch): Promise<RemoteSettings>;
 
+  /** 系統剪貼簿；桌面走原生 API，不受 renderer 權限限制。 */
+  readClipboard(): Promise<string>;
+  writeClipboard(text: string): Promise<void>;
+
   /** tmux 佈建：連線後自動偵測，缺少或版本過舊時由 UI 詢問是否安裝。 */
   getTmuxStatus(): Promise<TmuxStatus>;
   installTmux(): Promise<TmuxInstallResult>;

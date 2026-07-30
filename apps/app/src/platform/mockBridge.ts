@@ -60,6 +60,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   let nextTerminalId = 1;
   let nextProfileId = 1;
   let remoteSettings: RemoteSettings = { tmuxMouseMode: true, tmuxSocket: 'default' };
+  let fallbackClipboard = '';
 
   const emitState = (
     profileId: string,
@@ -216,6 +217,22 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
       return () => undefined;
     },
     respondHostKey: () => Promise.resolve(),
+
+    async readClipboard() {
+      try {
+        return await navigator.clipboard.readText();
+      } catch {
+        return fallbackClipboard;
+      }
+    },
+    async writeClipboard(text) {
+      fallbackClipboard = text;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // 瀏覽器權限不足時只保留內部緩衝
+      }
+    },
 
     getTmuxStatus: () => Promise.resolve({ ...MOCK_TMUX_STATUS }),
     installTmux: () =>
