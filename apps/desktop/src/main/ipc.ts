@@ -236,8 +236,9 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
 
   ipcMain.handle(IpcChannels.tmuxInstall, async (event) => {
     assertSender(event);
-    const result = await tmuxProvisioner.install((progress) =>
-      send(IpcChannels.tmuxInstallProgress, progress),
+    const result = await tmuxProvisioner.install(
+      (progress) => send(IpcChannels.tmuxInstallProgress, progress),
+      (log) => send(IpcChannels.tmuxInstallLog, log),
     );
     send(IpcChannels.tmuxStatusChanged, result.status);
     return result;

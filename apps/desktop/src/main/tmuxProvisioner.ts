@@ -1,4 +1,10 @@
-import type { TmuxInstallProgress, TmuxInstallResult, TmuxStatus } from '@cozypad/contracts';
+import type {
+  TmuxInstallLog,
+  TmuxInstallLogLine,
+  TmuxInstallProgress,
+  TmuxInstallResult,
+  TmuxStatus,
+} from '@cozypad/contracts';
 import {
   buildRemoteCleanupScript,
   buildTmuxInstallScript,
@@ -17,9 +23,14 @@ export type StreamingExec = (
 
 export interface TmuxProvisionerPort {
   status(): Promise<TmuxStatus>;
-  install(onProgress: (progress: TmuxInstallProgress) => void): Promise<TmuxInstallResult>;
+  install(
+    onProgress: (progress: TmuxInstallProgress) => void,
+    onLog?: (log: TmuxInstallLog) => void,
+  ): Promise<TmuxInstallResult>;
   cleanup(removeTmuxBinary: boolean): Promise<string>;
 }
+
+const LOG_FLUSH_MS = 120;
 
 /** 使用者層級 tmux 佈建：偵測 → （使用者同意後）建置安裝 → 驗證確實可用。 */
 export class ShellTmuxProvisioner implements TmuxProvisionerPort {
@@ -34,9 +45,26 @@ export class ShellTmuxProvisioner implements TmuxProvisionerPort {
 
   async install(
     onProgress: (progress: TmuxInstallProgress) => void,
+    onLog?: (log: TmuxInstallLog) => void,
   ): Promise<TmuxInstallResult> {
     const startedAt = Date.now();
     const elapsed = (): number => Math.round((Date.now() - startedAt) / 1000);
+
+    // 建置會產生上萬行輸出；批次送出避免 IPC 與 React 被洗版。
+    let buffer: TmuxInstallLogLine[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flush = (): void => {
+      if (buffer.length === 0) return;
+      onLog?.({ lines: buffer });
+      buffer = [];
+    };
+    const queueLog = (line: TmuxInstallLogLine): void => {
+      buffer.push(line);
+      flushTimer ??= setTimeout(() => {
+        flushTimer = null;
+        flush();
+      }, LOG_FLUSH_MS);
+    };
 
     onProgress({
       stage: 'starting',
@@ -47,12 +75,23 @@ export class ShellTmuxProvisioner implements TmuxProvisionerPort {
 
     let log = '';
     try {
-      // 逐行串流，讓 UI 在數分鐘的建置過程中持續看到進度。
+      // 逐行串流，讓 UI 在數分鐘的建置過程中持續看到進度與實際輸出。
       log = await this.execStream(
         buildTmuxInstallScript(),
         (line) => {
+          const command = /^__CMD__\t(.*)$/.exec(line);
+          if (command) {
+            queueLog({ kind: 'command', text: command[1]!.trim() });
+            return;
+          }
+          const output = /^__LOG__\t(.*)$/.exec(line);
+          if (output) {
+            queueLog({ kind: 'output', text: output[1]! });
+            return;
+          }
           const match = /^__STAGE__\t(\S+)\t(\d+)\t(.*)$/.exec(line);
           if (!match) return;
+          flush();
           const percent = Number(match[2]);
           const seconds = elapsed();
           onProgress({
@@ -73,7 +112,9 @@ export class ShellTmuxProvisioner implements TmuxProvisionerPort {
         },
         INSTALL_TIMEOUT_MS,
       );
+      flush();
     } catch (error) {
+      flush();
       const message = error instanceof Error ? error.message : String(error);
       onProgress({
         stage: 'failed',
@@ -139,7 +180,9 @@ export class MockTmuxProvisioner implements TmuxProvisionerPort {
 
   install(
     onProgress: (progress: TmuxInstallProgress) => void,
+    onLog?: (log: TmuxInstallLog) => void,
   ): Promise<TmuxInstallResult> {
+    onLog?.({ lines: [{ kind: 'command', text: 'mock: 略過安裝' }] });
     onProgress({ stage: 'done', percent: 100, message: 'mock 模式無需安裝', elapsedSeconds: 0 });
     return Promise.resolve({ ok: true, status: this.ready, log: '' });
   }

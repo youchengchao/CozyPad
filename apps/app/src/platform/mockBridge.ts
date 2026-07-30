@@ -245,6 +245,9 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
     onTmuxInstallProgress() {
       return () => undefined;
     },
+    onTmuxInstallLog() {
+      return () => undefined;
+    },
 
     getRemoteSettings: () => Promise.resolve({ ...remoteSettings }),
     setRemoteSettings: (patch) => {

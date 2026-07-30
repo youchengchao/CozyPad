@@ -1,6 +1,13 @@
-import { useEffect, useState } from 'react';
-import type { TmuxInstallProgress, TmuxStatus } from '@cozypad/contracts';
+import { useEffect, useRef, useState } from 'react';
+import type {
+  TmuxInstallLogLine,
+  TmuxInstallProgress,
+  TmuxStatus,
+} from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
+
+/** 保留在畫面上的最大行數；建置輸出可達上萬行。 */
+const MAX_LOG_LINES = 600;
 
 interface TmuxSetupDialogProps {
   status: TmuxStatus;
@@ -22,17 +29,35 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
   const bridge = getBridge();
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<TmuxInstallProgress[]>([]);
+  const [logLines, setLogLines] = useState<TmuxInstallLogLine[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
+  const consoleRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
 
   useEffect(
     () => bridge.onTmuxInstallProgress((event) => setProgress((all) => [...all, event])),
     [bridge],
   );
 
+  useEffect(
+    () =>
+      bridge.onTmuxInstallLog((log) =>
+        setLogLines((all) => [...all, ...log.lines].slice(-MAX_LOG_LINES)),
+      ),
+    [bridge],
+  );
+
+  useEffect(() => {
+    const element = consoleRef.current;
+    if (element && stickToBottom.current) element.scrollTop = element.scrollHeight;
+  }, [logLines]);
+
   const install = () => {
     setInstalling(true);
     setFailure(null);
     setProgress([]);
+    setLogLines([]);
+    stickToBottom.current = true;
     void bridge
       .installTmux()
       .then((result) => {
@@ -117,9 +142,30 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
           </div>
         ) : null}
 
+        {logLines.length > 0 ? (
+          <div
+            className="install-console"
+            ref={consoleRef}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              stickToBottom.current =
+                element.scrollHeight - element.scrollTop - element.clientHeight < 40;
+            }}
+          >
+            {logLines.map((line, index) => (
+              <div
+                key={index}
+                className={line.kind === 'command' ? 'console-cmd' : 'console-out'}
+              >
+                {line.kind === 'command' ? `$ ${line.text}` : line.text}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         {progress.length > 1 ? (
           <details className="install-log-details">
-            <summary className="hint">詳細步驟（{progress.length}）</summary>
+            <summary className="hint">步驟摘要（{progress.length}）</summary>
             <div className="install-log">
               {progress.map((event, index) => (
                 <div key={index} className={`install-row install-${event.stage}`}>

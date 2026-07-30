@@ -32,6 +32,7 @@ export const IpcChannels = {
   tmuxInstall: 'cozypad:tmux:install',
   remoteCleanup: 'cozypad:remote:cleanup',
   tmuxInstallProgress: 'cozypad:tmux:install-progress',
+  tmuxInstallLog: 'cozypad:tmux:install-log',
   tmuxSessionsChanged: 'cozypad:tmux:sessions-changed',
   clipboardRead: 'cozypad:clipboard:read',
   clipboardWrite: 'cozypad:clipboard:write',

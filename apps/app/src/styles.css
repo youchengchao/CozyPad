@@ -2435,6 +2435,34 @@ button.danger:hover {
   gap: 10px;
 }
 
+.install-console {
+  background: #0b0c0d;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.console-cmd {
+  color: var(--accent);
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.console-cmd:first-child {
+  margin-top: 0;
+}
+
+.console-out {
+  color: var(--text-faint);
+}
+
 .install-log-details summary {
   cursor: pointer;
   padding: 2px 0;

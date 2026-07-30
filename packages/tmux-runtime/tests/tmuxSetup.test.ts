@@ -128,6 +128,31 @@ describe('buildTmuxInstallScript', () => {
     expect(script).toContain('LIBEVENT_LIBS=');
   });
 
+  it('builds wide-character ncurses, matching the -lncursesw it links against', () => {
+    // 沒有 --enable-widec 就只會產生 libncurses，連結 -lncursesw 必定失敗，
+    // 而且 CJK 寬字元也需要 widec。
+    expect(script).toContain('--enable-widec');
+    expect(script).toContain('-lncursesw');
+    expect(script).toContain('include/ncursesw');
+  });
+
+  it('links ncurses statically and sets rpath so tmux runs without LD_LIBRARY_PATH', () => {
+    expect(script).toContain('--without-shared');
+    expect(script).toContain('-Wl,-rpath,$PREFIX/lib');
+    // 驗證階段刻意不設 LD_LIBRARY_PATH：它必須在乾淨環境下也能跑。
+    expect(script).not.toContain('export LD_LIBRARY_PATH');
+  });
+
+  it('guards against concurrent installs and low disk space', () => {
+    expect(script).toContain('mkdir "$LOCK_DIR"');
+    expect(script).toContain('df -Pk');
+  });
+
+  it('echoes every command it runs and streams output live', () => {
+    expect(script).toContain("printf '__CMD__\\t%s\\n' \"$*\"");
+    expect(script).toContain("printf '__LOG__\\t%s\\n' \"$line\"");
+  });
+
   it('adds ~/.local/bin to shell rc files via a managed block', () => {
     expect(script).toContain('# >>> cozypad path >>>');
     expect(script).toContain('export PATH="$HOME/.local/bin:$PATH"');

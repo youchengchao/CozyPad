@@ -31,6 +31,18 @@ export const TmuxInstallProgressSchema = z.object({
 });
 export type TmuxInstallProgress = z.infer<typeof TmuxInstallProgressSchema>;
 
+/** 安裝過程的即時輸出：實際執行的指令與其 stdout/stderr。 */
+export const TmuxInstallLogSchema = z.object({
+  lines: z.array(
+    z.object({
+      kind: z.enum(['command', 'output']),
+      text: z.string(),
+    }),
+  ),
+});
+export type TmuxInstallLog = z.infer<typeof TmuxInstallLogSchema>;
+export type TmuxInstallLogLine = TmuxInstallLog['lines'][number];
+
 export const TmuxInstallResultSchema = z.object({
   ok: z.boolean(),
   status: TmuxStatusSchema,

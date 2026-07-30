@@ -108,7 +108,20 @@ export function buildTmuxInstallScript(
   return `PREFIX="$HOME/.local"
 SRC="${TMUX_BUILD_DIR}"
 LOG="${TMUX_INSTALL_LOG}"
+LOCK_DIR="$HOME/.cozypad/install.lock"
 mkdir -p "$PREFIX/bin" "$SRC" "$(dirname "$LOG")"
+
+# 單一安裝程序：重複點擊或多裝置同時安裝會互相破壞建置目錄。
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  other="$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '')"
+  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+    printf '__FAILED__\\t另一個安裝程序正在執行中（pid %s）\\n' "$other"
+    exit 1
+  fi
+  rm -rf "$LOCK_DIR" && mkdir "$LOCK_DIR"
+fi
+echo $$ > "$LOCK_DIR/pid"
+
 : > "$LOG"
 cd "$SRC"
 
@@ -117,13 +130,30 @@ fail() {
   printf '__FAILED__\\t%s\\n' "$1"
   printf '__LOG_TAIL__\\n'
   tail -n 40 "$LOG" 2>/dev/null
+  rm -f "$LOCK_DIR/pid" 2>/dev/null
+  rmdir "$LOCK_DIR" 2>/dev/null
   exit 1
 }
+# 逐行同時輸出到本機 UI（__LOG__）與遠端 log 檔，讓使用者看到真實過程。
 run() { # run <描述> <指令...>
   desc="$1"; shift
-  printf '\\n=== %s ===\\n' "$desc" >> "$LOG"
-  "$@" >> "$LOG" 2>&1 || fail "$desc"
+  printf '__CMD__\\t%s\\n' "$*"
+  printf '\\n$ %s\\n' "$*" >> "$LOG"
+  rc_file="$SRC/.last_rc"
+  rm -f "$rc_file"
+  { "$@" 2>&1; echo $? > "$rc_file"; } | while IFS= read -r line; do
+    printf '__LOG__\\t%s\\n' "$line"
+    printf '%s\\n' "$line" >> "$LOG"
+  done
+  [ "$(cat "$rc_file" 2>/dev/null || echo 1)" = "0" ] || fail "$desc"
 }
+
+stage starting 1 "檢查磁碟空間"
+avail_kb="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
+if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 1048576 ]; then
+  printf '__FAILED__\\t家目錄可用空間不足（%s MB，建置需要約 1 GB）\\n' "$((avail_kb / 1024))"
+  exit 1
+fi
 
 stage downloading 3 "下載 libevent"
 [ -f libevent.tar.gz ] || run "download libevent" curl -fsSL --retry 3 -o libevent.tar.gz \\
@@ -181,9 +211,12 @@ rm -rf ncurses-${ncurses}
 run "extract ncurses" tar xzf ncurses.tar.gz
 cd ncurses-${ncurses}
 stage building 40 "設定 ncurses"
-run "configure ncurses" ./configure --prefix="$PREFIX" --with-shared --with-termlib \\
+# --enable-widec 才會產生 libncursesw（CJK 寬字元與 UTF-8 必需，也是 tmux 連結的目標）。
+# 建成靜態連結，避免 tmux 執行時還要靠 LD_LIBRARY_PATH 才找得到 .so。
+run "configure ncurses" ./configure --prefix="$PREFIX" --enable-widec --with-termlib \\
+  --without-shared --with-normal \\
   --enable-pc-files --with-pkg-config-libdir="$PREFIX/lib/pkgconfig" \\
-  --without-ada --without-manpages --without-tests
+  --without-ada --without-manpages --without-tests --without-debug
 stage building 48 "編譯 ncurses（最久，約 2-5 分鐘）"
 run "make ncurses" make -j"$JOBS"
 stage building 68 "安裝 ncurses"
@@ -197,10 +230,10 @@ cd tmux-${version}
 stage building 76 "設定 tmux"
 # 顯式提供 libevent/ncurses 旗標，遠端沒有 pkg-config 也能設定成功。
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" run "configure tmux" ./configure --prefix="$PREFIX" \\
-  CFLAGS="-I$PREFIX/include -I$PREFIX/include/ncurses" \\
-  LDFLAGS="-L$PREFIX/lib" \\
+  CFLAGS="-I$PREFIX/include -I$PREFIX/include/ncursesw" \\
+  LDFLAGS="-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib" \\
   LIBEVENT_CFLAGS="-I$PREFIX/include" LIBEVENT_LIBS="-L$PREFIX/lib -levent" \\
-  NCURSES_CFLAGS="-I$PREFIX/include -I$PREFIX/include/ncurses" \\
+  NCURSES_CFLAGS="-I$PREFIX/include -I$PREFIX/include/ncursesw" \\
   NCURSES_LIBS="-L$PREFIX/lib -lncursesw -ltinfow"
 stage building 82 "編譯 tmux（約 1-2 分鐘）"
 run "make tmux" make -j"$JOBS"
@@ -217,7 +250,8 @@ done
 
 stage verifying 96 "驗證 tmux 可實際啟動 session"
 export PATH="$PREFIX/bin:$PATH"
-export LD_LIBRARY_PATH="$PREFIX/lib:\${LD_LIBRARY_PATH:-}"
+# 這裡不設 LD_LIBRARY_PATH：若少了它就跑不動，代表使用者日後直接執行也會失敗。
+"$PREFIX/bin/tmux" kill-session -t cozypad_verify 2>/dev/null || true
 run "tmux -V" "$PREFIX/bin/tmux" -V
 run "start test session" "$PREFIX/bin/tmux" new-session -d -s cozypad_verify 'sleep 5'
 run "check test session" "$PREFIX/bin/tmux" has-session -t cozypad_verify
@@ -229,6 +263,8 @@ ${
 cd "$HOME"
 rm -rf "$SRC"`
 }
+rm -f "$LOCK_DIR/pid" 2>/dev/null
+rmdir "$LOCK_DIR" 2>/dev/null
 stage done 100 "tmux ${version} 已就緒"
 `;
 }

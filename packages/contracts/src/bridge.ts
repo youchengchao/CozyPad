@@ -19,7 +19,12 @@ import type {
 } from './files';
 import type { HostKeyDecision, HostKeyPromptEvent } from './hostkey';
 import type { RemoteSettings, RemoteSettingsPatch } from './remoteSettings';
-import type { TmuxInstallProgress, TmuxInstallResult, TmuxStatus } from './tmuxSetup';
+import type {
+  TmuxInstallLog,
+  TmuxInstallProgress,
+  TmuxInstallResult,
+  TmuxStatus,
+} from './tmuxSetup';
 import type { TelemetrySnapshot } from './telemetry';
 import type {
   TerminalCloseRequest,
@@ -92,6 +97,8 @@ export interface PlatformBridge {
   installTmux(): Promise<TmuxInstallResult>;
   onTmuxStatus(listener: (status: TmuxStatus) => void): Unsubscribe;
   onTmuxInstallProgress(listener: (progress: TmuxInstallProgress) => void): Unsubscribe;
+  /** 安裝過程的即時指令與輸出（批次送達以免洗版）。 */
+  onTmuxInstallLog(listener: (log: TmuxInstallLog) => void): Unsubscribe;
 
   /** 移除 CozyPad 在遠端主機留下的痕跡（建置暫存、PATH／tmux 設定區塊）。 */
   cleanupRemote(removeTmuxBinary: boolean): Promise<string>;

@@ -15,6 +15,7 @@ import {
   IpcChannels,
   RemoteSettingsPatchSchema,
   TelemetrySnapshotSchema,
+  TmuxInstallLogSchema,
   TmuxInstallProgressSchema,
   TmuxStatusSchema,
   TerminalCloseRequestSchema,
@@ -157,6 +158,9 @@ const bridge: PlatformBridge = {
 
   onTmuxInstallProgress: (listener) =>
     subscribe(IpcChannels.tmuxInstallProgress, TmuxInstallProgressSchema, listener),
+
+  onTmuxInstallLog: (listener) =>
+    subscribe(IpcChannels.tmuxInstallLog, TmuxInstallLogSchema, listener),
 
   getRemoteSettings: () => ipcRenderer.invoke(IpcChannels.remoteSettingsGet),
 
