@@ -1,6 +1,11 @@
 package com.cozypad.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Base64
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -182,6 +187,7 @@ class SshPlugin : Plugin() {
         val enabled = call.getBoolean("enabled") ?: false
         backgroundEnabled = enabled
         if (enabled) {
+            requestNotificationPermission()
             val host = call.getString("host") ?: "remote host"
             backgroundHost = host
             if (client != null) SshForegroundService.start(context, host)
@@ -189,6 +195,26 @@ class SshPlugin : Plugin() {
             stopBackgroundService()
         }
         call.resolve()
+    }
+
+    /**
+     * Android 13+ 沒有這個執行期權限時，前景服務仍會執行但常駐通知不會顯示——
+     * 使用者會完全看不出連線正在背景維持。
+     */
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        activity?.let {
+            ActivityCompat.requestPermissions(
+                it,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                4711,
+            )
+        }
     }
 
     /** 連線是否仍活著；程序被凍結後回到前景時用來確認。 */

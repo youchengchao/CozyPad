@@ -70,7 +70,9 @@ class SshForegroundService : android.app.Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
-        return START_STICKY
+        // NOT_STICKY：SSH client 活在 app 程序裡，程序被回收後服務自行復活
+        // 只會顯示一個「連線中」卻沒有連線的假通知。
+        return START_NOT_STICKY
     }
 
     private fun createChannel() {

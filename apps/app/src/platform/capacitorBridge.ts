@@ -153,7 +153,13 @@ export function createCapacitorBridge(
   // ── 原生事件轉接 ─────────────────────────────────────────────────────
   void ssh.addListener('connectionState', (payload) => {
     const state = String(payload.state) as ConnectionState;
-    emitState(activeProfileId ?? '', state, payload.error as string | undefined);
+    // 沒有 activeProfileId 就沒有可重連的目標；帶空字串會讓自動重連連到不存在的 profile。
+    if (activeProfileId === null) return;
+    if (state === 'disconnected' || state === 'error') {
+      // 連線已死，繼續輪詢只會每 5 秒失敗一次。
+      telemetry.stop();
+    }
+    emitState(activeProfileId, state, payload.error as string | undefined);
   });
   void ssh.addListener('terminalOutput', (payload) => {
     const event: TerminalOutputEvent = {
@@ -197,11 +203,16 @@ export function createCapacitorBridge(
    * 回到前景時主動確認一次，讓 UI 的自動重連能接手。
    */
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible' || activeProfileId === null) return;
+    if (document.visibilityState !== 'visible') return;
+    const profileId = activeProfileId;
+    if (profileId === null) return;
     void ssh
       .isConnected()
       .then(({ connected }) => {
-        if (!connected) emitState(activeProfileId!, 'disconnected');
+        if (!connected) {
+          telemetry.stop();
+          emitState(profileId, 'disconnected');
+        }
       })
       .catch(() => undefined);
   });
