@@ -5,6 +5,7 @@ export default tseslint.config(
     ignores: [
       '**/node_modules/**',
       '**/dist/**',
+      'apps/desktop/release*/**',
       'apps/mobile/android/**',
       'lib/**',
       'packages/xterm/**',

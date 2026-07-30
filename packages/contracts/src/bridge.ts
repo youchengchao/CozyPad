@@ -92,4 +92,7 @@ export interface PlatformBridge {
   installTmux(): Promise<TmuxInstallResult>;
   onTmuxStatus(listener: (status: TmuxStatus) => void): Unsubscribe;
   onTmuxInstallProgress(listener: (progress: TmuxInstallProgress) => void): Unsubscribe;
+
+  /** 移除 CozyPad 在遠端主機留下的痕跡（建置暫存、PATH／tmux 設定區塊）。 */
+  cleanupRemote(removeTmuxBinary: boolean): Promise<string>;
 }

@@ -20,7 +20,12 @@ export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
 
 export const TmuxInstallProgressSchema = z.object({
   stage: z.enum(['starting', 'downloading', 'building', 'installing', 'verifying', 'done', 'failed']),
+  /** 0-100；由安裝腳本的已知步驟權重推得。 */
+  percent: z.number().min(0).max(100),
   message: z.string(),
+  elapsedSeconds: z.number().min(0),
+  /** 依目前進度線性外推的剩餘秒數；進度太低時不提供。 */
+  etaSeconds: z.number().min(0).optional(),
 });
 export type TmuxInstallProgress = z.infer<typeof TmuxInstallProgressSchema>;
 

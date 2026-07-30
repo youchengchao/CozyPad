@@ -243,6 +243,11 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     return result;
   });
 
+  ipcMain.handle(IpcChannels.remoteCleanup, (event, raw: unknown) => {
+    assertSender(event);
+    return tmuxProvisioner.cleanup(raw === true);
+  });
+
   ipcMain.handle(IpcChannels.hostKeyDecision, (event, raw: unknown) => {
     assertSender(event);
     const decision = HostKeyDecisionSchema.parse(raw);

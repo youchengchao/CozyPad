@@ -128,6 +128,14 @@ export class Ssh2Transport implements TransportPort {
   }
 
   exec(command: string, timeoutMs = 15_000): Promise<string> {
+    return this.execStream(command, () => undefined, timeoutMs);
+  }
+
+  execStream(
+    command: string,
+    onLine: (line: string) => void,
+    timeoutMs = 15_000,
+  ): Promise<string> {
     const client = this.client;
     if (!client) return Promise.reject(new Error('not connected'));
     return new Promise((resolve, reject) => {
@@ -138,14 +146,27 @@ export class Ssh2Transport implements TransportPort {
         }
         const stdout: Uint8Array[] = [];
         const stderr: Uint8Array[] = [];
+        let pending = '';
         const timer = setTimeout(
           () => reject(new Error(`remote command timed out after ${timeoutMs}ms`)),
           timeoutMs,
         );
-        stream.on('data', (chunk) => stdout.push(chunk));
+
+        const emitLines = (chunk: Uint8Array): void => {
+          pending += Buffer.from(chunk).toString('utf8');
+          const lines = pending.split('\n');
+          pending = lines.pop() ?? '';
+          for (const line of lines) onLine(line);
+        };
+
+        stream.on('data', (chunk) => {
+          stdout.push(chunk);
+          emitLines(chunk);
+        });
         stream.stderr?.on('data', (chunk) => stderr.push(chunk));
         stream.on('close', (code) => {
           clearTimeout(timer);
+          if (pending !== '') onLine(pending);
           const out = Buffer.concat(stdout.map((chunk) => Buffer.from(chunk))).toString(
             'utf8',
           );

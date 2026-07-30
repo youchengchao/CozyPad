@@ -35,6 +35,10 @@ export class MockTransport implements TransportPort {
     );
   }
 
+  execStream(): Promise<string> {
+    return this.exec();
+  }
+
   async connect(profileId: string): Promise<void> {
     this.emitState(profileId, 'connecting');
     await delay(200);

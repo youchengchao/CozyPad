@@ -149,6 +149,9 @@ const bridge: PlatformBridge = {
 
   installTmux: () => ipcRenderer.invoke(IpcChannels.tmuxInstall),
 
+  cleanupRemote: (removeTmuxBinary) =>
+    ipcRenderer.invoke(IpcChannels.remoteCleanup, removeTmuxBinary),
+
   onTmuxStatus: (listener) =>
     subscribe(IpcChannels.tmuxStatusChanged, TmuxStatusSchema, listener),
 

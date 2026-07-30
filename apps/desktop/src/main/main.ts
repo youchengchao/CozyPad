@@ -120,7 +120,9 @@ async function createServices(
     telemetry: new ShellTelemetry(exec),
     hostKeys,
     remoteSettings: new TmuxRemoteSettings(tmux),
-    tmuxProvisioner: new ShellTmuxProvisioner(exec),
+    tmuxProvisioner: new ShellTmuxProvisioner(exec, (command, onLine, timeoutMs) =>
+      transport.execStream(command, onLine, timeoutMs),
+    ),
     tmuxWatcher: new TmuxSessionWatcher(tmux),
   };
 }

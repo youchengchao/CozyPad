@@ -43,6 +43,25 @@ export function SettingsWorkspace({
   const [remote, setRemote] = useState<RemoteSettings | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanResult, setCleanResult] = useState<string | null>(null);
+
+  const cleanup = async (removeTmuxBinary: boolean): Promise<void> => {
+    setCleaning(true);
+    setCleanResult(null);
+    try {
+      const removed = await bridge.cleanupRemote(removeTmuxBinary);
+      setCleanResult(
+        removed.trim() === ''
+          ? '遠端沒有需要清除的 CozyPad 痕跡。'
+          : `已清除：${removed.trim()}`,
+      );
+    } catch (err: unknown) {
+      setCleanResult(`清除失敗：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setCleaning(false);
+    }
+  };
 
   const loadRemote = useCallback(() => {
     setRemoteError(null);
@@ -127,6 +146,42 @@ export function SettingsWorkspace({
             {mockData ? 'MOCK 資料' : 'SSH'}
           </span>
         </div>
+      </div>
+
+      <div className="card">
+        <h3>移除與清理</h3>
+        <p className="hint settings-note">
+          解除安裝 CozyPad 會清掉本機的所有資料（連線設定、加密密碼、known hosts、快取）。
+          遠端主機上的痕跡需要在這裡清除。
+        </p>
+        <div className="settings-row">
+          <span>
+            清除遠端佈建痕跡
+            <span className="hint settings-sub">
+              刪除 ~/.cozypad 建置暫存與 log，移除 shell rc 與 ~/.tmux.conf 內的 CozyPad
+              管理區塊（不動你其他設定）
+            </span>
+          </span>
+          <button disabled={!connected || cleaning} onClick={() => void cleanup(false)}>
+            {cleaning ? '清理中…' : '清除'}
+          </button>
+        </div>
+        <div className="settings-row">
+          <span>
+            一併移除 CozyPad 安裝的 tmux
+            <span className="hint settings-sub">
+              只刪除 ~/.local/bin/tmux（由 CozyPad 安裝時才存在）；系統 tmux 不受影響
+            </span>
+          </span>
+          <button
+            className="danger"
+            disabled={!connected || cleaning}
+            onClick={() => void cleanup(true)}
+          >
+            清除並移除 tmux
+          </button>
+        </div>
+        {cleanResult !== null ? <p className="hint">{cleanResult}</p> : null}
       </div>
 
       <div className="card">

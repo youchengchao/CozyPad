@@ -237,6 +237,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
     getTmuxStatus: () => Promise.resolve({ ...MOCK_TMUX_STATUS }),
     installTmux: () =>
       Promise.resolve({ ok: true, status: { ...MOCK_TMUX_STATUS }, log: '' }),
+    cleanupRemote: () => Promise.resolve('mock'),
     onTmuxStatus() {
       return () => undefined;
     },

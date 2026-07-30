@@ -39,9 +39,7 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
         if (result.ok) {
           onInstalled(result.status);
         } else {
-          setFailure(
-            result.log.trim().split('\n').slice(-6).join('\n') || '安裝失敗，未取得詳細訊息',
-          );
+          setFailure(result.log.trim() || '安裝失敗，未取得詳細訊息');
         }
       })
       .catch((err: unknown) => setFailure(err instanceof Error ? err.message : String(err)))
@@ -49,6 +47,9 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
   };
 
   const outdated = status.installed && !status.satisfiesTarget;
+  const latest = progress[progress.length - 1];
+  const formatDuration = (seconds: number): string =>
+    seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
 
   return (
     <div className="modal-overlay">
@@ -83,18 +84,57 @@ export function TmuxSetupDialog({ status, onDismiss, onInstalled }: TmuxSetupDia
           </p>
         )}
 
-        {progress.length > 0 ? (
-          <div className="install-log">
-            {progress.map((event, index) => (
-              <div key={index} className={`install-row install-${event.stage}`}>
-                <span className="install-stage">{STAGE_LABEL[event.stage]}</span>
-                <span className="install-message">{event.message}</span>
-              </div>
-            ))}
+        {latest !== undefined ? (
+          <div className="install-progress">
+            <div className="install-progress-head">
+              <span className="install-current">
+                {STAGE_LABEL[latest.stage]} · {latest.message}
+              </span>
+              <span className="mono install-percent">{latest.percent}%</span>
+            </div>
+            <div className="bar">
+              <div
+                className={`bar-fill${latest.stage === 'failed' ? ' bar-hot' : ''}`}
+                style={{ width: `${latest.percent}%` }}
+              />
+            </div>
+            <div className="install-timing hint">
+              <span>已耗時 {formatDuration(latest.elapsedSeconds)}</span>
+              {latest.etaSeconds !== undefined && latest.stage !== 'done' ? (
+                <span>預估剩餘 約 {formatDuration(latest.etaSeconds)}</span>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
-        {failure !== null ? <pre className="command-block install-error">{failure}</pre> : null}
+        {progress.length > 1 ? (
+          <details className="install-log-details">
+            <summary className="hint">詳細步驟（{progress.length}）</summary>
+            <div className="install-log">
+              {progress.map((event, index) => (
+                <div key={index} className={`install-row install-${event.stage}`}>
+                  <span className="install-stage">{STAGE_LABEL[event.stage]}</span>
+                  <span className="install-message">{event.message}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
+
+        {failure !== null ? (
+          <>
+            <p className="hint install-failure-hint">
+              安裝失敗。下方是遠端建置的錯誤輸出，可複製後貼給我或管理者。
+            </p>
+            <pre className="command-block install-error">{failure}</pre>
+            <button
+              className="install-copy"
+              onClick={() => void bridge.writeClipboard(failure).catch(() => undefined)}
+            >
+              複製錯誤訊息
+            </button>
+          </>
+        ) : null}
 
         <div className="form-actions">
           <button disabled={installing} onClick={onDismiss}>

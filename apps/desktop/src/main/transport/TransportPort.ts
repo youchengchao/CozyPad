@@ -13,6 +13,14 @@ export interface TransportPort {
   disconnect(profileId: string): Promise<void>;
   /** 在遠端執行單一命令並回傳 stdout（telemetry 與檔案操作的基礎）。 */
   exec(command: string, timeoutMs?: number): Promise<string>;
+  /**
+   * 同 exec，但每收到一行就回呼——長時間作業（如建置 tmux）才能顯示即時進度。
+   */
+  execStream(
+    command: string,
+    onLine: (line: string) => void,
+    timeoutMs?: number,
+  ): Promise<string>;
   openTerminal(request: TerminalOpenRequest): Promise<string>;
   writeTerminal(terminalId: string, data: Uint8Array): void;
   resizeTerminal(terminalId: string, cols: number, rows: number): void;

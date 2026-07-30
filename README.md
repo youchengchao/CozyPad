@@ -75,6 +75,18 @@ lib/ 等          舊 Flutter 版（cutover 前保留，勿改）
 架構鐵則（lint 強制）：`apps/app` 不得直接 import 任何平台 API——一律經由
 `PlatformBridge`。這使桌面殼未來可整顆替換（Electron ⇄ Tauri）而不動 UI。
 
+## 完整移除
+
+CozyPad 只寫三個地方，全部可以清乾淨：
+
+| 位置 | 內容 | 怎麼清 |
+| --- | --- | --- |
+| Windows 本機 | 程式本體 + `%APPDATA%\CozyPad`（連線設定、加密密碼、known hosts、快取） | 從「設定 → 應用程式」解除安裝即可，**app data 會一併刪除** |
+| Android | app 私有資料 | 一般解除安裝即可（Android 保證清除私有目錄）；你主動下載的檔案留在 Downloads |
+| 遠端主機 | `~/.cozypad/`（建置暫存與 log）、shell rc 與 `~/.tmux.conf` 的 CozyPad 管理區塊、（若由 CozyPad 安裝）`~/.local/bin/tmux` | **Settings → 移除與清理 → 清除**（可選是否一併移除 tmux）；只動 CozyPad 自己的區塊，不碰你其他設定 |
+
+安裝 tmux 用的建置暫存（數百 MB）在安裝成功後會自動刪除，不需手動處理。
+
 ## 安全性
 
 - 密碼經 Electron `safeStorage`（OS keychain）加密，永不進 renderer／log
