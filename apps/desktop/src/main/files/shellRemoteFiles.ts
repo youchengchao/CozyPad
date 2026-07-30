@@ -19,8 +19,15 @@ function throwOnErrorMarker(output: string, fallback: string): string {
  * POSIX 腳本、in-band __ERROR__ 標記、原子寫入（mktemp + mv）、刪除防呆。
  */
 export class ShellRemoteFiles implements RemoteFilesPort {
+  /** 單一目錄最多回傳的項目數；超過即截斷並標記。 */
+  static readonly ENTRY_LIMIT = 2000;
+
   constructor(private readonly exec: RemoteExec) {}
 
+  /**
+   * 單層列目錄（`-maxdepth 1`），不遞迴、不掛 file watcher——這是不會像
+   * VS Code 那樣燒遠端 CPU 的原因。大目錄以 ENTRY_LIMIT 截斷，避免傳輸爆量。
+   */
   async list(path: string): Promise<DirectoryListing> {
     const target = path.trim() === '' ? '~' : path.trim();
     const command = `target=${quoteShellArg(target)}
@@ -32,18 +39,19 @@ if [ ! -d "$target" ]; then
   echo "__ERROR__\tNot a directory: $target"
   exit 1
 fi
-cd "$target" || exit 1
+cd "$target" 2>/dev/null || { echo "__ERROR__\tPermission denied: $target"; exit 1; }
 printf "__PWD__\\t%s\\n" "$(pwd -P)"
-find . -maxdepth 1 -mindepth 1 -printf '%y\\t%f\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' | sort -k1,1 -k2,2
+find . -maxdepth 1 -mindepth 1 \\
+  -printf '%y\\t%f\\t%s\\t%TY-%Tm-%Td %TH:%TM\\t%Y\\t%l\\t%m\\n' 2>/dev/null \\
+  | sort -t"$(printf '\\t')" -k1,1 -k2,2 | head -n ${ShellRemoteFiles.ENTRY_LIMIT + 1}
 `;
-    const output = await this.exec(command, 8000);
+    const output = await this.exec(command, 10000);
 
     let resolvedPath = target;
     const items: RemoteFileItem[] = [];
     for (const rawLine of output.split('\n')) {
       if (rawLine.trim() === '') continue;
       const parts = rawLine.split('\t');
-      if (parts.length === 0) continue;
       if (parts[0] === '__PWD__' && parts.length >= 2) {
         resolvedPath = parts[1]!;
         continue;
@@ -54,20 +62,30 @@ find . -maxdepth 1 -mindepth 1 -printf '%y\\t%f\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n' |
       if (parts.length < 4) continue;
       const name = parts[1]!;
       if (name === '.' || name === '..') continue;
+      const linkTarget = parts[5] ?? '';
+      const mode = parts[6] ?? '';
       items.push({
         name,
         path: resolvedPath === '/' ? `/${name}` : `${resolvedPath}/${name}`,
         type: parts[0]!,
         sizeBytes: Number.parseInt(parts[2]!, 10) || 0,
         modified: parts[3]!,
+        ...(linkTarget === '' ? {} : { linkTarget }),
+        ...(parts[4] === undefined || parts[4] === '' ? {} : { targetType: parts[4] }),
+        executable: /[1357]/.test(mode.slice(-3)),
       });
     }
 
-    items.sort((a, b) => {
-      if ((a.type === 'd') !== (b.type === 'd')) return a.type === 'd' ? -1 : 1;
+    const truncated = items.length > ShellRemoteFiles.ENTRY_LIMIT;
+    const capped = truncated ? items.slice(0, ShellRemoteFiles.ENTRY_LIMIT) : items;
+
+    capped.sort((a, b) => {
+      const aDir = a.type === 'd' || (a.type === 'l' && a.targetType === 'd');
+      const bDir = b.type === 'd' || (b.type === 'l' && b.targetType === 'd');
+      if (aDir !== bDir) return aDir ? -1 : 1;
       return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
     });
-    return { path: resolvedPath, items };
+    return { path: resolvedPath, items: capped, truncated };
   }
 
   async readText(path: string, maxBytes: number, offset: number): Promise<string> {

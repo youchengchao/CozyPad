@@ -5,6 +5,7 @@ import type { RemoteFileItem } from '@cozypad/contracts';
 import { base64ToBytes, textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 import { CodeEditor } from '../components/CodeEditor';
+import { FileIcon, fileKindOf } from '../components/FileIcons';
 import { PdfViewer } from '../components/PdfViewer';
 
 interface FilesWorkspaceProps {
@@ -33,7 +34,10 @@ function extensionOf(name: string): string {
 
 function isTextFile(item: RemoteFileItem): boolean {
   if (item.name.startsWith('.') && !item.name.includes('.', 1)) return true;
-  return TEXT_EXTENSIONS.has(extensionOf(item.name));
+  const ext = extensionOf(item.name);
+  // 無副檔名的檔案（README、Makefile、syslog…）在大小合理時當文字處理。
+  if (ext === '' && item.sizeBytes <= MAX_EDITOR_BYTES) return true;
+  return TEXT_EXTENSIONS.has(ext);
 }
 
 function isMarkdown(item: RemoteFileItem): boolean {
@@ -55,7 +59,11 @@ const MAX_EDITOR_BYTES = 262144;
 export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [rootPath, setRootPath] = useState<string | null>(null);
+  const [homePath, setHomePath] = useState<string | null>(null);
   const [children, setChildren] = useState<Record<string, RemoteFileItem[]>>({});
+  const [truncatedDirs, setTruncatedDirs] = useState<Set<string>>(new Set());
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpValue, setJumpValue] = useState('');
   const [expanded, setExpanded] = useState(new Set<string>());
   const [selected, setSelected] = useState<RemoteFileItem | null>(null);
   const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
@@ -84,6 +92,12 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       try {
         const listing = await bridge.fsList({ path });
         setChildren((current) => ({ ...current, [listing.path]: listing.items }));
+        setTruncatedDirs((current) => {
+          const next = new Set(current);
+          if (listing.truncated) next.add(listing.path);
+          else next.delete(listing.path);
+          return next;
+        });
         setError(null);
         return listing.path;
       } catch (err: unknown) {
@@ -92,6 +106,20 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       }
     },
     [bridge],
+  );
+
+  /** 切換樹的根目錄（Home、/、或任意路徑）。 */
+  const openRoot = useCallback(
+    async (path: string) => {
+      const resolved = await loadDir(path);
+      if (resolved === null) return;
+      setRootPath(resolved);
+      setExpanded(new Set([resolved]));
+      setSelected(null);
+      setDraft(null);
+      setPdfData(null);
+    },
+    [loadDir],
   );
 
   useEffect(() => {
@@ -107,6 +135,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     void loadDir('~').then((resolved) => {
       if (resolved !== null) {
         setRootPath(resolved);
+        setHomePath(resolved);
         setPwd(resolved);
         setExpanded(new Set([resolved]));
       }
@@ -128,7 +157,38 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     });
   };
 
+  /** symlink：指向目錄就跳過去，指向檔案就開目標。 */
+  const followSymlink = (item: RemoteFileItem) => {
+    const target = item.linkTarget;
+    if (target === undefined || item.targetType === 'N') {
+      setError(`連結目標不存在：${target ?? '(未知)'}`);
+      return;
+    }
+    const absolute = target.startsWith('/')
+      ? target
+      : `${parentOf(item.path)}/${target}`;
+    if (item.targetType === 'd') {
+      void openRoot(absolute);
+      showFlash('已跳到連結目標');
+      return;
+    }
+    void bridge
+      .fsList({ path: parentOf(absolute) })
+      .then((listing) => {
+        const found = listing.items.find((entry) => entry.path === absolute);
+        if (found) openFile(found);
+        else setError(`找不到連結目標：${absolute}`);
+      })
+      .catch(report);
+  };
+
   const openFile = (item: RemoteFileItem) => {
+    if (item.type === 'l') {
+      setSelected(item);
+      setDraft(null);
+      setPdfData(null);
+      return;
+    }
     setSelected(item);
     setDraft(null);
     setPdfData(null);
@@ -271,7 +331,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
 
   const currentDir =
     selected === null
-      ? (pwd ?? rootPath ?? '~')
+      ? (rootPath ?? pwd ?? '~')
       : selected.type === 'd'
         ? selected.path
         : parentOf(selected.path);
@@ -282,31 +342,76 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     const items = children[dirPath];
     if (items === undefined) {
       return (
-        <div className="hint" style={{ paddingLeft: 14 + depth * 16 }}>
+        <div className="hint tree-loading" style={{ paddingLeft: 14 + depth * 16 }}>
           載入中…
         </div>
       );
     }
-    return items.map((item) => {
+    const rows = items.map((item) => {
       const isDir = item.type === 'd';
       const isOpen = expanded.has(item.path);
+      const kind = fileKindOf(item, isOpen);
       return (
         <div key={item.path}>
           <button
             className={`tree-row${selected?.path === item.path ? ' tree-row-active' : ''}`}
-            style={{ paddingLeft: 10 + depth * 16 }}
-            onClick={() => (isDir ? toggleDir(item) : openFile(item))}
-            title={item.path}
+            style={{ paddingLeft: 8 + depth * 14 }}
+            onClick={() => {
+              if (isDir) toggleDir(item);
+              else if (item.type === 'l') openFile(item);
+              else openFile(item);
+            }}
+            onDoubleClick={() => {
+              if (item.type === 'l') followSymlink(item);
+            }}
+            title={
+              item.type === 'l'
+                ? `${item.path} → ${item.linkTarget ?? '?'}（雙擊跳轉）`
+                : item.path
+            }
           >
-            <span className="tree-glyph">{isDir ? (isOpen ? '▾' : '▸') : '·'}</span>
-            {item.name}
+            <span className={`tree-caret${isDir ? '' : ' tree-caret-empty'}`}>
+              {isDir ? (isOpen ? '▾' : '▸') : ''}
+            </span>
+            <FileIcon kind={kind} />
+            <span className="tree-name">{item.name}</span>
+            {item.type === 'l' ? <span className="tree-arrow">→</span> : null}
+            {item.executable === true && item.type === 'f' ? (
+              <span className="tree-badge tree-badge-exec">x</span>
+            ) : null}
             {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
           </button>
           {isDir && isOpen ? renderTree(item.path, depth + 1) : null}
         </div>
       );
     });
+
+    if (truncatedDirs.has(dirPath)) {
+      rows.push(
+        <div
+          key={`${dirPath}__truncated`}
+          className="hint tree-truncated"
+          style={{ paddingLeft: 12 + depth * 14 }}
+        >
+          僅顯示前 2000 筆（目錄過大）
+        </div>,
+      );
+    }
+    return rows;
   };
+
+  const breadcrumbs = (() => {
+    const path = currentDir;
+    if (!path.startsWith('/')) return [];
+    const segments = path.split('/').filter((segment) => segment !== '');
+    const crumbs = [{ label: '/', path: '/' }];
+    let accumulated = '';
+    for (const segment of segments) {
+      accumulated += `/${segment}`;
+      crumbs.push({ label: segment, path: accumulated });
+    }
+    return crumbs;
+  })();
 
   if (!connected) {
     return (
@@ -320,6 +425,36 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   return (
     <div className="files-workspace">
       <aside className="files-tree">
+        <div className="files-roots">
+          <button
+            className={rootPath !== null && rootPath === homePath ? 'root-active' : ''}
+            onClick={() => void openRoot('~')}
+            title="家目錄"
+          >
+            ⌂ Home
+          </button>
+          <button
+            className={rootPath === '/' ? 'root-active' : ''}
+            onClick={() => void openRoot('/')}
+            title="根目錄"
+          >
+            / Root
+          </button>
+          {pwd !== null && pwd !== rootPath ? (
+            <button onClick={() => void openRoot(pwd)} title="切換到 pwd">
+              ↦ pwd
+            </button>
+          ) : null}
+          <button
+            onClick={() => {
+              setJumpValue(currentDir);
+              setJumpOpen(true);
+            }}
+            title="跳到指定路徑"
+          >
+            ⤓ 路徑…
+          </button>
+        </div>
         <div className="files-toolbar">
           <button onClick={() => setDialog({ kind: 'new-file', dir: currentDir })}>
             ＋檔案
@@ -331,10 +466,36 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             ↻
           </button>
         </div>
-        <div className="files-note hint mono">{rootPath ?? '~'}</div>
-        {rootPath !== null ? renderTree(rootPath, 0) : <div className="hint">載入中…</div>}
+        <div className="tree-scroll">
+          {rootPath !== null ? (
+            <>
+              <button
+                className={`tree-row tree-root-row${selected === null ? ' tree-row-active' : ''}`}
+                onClick={() => void refreshDirs(rootPath)}
+                title={rootPath}
+              >
+                <span className="tree-caret">▾</span>
+                <FileIcon kind="folder-open" />
+                <span className="tree-name mono">{rootPath}</span>
+              </button>
+              {renderTree(rootPath, 1)}
+            </>
+          ) : (
+            <div className="hint tree-loading">載入中…</div>
+          )}
+        </div>
       </aside>
       <div className="files-preview">
+        <div className="breadcrumb-bar">
+          {breadcrumbs.map((crumb, index) => (
+            <span key={crumb.path} className="crumb-wrap">
+              {index > 0 ? <span className="crumb-sep">/</span> : null}
+              <button className="crumb" onClick={() => void openRoot(crumb.path)}>
+                {crumb.label}
+              </button>
+            </span>
+          ))}
+        </div>
         {error ? <div className="error-banner">{error}</div> : null}
         {selected ? (
           <>
@@ -390,7 +551,28 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 </button>
               </div>
             </div>
-            {selected.type === 'd' ? (
+            {selected.type === 'l' ? (
+              <div className="placeholder link-card">
+                <p>
+                  <FileIcon kind={fileKindOf(selected)} size={22} />
+                </p>
+                <p className="mono link-target">→ {selected.linkTarget ?? '(未知目標)'}</p>
+                <p className="hint">
+                  {selected.targetType === 'd'
+                    ? '指向資料夾'
+                    : selected.targetType === 'N'
+                      ? '目標不存在（斷鏈）'
+                      : '指向檔案'}
+                </p>
+                <button
+                  className="primary"
+                  disabled={selected.targetType === 'N'}
+                  onClick={() => followSymlink(selected)}
+                >
+                  跳到目標
+                </button>
+              </div>
+            ) : selected.type === 'd' ? (
               <div className="placeholder">
                 <p>{children[selected.path]?.length ?? '…'} 個項目</p>
                 <p className="hint">pwd: {pwd ?? '—'}</p>
@@ -434,6 +616,46 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           </div>
         )}
       </div>
+
+      {jumpOpen ? (
+        <div className="modal-overlay" onClick={() => setJumpOpen(false)}>
+          <div className="modal modal-narrow" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>跳到路徑</h2>
+              <button className="modal-close" onClick={() => setJumpOpen(false)}>
+                ×
+              </button>
+            </div>
+            <input
+              autoFocus
+              className="mono"
+              value={jumpValue}
+              placeholder="/var/log 或 ~/projects"
+              onChange={(event) => setJumpValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && jumpValue.trim() !== '') {
+                  void openRoot(jumpValue.trim());
+                  setJumpOpen(false);
+                }
+              }}
+            />
+            <p className="hint">支援 ~ 展開；只讀取該層目錄，不遞迴掃描。</p>
+            <div className="form-actions">
+              <button onClick={() => setJumpOpen(false)}>取消</button>
+              <button
+                className="primary"
+                disabled={jumpValue.trim() === ''}
+                onClick={() => {
+                  void openRoot(jumpValue.trim());
+                  setJumpOpen(false);
+                }}
+              >
+                前往
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {dialog ? (
         <div className="modal-overlay" onClick={() => setDialog(null)}>

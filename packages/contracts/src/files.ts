@@ -1,18 +1,29 @@
 import { z } from 'zod';
 
-/** `find -printf '%y'` 的檔案類型：d=目錄、f=一般檔案、l=symlink、其餘照原字元。 */
+/**
+ * `find -printf '%y'` 的檔案類型：d=目錄、f=一般檔案、l=symlink、
+ * s=socket、p=fifo、b/c=裝置，其餘照原字元。
+ */
 export const RemoteFileItemSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   type: z.string().min(1),
   sizeBytes: z.number().int().min(0),
   modified: z.string(),
+  /** symlink 指向的路徑（`%l`）。 */
+  linkTarget: z.string().optional(),
+  /** symlink 解析後的類型（`%Y`）；'N' 代表指向不存在的目標。 */
+  targetType: z.string().optional(),
+  /** 檔案是否具備執行權限。 */
+  executable: z.boolean().optional(),
 });
 export type RemoteFileItem = z.infer<typeof RemoteFileItemSchema>;
 
 export const DirectoryListingSchema = z.object({
   path: z.string().min(1),
   items: z.array(RemoteFileItemSchema),
+  /** 目錄項目過多時只回傳前 N 筆（避免大目錄拖慢遠端與傳輸）。 */
+  truncated: z.boolean().default(false),
 });
 export type DirectoryListing = z.infer<typeof DirectoryListingSchema>;
 

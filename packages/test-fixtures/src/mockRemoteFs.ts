@@ -7,9 +7,11 @@ const MODIFIED = '2026-07-29 12:00';
 
 interface MockNode {
   name: string;
-  type: 'd' | 'f';
+  type: 'd' | 'f' | 'l';
   children?: Map<string, MockNode>;
   content?: Uint8Array;
+  linkTarget?: string;
+  executable?: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -25,6 +27,20 @@ function dirNode(name: string, children: MockNode[]): MockNode {
 
 function seed(): MockNode {
   return dirNode('', [
+    dirNode('etc', [
+      textNode('hostname', 'gpu-box\n'),
+      textNode('os-release', 'NAME="Ubuntu"\nVERSION="24.04 LTS"\n'),
+      dirNode('ssh', [textNode('sshd_config', 'Port 22\nPermitRootLogin no\n')]),
+    ]),
+    dirNode('var', [dirNode('log', [textNode('syslog', 'mock syslog line\n')])]),
+    dirNode('tmp', []),
+    dirNode('usr', [dirNode('bin', [{ name: 'tmux', type: 'f', content: new Uint8Array([0x7f, 0x45, 0x4c, 0x46]), executable: true }])]),
+    dirNode('home', [dirNode('cozy', homeChildren())]),
+  ]);
+}
+
+function homeChildren(): MockNode[] {
+  return [
     dirNode('projects', [
       dirNode('seg-train', [
         dirNode('configs', [
@@ -52,10 +68,21 @@ function seed(): MockNode {
           '# Notes\n\n- 2026-07-29: dataloader 瓶頸已修，GPU util **36% → 88%**\n\n| factor | best |\n| --- | --- |\n| normalization | zscore |\n',
         ),
         { name: 'paper.pdf', type: 'f', content: buildSamplePdf() },
+        { name: 'run.sh', type: 'f', content: encoder.encode('#!/bin/sh\npython train.py\n'), executable: true },
+        { name: 'latest-run', type: 'l', linkTarget: '/home/cozy/projects/seg-train/src' },
+        { name: 'dangling', type: 'l', linkTarget: '/home/cozy/does-not-exist' },
+        { name: 'logo.png', type: 'f', content: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+        { name: 'data.csv', type: 'f', content: encoder.encode('step,loss\n1,0.42\n2,0.31\n') },
+        { name: 'archive.tar.gz', type: 'f', content: new Uint8Array([0x1f, 0x8b]) },
       ]),
     ]),
+    dirNode('datasets', [
+      dirNode('imagenet-mini', [textNode('README', 'mock dataset\n')]),
+    ]),
+    { name: 'data', type: 'l', linkTarget: '/home/cozy/datasets' },
+    { name: 'sys-log', type: 'l', linkTarget: '/var/log/syslog' },
     textNode('.bashrc', 'export PATH="$HOME/bin:$PATH"\n'),
-  ]);
+  ];
 }
 
 /** 記憶體版遠端檔案系統：瀏覽器 mock bridge 與 Electron mock 模式共用。 */
@@ -74,10 +101,8 @@ export class MockRemoteFs {
   }
 
   private findNode(absPath: string): MockNode | null {
-    if (!absPath.startsWith(HOME)) return null;
-    const rel = this.segments(absPath.slice(HOME.length));
     let node: MockNode = this.root;
-    for (const segment of rel) {
+    for (const segment of this.segments(absPath)) {
       const next = node.children?.get(segment);
       if (!next) return null;
       node = next;
@@ -86,10 +111,10 @@ export class MockRemoteFs {
   }
 
   private findParent(absPath: string): { parent: MockNode; name: string } | null {
-    const parts = this.segments(absPath.slice(HOME.length));
+    const parts = this.segments(absPath);
     const name = parts.pop();
     if (name === undefined) return null;
-    const parent = this.findNode(`${HOME}/${parts.join('/')}`);
+    const parent = this.findNode(`/${parts.join('/')}`);
     if (!parent || parent.type !== 'd') return null;
     return { parent, name };
   }
@@ -100,18 +125,27 @@ export class MockRemoteFs {
     if (!node || node.type !== 'd') {
       return Promise.reject(new Error(`Not a directory: ${abs}`));
     }
-    const items: RemoteFileItem[] = [...(node.children?.values() ?? [])].map((child) => ({
-      name: child.name,
-      path: `${abs}/${child.name}`,
-      type: child.type,
-      sizeBytes: child.type === 'f' ? (child.content?.length ?? 0) : (child.children?.size ?? 0),
-      modified: MODIFIED,
-    }));
+    const items: RemoteFileItem[] = [...(node.children?.values() ?? [])].map((child) => {
+      const target = child.linkTarget === undefined ? null : this.findNode(child.linkTarget);
+      return {
+        name: child.name,
+        path: abs === '/' ? `/${child.name}` : `${abs}/${child.name}`,
+        type: child.type,
+        sizeBytes:
+          child.type === 'f' ? (child.content?.length ?? 0) : (child.children?.size ?? 0),
+        modified: MODIFIED,
+        ...(child.linkTarget === undefined ? {} : { linkTarget: child.linkTarget }),
+        ...(child.type === 'l' ? { targetType: target?.type ?? 'N' } : {}),
+        ...(child.executable === true ? { executable: true } : {}),
+      };
+    });
     items.sort((a, b) => {
-      if ((a.type === 'd') !== (b.type === 'd')) return a.type === 'd' ? -1 : 1;
+      const aDir = a.type === 'd' || (a.type === 'l' && a.targetType === 'd');
+      const bDir = b.type === 'd' || (b.type === 'l' && b.targetType === 'd');
+      if (aDir !== bDir) return aDir ? -1 : 1;
       return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
     });
-    return Promise.resolve({ path: abs, items });
+    return Promise.resolve({ path: abs, items, truncated: false });
   }
 
   readText(path: string, maxBytes = 262144, offset = 0): Promise<string> {
