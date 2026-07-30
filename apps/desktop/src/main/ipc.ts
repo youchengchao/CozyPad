@@ -20,13 +20,13 @@ import {
   base64ToBytes,
   bytesToBase64,
 } from '@cozypad/contracts';
-import type { RemoteFilesPort } from './files/RemoteFilesPort';
+import type { RemoteFilesPort } from '@cozypad/remote-services';
 import type { HostKeyGate } from './hostKeys';
 import type { ProfileStorePort } from './profileStore';
-import type { RemoteSettingsPort } from './remoteSettingsService';
-import type { TmuxProvisionerPort } from './tmuxProvisioner';
+import type { RemoteSettingsPort } from '@cozypad/remote-services';
+import type { TmuxProvisionerPort } from '@cozypad/remote-services';
 import type { TmuxSessionWatcher } from './tmuxWatcher';
-import type { TelemetrySource } from './telemetry/telemetryService';
+import type { TelemetrySource } from '@cozypad/remote-services';
 import type { TransportPort } from './transport/TransportPort';
 
 export interface IpcServices {

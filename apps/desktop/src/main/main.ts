@@ -6,19 +6,19 @@ import { TmuxRuntime } from '@cozypad/tmux-runtime';
 import {
   MemoryRemoteSettings,
   TmuxRemoteSettings,
-} from './remoteSettingsService';
-import type { RemoteSettingsPort } from './remoteSettingsService';
-import { MockTmuxProvisioner, ShellTmuxProvisioner } from './tmuxProvisioner';
-import type { TmuxProvisionerPort } from './tmuxProvisioner';
+} from '@cozypad/remote-services';
+import type { RemoteSettingsPort } from '@cozypad/remote-services';
+import { MockTmuxProvisioner, ShellTmuxProvisioner } from '@cozypad/remote-services';
+import type { TmuxProvisionerPort } from '@cozypad/remote-services';
 import { TmuxSessionWatcher } from './tmuxWatcher';
-import type { RemoteFilesPort } from './files/RemoteFilesPort';
-import { ShellRemoteFiles } from './files/shellRemoteFiles';
+import type { RemoteFilesPort } from '@cozypad/remote-services';
+import { ShellRemoteFiles } from '@cozypad/remote-services';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { registerIpc } from './ipc';
 import { MemoryProfileStore, ProfileStore } from './profileStore';
 import type { ProfileCrypto, ProfileStorePort } from './profileStore';
-import { ShellTelemetry } from './telemetry/telemetryService';
-import type { TelemetrySource } from './telemetry/telemetryService';
+import { ShellTelemetry } from '@cozypad/remote-services';
+import type { TelemetrySource } from '@cozypad/remote-services';
 import { MOCK_PROFILE, MockTransport } from './transport/mockTransport';
 import { Ssh2Transport } from './transport/ssh2Transport';
 import type { TransportPort } from './transport/TransportPort';

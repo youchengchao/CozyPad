@@ -11,7 +11,7 @@ import {
   detectTmux,
   parseInstallFailure,
 } from '@cozypad/tmux-runtime';
-import type { RemoteExec } from './files/shellRemoteFiles';
+import type { RemoteExec } from './shellRemoteFiles';
 
 const INSTALL_TIMEOUT_MS = 30 * 60 * 1000;
 

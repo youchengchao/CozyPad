@@ -1,8 +1,23 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 android {
     namespace = "com.cozypad.app"
     compileSdk = rootProject.ext.compileSdkVersion
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*',
+                         'META-INF/BC*.SF', 'META-INF/BC*.DSA', 'META-INF/BC*.RSA',
+                         'META-INF/versions/9/OSGI-INF/MANIFEST.MF']
+        }
+    }
     defaultConfig {
         applicationId "com.cozypad.app"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -36,6 +51,10 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // 原生 SSH（WebView 無 raw TCP）與 Keystore 加密儲存。
+    implementation 'com.hierynomus:sshj:0.38.0'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

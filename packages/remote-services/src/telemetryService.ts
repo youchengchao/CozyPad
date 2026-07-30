@@ -7,7 +7,7 @@ import {
   parseGpuTelemetry,
   parseMemoryMetric,
 } from '@cozypad/telemetry';
-import type { RemoteExec } from '../files/shellRemoteFiles';
+import type { RemoteExec } from './shellRemoteFiles';
 
 export interface TelemetrySource {
   start(profileId: string, emit: (snapshot: TelemetrySnapshot) => void): void;

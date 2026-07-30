@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ShellRemoteFiles, quoteShellArg } from '../src/main/files/shellRemoteFiles';
+import { ShellRemoteFiles, quoteShellArg } from '../src/shellRemoteFiles';
 
 function fakeExec(outputs: string[]): {
   exec: (command: string, timeoutMs?: number) => Promise<string>;

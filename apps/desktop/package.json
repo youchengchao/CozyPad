@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@cozypad/contracts": "workspace:*",
+    "@cozypad/remote-services": "workspace:*",
     "@cozypad/telemetry": "workspace:*",
     "@cozypad/test-fixtures": "workspace:*",
     "@cozypad/tmux-runtime": "workspace:*",
