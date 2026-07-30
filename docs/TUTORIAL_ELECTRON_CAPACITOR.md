@@ -84,7 +84,17 @@ Desktop 的完整 profile 與 host trust（包含名稱、host、port、username
 原子遷移。OS secure storage 不可用或資料無法解密時會停止載入，不會退回明文或
 把原檔靜默清空。
 
-### 2.5 Signed release APK
+### 2.5 Android 檔案下載測試
+
+下載由 Android 原生層完成，不走 WebView blob download。Android 10+ 會寫入
+`Downloads/CozyPad`；Android 7–9 會開啟系統儲存選擇器。改到 Kotlin download
+plugin 後必須重新 build 並安裝 APK，再確認：
+
+- 無副檔名與未知副檔名不會被改成 `.xml`。
+- PDF、文字與 binary 檔案保留遠端原始檔名。
+- 下載後的 SHA-256 與遠端檔案一致。
+
+### 2.6 Signed release APK
 
 正式 `apk` 命令要求四個簽章環境變數，缺少任一項就停止：
 
@@ -100,7 +110,7 @@ pnpm.cmd --filter @cozypad/mobile apk
 `apk:release:unsigned` 只供本機驗證，禁止上傳 release。Keystore 與密碼只能放在
 本機環境變數或 CI secrets。
 
-### 2.6 Signed Desktop package
+### 2.7 Signed Desktop package
 
 正式 Windows 安裝檔必須提供 code-signing certificate：
 

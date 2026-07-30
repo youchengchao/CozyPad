@@ -78,3 +78,32 @@ export const FsPathResultSchema = z.object({
   path: z.string().min(1),
 });
 export type FsPathResult = z.infer<typeof FsPathResultSchema>;
+
+export const SaveDownloadRequestSchema = z.object({
+  fileName: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(
+      (value) =>
+        value !== '.' &&
+        value !== '..' &&
+        !value.includes('/') &&
+        !/[\u0000-\u001f\u007f]/u.test(value),
+      'Unsafe download filename',
+    ),
+  dataBase64: z.string(),
+  mimeType: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/u,
+    ),
+});
+export type SaveDownloadRequest = z.infer<typeof SaveDownloadRequestSchema>;
+
+export const SaveDownloadResultSchema = z.object({
+  fileName: z.string().min(1),
+  cancelled: z.boolean().default(false),
+  location: z.string().min(1).optional(),
+});
+export type SaveDownloadResult = z.infer<typeof SaveDownloadResultSchema>;

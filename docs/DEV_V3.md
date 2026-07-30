@@ -95,6 +95,16 @@ Remove-Item Env:COZYPAD_SSH_PASSWORD
 手動斷線，以及非手動斷線後的自動重連。Android 原生改動還要重建並重裝 APK，
 不能只更新 Web assets。
 
+## Android 檔案下載
+
+Android 不使用 WebView 的 `<a download>` 儲存遠端檔案。Android 10+ 由
+`CozyPadDownload` plugin 透過 `MediaStore.Downloads` 寫入 `Downloads/CozyPad`；
+Android 7–9 會開啟系統儲存選擇器。原始檔名與 bytes 必須保持不變，未知格式使用
+`application/octet-stream`，且不要求 `WRITE_EXTERNAL_STORAGE` 或檔案管理權限。
+
+改到 download plugin、plugin registration 或 contract 後，live reload 不足以驗證；
+必須重建、重裝 APK，並至少測試無副檔名、未知副檔名、PDF 與 binary 檔案。
+
 ## 正式發行
 
 正式命令會 fail closed：缺少簽章資訊就停止，不產生可誤發的 unsigned artifact。

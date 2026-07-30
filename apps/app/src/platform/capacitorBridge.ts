@@ -17,6 +17,10 @@ import type {
   TmuxStatus,
 } from '@cozypad/contracts';
 import {
+  SaveDownloadRequestSchema,
+  SaveDownloadResultSchema,
+} from '@cozypad/contracts';
+import {
   ShellRemoteFiles,
   ShellTelemetry,
   ShellTmuxProvisioner,
@@ -78,21 +82,38 @@ interface SecureStorePlugin {
   remove(options: { key: string }): Promise<void>;
 }
 
+interface DownloadPlugin {
+  saveFile(options: {
+    fileName: string;
+    dataBase64: string;
+    mimeType: string;
+  }): Promise<{
+    fileName: string;
+    cancelled?: boolean;
+    location?: string;
+  }>;
+}
+
 interface CapacitorGlobal {
   Plugins?: {
+    CozyPadDownload?: DownloadPlugin;
     CozyPadSsh?: SshPlugin;
     CozyPadSecureStore?: SecureStorePlugin;
   };
 }
 
 export function getCapacitorPlugins(): {
+  download?: DownloadPlugin;
   ssh: SshPlugin;
   store: SecureStorePlugin;
 } | null {
   const capacitor = (globalThis as { Capacitor?: CapacitorGlobal }).Capacitor;
+  const download = capacitor?.Plugins?.CozyPadDownload;
   const ssh = capacitor?.Plugins?.CozyPadSsh;
   const store = capacitor?.Plugins?.CozyPadSecureStore;
-  return ssh && store ? { ssh, store } : null;
+  return ssh && store
+    ? { ssh, store, ...(download === undefined ? {} : { download }) }
+    : null;
 }
 
 const PROFILES_KEY = 'profiles';
@@ -112,6 +133,7 @@ interface StoredProfile extends Omit<ConnectionProfile, 'authMethod'> {
 export function createCapacitorBridge(
   ssh: SshPlugin,
   store: SecureStorePlugin,
+  download?: DownloadPlugin,
 ): PlatformBridge {
   const stateListeners = new Set<(event: ConnectionStateChanged) => void>();
   const outputListeners = new Set<(event: TerminalOutputEvent) => void>();
@@ -438,6 +460,14 @@ export function createCapacitorBridge(
       path: await files.moveTo(request.sourcePath, request.destinationDirectory),
     }),
     fsDelete: (request) => files.remove(request.path),
+    ...(download === undefined
+      ? {}
+      : {
+          saveDownload: async (request) =>
+            SaveDownloadResultSchema.parse(
+              await download.saveFile(SaveDownloadRequestSchema.parse(request)),
+            ),
+        }),
 
     onHostKeyPrompt(listener) {
       hostKeyListeners.add(listener);

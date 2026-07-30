@@ -4,6 +4,7 @@ import { createCapacitorBridge } from '../src/platform/capacitorBridge';
 
 type SshPlugin = Parameters<typeof createCapacitorBridge>[0];
 type SecureStorePlugin = Parameters<typeof createCapacitorBridge>[1];
+type DownloadPlugin = Parameters<typeof createCapacitorBridge>[2];
 
 const cpuOutput = [
   'cpu 100 0 20 800 0 0 0 0',
@@ -14,8 +15,10 @@ const cpuOutput = [
 ].join('\n');
 
 function createNativePlugins(): {
+  download: DownloadPlugin;
   ssh: SshPlugin;
   store: SecureStorePlugin;
+  saveFile: ReturnType<typeof vi.fn>;
   exec: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
   values: Map<string, string>;
@@ -29,6 +32,13 @@ function createNativePlugins(): {
     return { output: '' };
   });
   const connect = vi.fn(async () => undefined);
+  const saveFile = vi.fn(
+    async ({ fileName }: { fileName: string }) => ({
+      fileName,
+      cancelled: false,
+      location: 'Downloads/CozyPad',
+    }),
+  );
 
   const ssh = {
     connect,
@@ -120,7 +130,18 @@ function createNativePlugins(): {
     }),
   } satisfies SecureStorePlugin;
 
-  return { ssh, store, exec, connect, values, nativeCredentials };
+  const download = { saveFile } satisfies DownloadPlugin;
+
+  return {
+    download,
+    ssh,
+    store,
+    saveFile,
+    exec,
+    connect,
+    values,
+    nativeCredentials,
+  };
 }
 
 describe('createCapacitorBridge telemetry', () => {
@@ -133,8 +154,8 @@ describe('createCapacitorBridge telemetry', () => {
       visibilityState: 'visible',
       addEventListener: vi.fn(),
     });
-    const { ssh, store, exec } = createNativePlugins();
-    const bridge = createCapacitorBridge(ssh, store);
+    const { download, ssh, store, exec } = createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store, download);
     const profile = await bridge.saveProfile({
       name: 'Mobile host',
       host: 'example.test',
@@ -168,8 +189,9 @@ describe('createCapacitorBridge telemetry', () => {
       visibilityState: 'visible',
       addEventListener: vi.fn(),
     });
-    const { ssh, store, connect, values, nativeCredentials } = createNativePlugins();
-    const bridge = createCapacitorBridge(ssh, store);
+    const { download, ssh, store, connect, values, nativeCredentials } =
+      createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store, download);
     const privateKey = 'test-private-key-material';
     const passphrase = 'test-passphrase';
 
@@ -229,8 +251,8 @@ describe('createCapacitorBridge telemetry', () => {
       visibilityState: 'visible',
       addEventListener: vi.fn(),
     });
-    const { ssh, store, nativeCredentials } = createNativePlugins();
-    const bridge = createCapacitorBridge(ssh, store);
+    const { download, ssh, store, nativeCredentials } = createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store, download);
     const saved = await bridge.saveProfile({
       name: 'Transient host',
       host: 'transient.example.test',
@@ -258,5 +280,43 @@ describe('createCapacitorBridge telemetry', () => {
       password: 'test-only',
       rememberCredential: false,
     });
+  });
+
+  it('forwards the exact filename, bytes and MIME type to the native downloader', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store, saveFile } = createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store, download);
+
+    await expect(
+      bridge.saveDownload?.({
+        fileName: 'model.safetensors',
+        dataBase64: 'AAECAw==',
+        mimeType: 'application/octet-stream',
+      }),
+    ).resolves.toEqual({
+      fileName: 'model.safetensors',
+      cancelled: false,
+      location: 'Downloads/CozyPad',
+    });
+    expect(saveFile).toHaveBeenCalledWith({
+      fileName: 'model.safetensors',
+      dataBase64: 'AAECAw==',
+      mimeType: 'application/octet-stream',
+    });
+  });
+
+  it('keeps the bridge usable when an older mobile shell has no download plugin', () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { ssh, store } = createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store);
+
+    expect(bridge.kind).toBe('capacitor');
+    expect(bridge.saveDownload).toBeUndefined();
   });
 });

@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { RemoteFileItem } from '@cozypad/contracts';
-import { base64ToBytes, textToBase64 } from '@cozypad/contracts';
+import { textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 import { CodeEditor } from '../components/CodeEditor';
 import { ContextMenu, useLongPress } from '../components/ContextMenu';
 import type { MenuAction } from '../components/ContextMenu';
 import { FileIcon, fileKindOf } from '../components/FileIcons';
 import { PdfViewer } from '../components/PdfViewer';
+import { mimeTypeForFileName, saveWithBrowserDownload } from '../fileDownload';
 import { buildFileBreadcrumbs, directoryItems } from './fileNavigation';
 
 interface FilesWorkspaceProps {
@@ -282,14 +283,19 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     setBusy(true);
     bridge
       .fsReadBytes({ path: item.path })
-      .then(({ dataBase64 }) => {
-        const blob = new Blob([new Uint8Array(base64ToBytes(dataBase64))]);
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = item.name;
-        anchor.click();
-        URL.revokeObjectURL(url);
+      .then(async ({ dataBase64 }) => {
+        const request = {
+          fileName: item.name,
+          dataBase64,
+          mimeType: mimeTypeForFileName(item.name),
+        };
+        if (bridge.saveDownload !== undefined) {
+          const result = await bridge.saveDownload(request);
+          if (!result.cancelled) showFlash(`已下載 ${result.fileName}`);
+          return;
+        }
+        saveWithBrowserDownload(request);
+        showFlash(`已開始下載 ${item.name}`);
       })
       .catch(report)
       .finally(() => setBusy(false));

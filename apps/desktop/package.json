@@ -1,7 +1,7 @@
 {
   "name": "@cozypad/desktop",
   "private": true,
-  "version": "0.2.7-alpha",
+  "version": "0.2.8-alpha",
   "description": "CozyPad - remote agent workstation over SSH",
   "author": "youchengchao",
   "main": "dist/main.cjs",

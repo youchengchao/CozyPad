@@ -19,7 +19,7 @@ app、斷線、換裝置，工作都不會中斷。
 | --- | --- |
 | SSH 連線管理（密碼／SSH Key、OS 安全儲存、host key 驗證、斷線自動重連） | ✅ |
 | 多分頁終端機（xterm.js、右鍵複製貼上、常用指令面板、手機 Termux 式按鍵列） | ✅ |
-| 遠端檔案：類型圖示、symlink 跳轉、任意路徑導覽、右鍵／長按選單、兩段式複製搬移 | ✅ |
+| 遠端檔案：類型圖示、symlink 跳轉、任意路徑導覽、下載保留原始檔名、右鍵／長按選單、兩段式複製搬移 | ✅ |
 | 檔案編輯：Monaco（VS Code 引擎）語法高亮、Ctrl+S 直接存回遠端；Markdown 預覽；PDF 內嵌檢視 | ✅ |
 | 監控：CPU／記憶體／GPU 與 GPU processes，每 5 秒更新 | ✅ |
 | 遠端設定：tmux 滑鼠模式開關；tmux 缺失時一鍵使用者層級安裝 | ✅ |
@@ -86,7 +86,7 @@ CozyPad 只寫三個地方，全部可以清乾淨：
 | 位置 | 內容 | 怎麼清 |
 | --- | --- | --- |
 | Windows 本機 | 程式本體 + Electron user data（連線設定、加密憑證、known hosts、快取） | 從「設定 → 應用程式」解除安裝即可，**app data 會一併刪除** |
-| Android | app 私有資料 | 一般解除安裝即可（Android 保證清除私有目錄）；你主動下載的檔案留在 Downloads |
+| Android | app 私有資料 | 一般解除安裝即可（Android 保證清除私有目錄）；你主動下載的檔案留在 `Downloads/CozyPad`（Android 7–9 則是儲存時選擇的位置） |
 | 遠端主機 | `~/.cozypad/`（建置暫存與 log）、shell rc 與 `~/.tmux.conf` 的 CozyPad 管理區塊、（若由 CozyPad 安裝）`~/.local/bin/tmux` | **Settings → 移除與清理 → 清除**（可選是否一併移除 tmux）；只動 CozyPad 自己的區塊，不碰你其他設定 |
 
 安裝 tmux 用的建置暫存（數百 MB）在安裝成功後會自動刪除，不需手動處理。

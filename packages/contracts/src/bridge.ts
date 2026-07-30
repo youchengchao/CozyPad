@@ -16,6 +16,8 @@ import type {
   FsRenameRequest,
   FsTransferRequest,
   FsWriteRequest,
+  SaveDownloadRequest,
+  SaveDownloadResult,
 } from './files';
 import type { HostKeyDecision, HostKeyPromptEvent } from './hostkey';
 import type { RemoteSettings, RemoteSettingsPatch } from './remoteSettings';
@@ -89,6 +91,11 @@ export interface PlatformBridge {
   fsCopy(request: FsTransferRequest): Promise<FsPathResult>;
   fsMove(request: FsTransferRequest): Promise<FsPathResult>;
   fsDelete(request: FsPathRequest): Promise<void>;
+  /**
+   * 原生平台可選的下載落盤能力。Android 使用 MediaStore／系統文件選擇器；
+   * 未提供時 renderer 使用標準 browser download。
+   */
+  saveDownload?(request: SaveDownloadRequest): Promise<SaveDownloadResult>;
 
   onHostKeyPrompt(listener: (event: HostKeyPromptEvent) => void): Unsubscribe;
   respondHostKey(decision: HostKeyDecision): Promise<void>;

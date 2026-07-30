@@ -18,7 +18,11 @@ export function getBridge(): PlatformBridge {
 
   const plugins = getCapacitorPlugins();
   if (plugins !== null) {
-    cached = createCapacitorBridge(plugins.ssh, plugins.store);
+    cached = createCapacitorBridge(
+      plugins.ssh,
+      plugins.store,
+      plugins.download,
+    );
     return cached;
   }
 

@@ -678,6 +678,10 @@ cozypad/
     Flutter 版以 `dartssh2` 達成的直連能力即由此對應。Android 已落地密碼與 SSH Key
     登入、native credential vault、host-key trust、keepalive 與自動重連。
   - **配對 Desktop 或 authenticated gateway**：適合不想在手機上管理金鑰／密碼的情境。
+- Android 下載遠端檔案不得依賴 WebView 的 `blob:`／`<a download>` 行為。Android 10+
+  必須經原生 `MediaStore.Downloads` 寫入 `Downloads/CozyPad`；Android 7–9 使用
+  `ACTION_CREATE_DOCUMENT`。兩者都必須保留原始檔名、明確設定 MIME，未知格式使用
+  `application/octet-stream`，並拒絕路徑分隔符與控制字元；不得要求廣泛儲存權限。
 - Mobile 不直接解析 agent raw protocol。
 
 ### Phase 8：Cutover
@@ -742,6 +746,8 @@ cozypad/
   keystore、簽章密碼或環境專屬絕對路徑。
 - 內部原型 prerelease 若依明確核准延後正式簽章，仍須驗證 manifest、資產內容、
   commit 對應、SHA-256 與實際簽章狀態，並同時揭露於 release notes。
+- Android 遠端檔案下載須以原檔名與 byte-exact 內容寫入公開 Downloads／使用者選取
+  位置；未知副檔名不得被改名為 XML，且 manifest 不得新增廣泛儲存權限。
 
 ## 16. 已定案事項
 

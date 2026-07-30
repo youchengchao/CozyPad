@@ -4,6 +4,7 @@ import {
   ConnectionProfileDraftSchema,
   ConnectionProfileSchema,
   ConnectionStateChangedSchema,
+  SaveDownloadRequestSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
   TerminalResizeRequestSchema,
@@ -112,6 +113,34 @@ describe('connection events', () => {
 
   it('rejects a connect request without profileId', () => {
     expect(() => ConnectRequestSchema.parse({})).toThrow();
+  });
+});
+
+describe('download schemas', () => {
+  it('preserves a safe filename and explicit MIME type', () => {
+    expect(
+      SaveDownloadRequestSchema.parse({
+        fileName: 'weights.final.bin',
+        dataBase64: 'AAE=',
+        mimeType: 'application/octet-stream',
+      }),
+    ).toEqual({
+      fileName: 'weights.final.bin',
+      dataBase64: 'AAE=',
+      mimeType: 'application/octet-stream',
+    });
+  });
+
+  it('rejects path traversal and control characters in download filenames', () => {
+    for (const fileName of ['../secret', 'folder/file.txt', 'bad\nname.txt']) {
+      expect(() =>
+        SaveDownloadRequestSchema.parse({
+          fileName,
+          dataBase64: '',
+          mimeType: 'application/octet-stream',
+        }),
+      ).toThrow();
+    }
   });
 });
 
