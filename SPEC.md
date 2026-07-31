@@ -31,15 +31,15 @@ V3 SHALL 完整移除下列概念：
 - Hermes 專屬 UI、設定、API key 與本機資料目錄。
 - 所有 `Hermes*` domain type、command、event 與 repository package。
 
-舊 Flutter 實作中的下列檔案屬於遷移來源，不得搬進 V3：
+舊 Flutter 實作已封存在 Git tag `v1.0.2`。其中下列檔案只屬於遷移來源，不得搬回 V3：
 
 ```text
-lib/hermes/hermes_engine.dart
-lib/hermes/hermes_models.dart
-lib/hermes/hermes_native_tab.dart
-lib/hermes/hermes_widgets.dart
-lib/hermes/harness/hermes_harness.dart
-lib/hermes/rebuild/hermes_remote_runtime.dart
+v1.0.2:lib/hermes/hermes_engine.dart
+v1.0.2:lib/hermes/hermes_models.dart
+v1.0.2:lib/hermes/hermes_native_tab.dart
+v1.0.2:lib/hermes/hermes_widgets.dart
+v1.0.2:lib/hermes/harness/hermes_harness.dart
+v1.0.2:lib/hermes/rebuild/hermes_remote_runtime.dart
 ```
 
 可以保留的是其中與產品無關、經重新命名並重新測試的通用概念，例如：
@@ -506,7 +506,7 @@ Terminal SHALL 支援：
 - bracketed paste、resize、search、copy。
 - reconnect 到既有 tmux session。
 
-Terminal fidelity gate 未通過前，不得移除 Flutter 版可用的 terminal fallback。
+Cutover 後 repository 不再內含 Flutter terminal fallback；需要比對或回復時，以 Git tag `v1.0.2` 為基準。
 
 ## 11. Persistence Schema
 
@@ -580,8 +580,6 @@ cozypad/
 ├── docs/
 │   ├── adr/
 │   └── protocols/
-├── legacy/
-│   └── flutter/
 └── SPEC.md
 ```
 
@@ -686,9 +684,9 @@ cozypad/
 
 ### Phase 8：Cutover
 
-- 達到 Desktop release gates。
-- 停止 Flutter 功能開發。
-- 封存 Flutter 與刪除 Hermes runtime。
+- Desktop release gates 持續由 Electron／Capacitor pipeline 驗證。
+- Flutter 功能開發已停止。
+- Flutter 原始碼封存於 Git tag `v1.0.2`，in-tree Hermes runtime 已移除。
 
 ## 15. Release Gates
 

@@ -15,7 +15,7 @@ function throwOnErrorMarker(output: string, fallback: string): string {
 }
 
 /**
- * 與 Flutter 版（lib/providers/ssh_provider.dart）相同的 shell-over-SSH 檔案操作：
+ * Shell-over-SSH behavior migrated from tag v1.0.2:lib/providers/ssh_provider.dart:
  * POSIX 腳本、in-band __ERROR__ 標記、原子寫入（mktemp + mv）、刪除防呆。
  */
 export class ShellRemoteFiles implements RemoteFilesPort {

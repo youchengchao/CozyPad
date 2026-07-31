@@ -31,12 +31,12 @@ handoff 包提出 CozyPad ⇄ solution-agent（確定性 Python 任務編排器�
    PID 消失且無 exit code → `lost`，不得推定成功或失敗。
 6. **ExecutionSpec 白名單**：run 的命令來自 `script_id` 註冊表與驗證過的
    workspace/artifact 路徑，不執行模型產生的任意 shell 字串（`SPEC.md` §13）。
-7. **單一事實來源**：舊 Flutter 的 `~/.dashboard_tasks.json` 與新執行層註冊表
+7. **單一事實來源**：tag `v1.0.2` 舊 Flutter 的 `~/.dashboard_tasks.json` 與新執行層註冊表
    不得成為兩個可寫 master；遷移時一次性匯入後唯讀。
 
 ### 不採納／過時
 
-- 包內的 Flutter/Hermes 參考源碼（V3 已移除 Hermes，repo 內另有最新版）。
+- Flutter/Hermes 參考源碼（V3 已移除 Hermes；歷史版本封存在 tag `v1.0.2`）。
 - Phase 3「Hermes 整合」——由 V3 的 remote agent adapter（Claude/Codex）取代。
 - solution-agent 以本機 Python 常駐服務運行——牴觸 `SPEC.md` §3（核心不內嵌
   Python）。改為：**執行層跑在遠端主機**，CozyPad 經 SSH 與 durable files 溝通

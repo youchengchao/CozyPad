@@ -1,4 +1,4 @@
-/** 與 Flutter 版（lib/providers/ssh_provider.dart）完全相同的遠端命令與標記。 */
+/** Remote commands and markers migrated from tag v1.0.2:lib/providers/ssh_provider.dart. */
 
 export const CPU_SPLIT_MARKER = '__DASHBOARD_CPU_SPLIT__';
 
