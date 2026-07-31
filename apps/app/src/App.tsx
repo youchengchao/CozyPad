@@ -172,6 +172,12 @@ export function App() {
         clearTimers();
         setReconnect(null);
       }
+      if (event.state === 'error') {
+        connectInFlight.current = false;
+        if (!manualDisconnect.current && wasConnected.current) {
+          scheduleRef.current(event.profileId);
+        }
+      }
       if (
         event.state === 'disconnected' &&
         !manualDisconnect.current &&
@@ -180,7 +186,7 @@ export function App() {
         scheduleRef.current(event.profileId);
       }
     });
-  }, [bridge]);
+  }, [bridge, clearTimers]);
 
   const selectedProfile = profiles.find((profile) => profile.id === selectedId) ?? null;
 

@@ -68,7 +68,6 @@ export const SSH_ALGORITHMS = {
     'diffie-hellman-group18-sha512',
   ],
   cipher: [
-    'chacha20-poly1305@openssh.com',
     'aes128-gcm@openssh.com',
     'aes256-gcm@openssh.com',
     'aes128-ctr',
@@ -94,6 +93,8 @@ export const SSH_ALGORITHMS = {
 export class Ssh2Transport implements TransportPort {
   private events: TransportEvents | null = null;
   private client: Ssh2ClientLike | null = null;
+  private activeProfileId: string | null = null;
+  private connecting = false;
   private wasConnected = false;
   private readonly terminals = new Map<string, Ssh2ShellStreamLike>();
   private nextTerminalId = 1;
@@ -111,70 +112,113 @@ export class Ssh2Transport implements TransportPort {
   async connect(profileId: string): Promise<void> {
     const profile = this.options.getProfile?.(profileId);
     if (!profile) throw new Error(`unknown profile: ${profileId}`);
-    if (this.client) throw new Error('already connected; disconnect first');
-
-    const authMethod = profile.authMethod ?? 'password';
-    const credential = (await this.options.getCredential?.(profileId)) ?? null;
-    if (credential === null || credential.authMethod !== authMethod) {
-      throw new Error(
-        authMethod === 'privateKey' ? 'SSH private key is required' : 'SSH password is required',
-      );
+    if (
+      this.client !== null &&
+      this.wasConnected &&
+      this.activeProfileId === profileId
+    ) {
+      // A renderer reload loses its local state while the main-process SSH
+      // session remains alive. Re-emit the snapshot instead of rejecting.
+      this.emitState(profileId, 'connected');
+      return;
+    }
+    if (this.client !== null || this.connecting) {
+      throw new Error('already connected; disconnect first');
     }
 
-    this.emitState(profileId, 'connecting');
-    const client = this.clientFactory();
-    this.client = client;
-    this.wasConnected = false;
+    this.connecting = true;
+    try {
+      const authMethod = profile.authMethod ?? 'password';
+      const credential = (await this.options.getCredential?.(profileId)) ?? null;
+      if (credential === null || credential.authMethod !== authMethod) {
+        throw new Error(
+          authMethod === 'privateKey'
+            ? 'SSH private key is required'
+            : 'SSH password is required',
+        );
+      }
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      client.on('ready', () => {
-        settled = true;
-        this.wasConnected = true;
-        this.emitState(profileId, 'connected');
-        resolve();
-      });
-      client.on('error', (error) => {
-        this.emitState(profileId, 'error', error.message);
-        if (!settled) {
+      this.emitState(profileId, 'connecting');
+      const client = this.clientFactory();
+      this.client = client;
+      this.activeProfileId = profileId;
+      this.wasConnected = false;
+
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const fail = (error: Error): void => {
+          if (this.client !== client) return;
+          const shouldReject = !settled;
           settled = true;
+          this.closeAllTerminals();
           this.client = null;
-          reject(error);
-        }
-      });
-      client.on('close', () => {
-        this.closeAllTerminals();
-        if (this.client === client) {
-          this.client = null;
-          if (this.wasConnected) this.emitState(profileId, 'disconnected');
+          this.activeProfileId = null;
           this.wasConnected = false;
+          this.emitState(profileId, 'error', error.message);
+          try {
+            client.end();
+          } catch {
+            // The active reference is already cleared, so retry remains safe.
+          }
+          if (shouldReject) reject(error);
+        };
+
+        client.on('ready', () => {
+          if (settled || this.client !== client) return;
+          settled = true;
+          this.wasConnected = true;
+          this.emitState(profileId, 'connected');
+          resolve();
+        });
+        client.on('error', (error) => fail(error));
+        client.on('close', () => {
+          if (this.client !== client) return;
+          this.closeAllTerminals();
+          this.client = null;
+          this.activeProfileId = null;
+          const wasConnected = this.wasConnected;
+          this.wasConnected = false;
+          if (wasConnected) {
+            this.emitState(profileId, 'disconnected');
+          } else if (!settled) {
+            settled = true;
+            const error = new Error('connection closed before ready');
+            this.emitState(profileId, 'error', error.message);
+            reject(error);
+          }
+        });
+        const verifyHostKey = this.options.verifyHostKey;
+        try {
+          client.connect({
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            ...(credential.authMethod === 'password'
+              ? { password: credential.password }
+              : {
+                  privateKey: credential.privateKey,
+                  ...(credential.passphrase === undefined
+                    ? {}
+                    : { passphrase: credential.passphrase }),
+                }),
+            readyTimeout: READY_TIMEOUT_MS,
+            keepaliveInterval: KEEPALIVE_INTERVAL_MS,
+            algorithms: SSH_ALGORITHMS,
+            ...(verifyHostKey === undefined
+              ? {}
+              : {
+                  hostVerifier: (key: Uint8Array, done: (valid: boolean) => void) => {
+                    verifyHostKey(profile, key).then(done, () => done(false));
+                  },
+                }),
+          });
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(String(error)));
         }
       });
-      const verifyHostKey = this.options.verifyHostKey;
-      client.connect({
-        host: profile.host,
-        port: profile.port,
-        username: profile.username,
-        ...(credential.authMethod === 'password'
-          ? { password: credential.password }
-          : {
-              privateKey: credential.privateKey,
-              ...(credential.passphrase === undefined
-                ? {}
-                : { passphrase: credential.passphrase }),
-            }),
-        readyTimeout: READY_TIMEOUT_MS,
-        keepaliveInterval: KEEPALIVE_INTERVAL_MS,
-        algorithms: SSH_ALGORITHMS,
-        ...(verifyHostKey === undefined
-          ? {}
-          : {
-              hostVerifier: (key: Uint8Array, done: (valid: boolean) => void) => {
-                verifyHostKey(profile, key).then(done, () => done(false));
-              },
-            }),
-      });
-    });
+    } finally {
+      this.connecting = false;
+    }
   }
 
   disconnect(): Promise<void> {

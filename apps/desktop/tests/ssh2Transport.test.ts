@@ -93,6 +93,7 @@ class FakeExecStream implements Ssh2ExecStreamLike {
 
 class FakeClient implements Ssh2ClientLike {
   connectConfig: Record<string, unknown> | null = null;
+  connectError: Error | null = null;
   ended = false;
   readonly shellRequests: {
     options: { term: string; cols: number; rows: number };
@@ -113,6 +114,7 @@ class FakeClient implements Ssh2ClientLike {
 
   connect(config: Record<string, unknown>): void {
     this.connectConfig = config;
+    if (this.connectError) throw this.connectError;
   }
 
   shell(
@@ -219,6 +221,17 @@ describe('Ssh2Transport', () => {
     expect(offered).not.toMatch(/sha1|ssh-rsa|ssh-dss|cbc|3des|arcfour|md5/iu);
   });
 
+  it('only offers ciphers supported by the Electron crypto runtime', () => {
+    expect(SSH_ALGORITHMS.cipher).toEqual([
+      'aes128-gcm@openssh.com',
+      'aes256-gcm@openssh.com',
+      'aes128-ctr',
+      'aes192-ctr',
+      'aes256-ctr',
+    ]);
+    expect(SSH_ALGORITHMS.cipher).not.toContain('chacha20-poly1305@openssh.com');
+  });
+
   it('walks connecting → connected on success', async () => {
     const { recorder } = await connectedTransport();
     expect(recorder.states.map((event) => event.state)).toEqual([
@@ -245,6 +258,80 @@ describe('Ssh2Transport', () => {
     const states = recorder.states.map((event) => event.state);
     expect(states).toEqual(['connecting', 'error']);
     expect(recorder.states[1]?.error).toBe('auth failed');
+  });
+
+  it('clears a client that throws synchronously so a retry can connect', async () => {
+    const failedClient = new FakeClient();
+    failedClient.connectError = new Error('Cannot parse privateKey: unsupported key format');
+    const retryClient = new FakeClient();
+    const clients = [failedClient, retryClient];
+    const recorder = createRecorder();
+    const transport = new Ssh2Transport({
+      getProfile: () => PROFILE,
+      getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
+      clientFactory: () => clients.shift()!,
+    });
+    transport.setEvents(recorder);
+
+    await expect(transport.connect('p1')).rejects.toThrow(
+      'Cannot parse privateKey: unsupported key format',
+    );
+    expect(failedClient.ended).toBe(true);
+
+    const retryPromise = transport.connect('p1');
+    await flushMicrotasks();
+    retryClient.emit('ready');
+    await expect(retryPromise).resolves.toBeUndefined();
+    expect(recorder.states.map((event) => event.state)).toEqual([
+      'connecting',
+      'error',
+      'connecting',
+      'connected',
+    ]);
+  });
+
+  it('releases an established client after an error so reconnect can proceed', async () => {
+    const firstClient = new FakeClient();
+    const retryClient = new FakeClient();
+    const clients = [firstClient, retryClient];
+    const recorder = createRecorder();
+    const transport = new Ssh2Transport({
+      getProfile: () => PROFILE,
+      getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
+      clientFactory: () => clients.shift()!,
+    });
+    transport.setEvents(recorder);
+
+    const firstPromise = transport.connect('p1');
+    await flushMicrotasks();
+    firstClient.emit('ready');
+    await firstPromise;
+    firstClient.emit('error', new Error('socket reset'));
+
+    expect(firstClient.ended).toBe(true);
+    const retryPromise = transport.connect('p1');
+    await flushMicrotasks();
+    retryClient.emit('ready');
+    await expect(retryPromise).resolves.toBeUndefined();
+    expect(recorder.states.map((event) => event.state)).toEqual([
+      'connecting',
+      'connected',
+      'error',
+      'connecting',
+      'connected',
+    ]);
+  });
+
+  it('re-emits connected for the same active profile after a renderer reload', async () => {
+    const { transport, client, recorder } = await connectedTransport();
+
+    await expect(transport.connect('p1')).resolves.toBeUndefined();
+    expect(client.ended).toBe(false);
+    expect(recorder.states.map((event) => event.state)).toEqual([
+      'connecting',
+      'connected',
+      'connected',
+    ]);
   });
 
   it('opens a shell with the requested PTY size', async () => {
