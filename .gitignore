@@ -46,3 +46,9 @@ app.*.map.json
 
 # Zip archives
 *.zip
+
+# Node / pnpm (V3 monorepo)
+node_modules/
+apps/**/dist/
+apps/desktop/release*/
+*.tsbuildinfo

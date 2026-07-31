@@ -1,0 +1,9 @@
+{
+  "appId": "com.cozypad.app",
+  "appName": "CozyPad",
+  "webDir": "../app/dist",
+  "android": {
+    "backgroundColor": "#101014",
+    "loggingBehavior": "none"
+  }
+}

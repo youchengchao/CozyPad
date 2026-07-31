@@ -1,0 +1,64 @@
+{
+  "name": "@cozypad/desktop",
+  "private": true,
+  "version": "0.2.9-alpha",
+  "description": "CozyPad - remote agent workstation over SSH",
+  "author": "youchengchao",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:ssh": "node scripts/dev.mjs --ssh",
+    "start": "node scripts/start.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "package": "node scripts/build-package.mjs",
+    "package:unsigned": "node esbuild.mjs && electron-builder --win",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "build": {
+    "appId": "com.cozypad.app",
+    "productName": "CozyPad",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "!dist/**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "../app/dist",
+        "to": "app-dist"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": true
+    },
+    "npmRebuild": false
+  },
+  "dependencies": {
+    "@cozypad/contracts": "workspace:*",
+    "@cozypad/remote-services": "workspace:*",
+    "@cozypad/telemetry": "workspace:*",
+    "@cozypad/test-fixtures": "workspace:*",
+    "@cozypad/tmux-runtime": "workspace:*",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/ssh2": "^1.15.5",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

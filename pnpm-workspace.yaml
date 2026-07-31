@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  cpu-features: true
+  ssh2: true
+  electron: true
+  esbuild: true
+  electron-winstaller: true

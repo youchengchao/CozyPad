@@ -1,0 +1,19 @@
+{
+  "name": "@cozypad/mobile",
+  "private": true,
+  "version": "0.2.8-alpha",
+  "scripts": {
+    "sync": "pnpm --filter @cozypad/app build && cap sync android",
+    "apk": "node scripts/build-release.mjs",
+    "apk:release:unsigned": "pnpm run sync && cd android && .\\gradlew.bat assembleRelease",
+    "apk:debug": "pnpm run sync && cd android && .\\gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
+    "@cozypad/app": "workspace:*"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
+}

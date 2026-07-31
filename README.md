@@ -1,370 +1,107 @@
 # CozyPad
 
-CozyPad 是一套以 Flutter 開發的 Windows 桌面工具，用來透過 SSH 管理遠端 Linux 主機與專案工作區。
+**把手機／電腦連上遠端主機上的 coding agent 的工作站。**
 
-主要功能包括：
+CozyPad 讓你從 Windows 桌面或 Android 手機，透過 SSH 管理遠端 Linux 主機：
+多分頁終端機、檔案瀏覽與編輯、CPU/GPU 監控，以及（開發中的）Claude Code /
+Codex / agy 等 remote agent 的對話介面。Agent 全部跑在遠端 tmux 裡——關掉
+app、斷線、換裝置，工作都不會中斷。
 
-- SSH 連線管理
-- CPU、記憶體與 NVIDIA GPU 監控
-- 遠端檔案瀏覽與編輯
-- 多分頁 SSH Terminal
-- GPU-aware 任務管理
-- Dart-native Hermes Agent
-- Persistent `tmux` session
+一套 **React + TypeScript** codebase，桌面包 **Electron**、Android 包
+**Capacitor**；桌面安裝包約 100MB、Android release APK 約 7MB
+（實際大小依版本與簽章而異）。
 
-> [!NOTE]
-> CozyPad 目前仍是早期版本，主要支援與測試平台為 **Windows Desktop**。
+> 完整規格見 [SPEC.md](SPEC.md)；本 README 只講怎麼跑起來。
 
----
+## 現在能用的功能
 
-## 安裝方式
+| 功能 | 狀態 |
+| --- | --- |
+| SSH 連線管理（密碼／SSH Key、OS 安全儲存、host key 驗證、斷線自動重連） | ✅ |
+| 多分頁終端機（xterm.js、右鍵複製貼上、常用指令面板、手機 Termux 式按鍵列） | ✅ |
+| 遠端檔案：類型圖示、symlink 跳轉、任意路徑導覽、下載保留原始檔名、右鍵／長按選單、兩段式複製搬移 | ✅ |
+| 檔案編輯：Monaco（VS Code 引擎）語法高亮、Ctrl+S 直接存回遠端；Markdown 預覽；PDF 內嵌檢視 | ✅ |
+| 監控：CPU／記憶體／GPU 與 GPU processes，每 5 秒更新 | ✅ |
+| 遠端設定：tmux 滑鼠模式開關；tmux 缺失時一鍵使用者層級安裝 | ✅ |
+| Agents 對話（Claude / Codex / agy） | 🚧 架構與 parser 完成，接線中 |
+| Research Lab（實驗管理） | 🚧 UI 雛形 |
 
-你可以選擇以下其中一種方式：
+## 快速開始
 
-| 方式 | 適合對象 | 需要 Flutter |
+### 需求
+
+只需要 **Node.js LTS + pnpm**（不需要 Flutter、Rust、Visual Studio、Android Studio）：
+
+```bash
+corepack enable   # 或 npm install -g pnpm
+pnpm install
+pnpm test         # 全綠即環境就緒
+```
+
+### 日常使用
+
+| 做什麼 | 操作 |
+| --- | --- |
+| 連真實主機使用 | 雙擊 `CozyPad.bat`，或 `pnpm --filter @cozypad/desktop start` |
+| Demo（內建假主機，零設定） | 雙擊 `CozyPad-Demo.bat` |
+| UI 開發（瀏覽器熱更新） | `pnpm dev` → http://localhost:5173 |
+| 桌面開發（Electron 熱更新，mock） | `pnpm dev:desktop` |
+| 桌面開發（真 SSH） | `pnpm dev:desktop:ssh` |
+| Android debug APK | `pnpm --filter @cozypad/mobile apk:debug`（需 Android SDK + JDK 21） |
+| Android signed release APK | 設定簽章環境變數後執行 `pnpm --filter @cozypad/mobile apk` |
+| 檢查 | `pnpm lint` / `pnpm typecheck` / `pnpm test` |
+
+第一次連主機：右上 **⚙** 新增連線 → 選擇「密碼」或「SSH Key」→ Connect
+→ 核對並確認 host key 指紋。關閉「以 OS 安全儲存保留驗證資料」時，憑證只保留
+到本次 app 結束，期間仍可自動重連。
+
+更多細節：[docs/DEV_V3.md](docs/DEV_V3.md)（開發指南）、
+[docs/TUTORIAL_ELECTRON_CAPACITOR.md](docs/TUTORIAL_ELECTRON_CAPACITOR.md)
+（從零到日常 routine，含手機 live reload）。
+
+## Repository 結構
+
+```
+apps/
+  app/        共用 React UI（桌面與手機同一套；可純瀏覽器 + mock 開發）
+  desktop/    Electron shell：SSH/ssh2、加密憑證、telemetry、檔案操作、tmux
+  mobile/     Capacitor Android shell
+packages/
+  contracts/      Zod schemas、PlatformBridge、IPC 協定（跨平台唯一事實來源）
+  telemetry/      /proc/stat、free、nvidia-smi 解析
+  tmux-runtime/   tmux session 管理、reconciliation、佈建
+  adapter-claude/ Claude CLI stream-json → normalized events
+  test-fixtures/  mock 檔案系統／PTY／telemetry／agent 資料
+docs/           開發指南、教學、ADR、協定
+lib/ 等          舊 Flutter 版（cutover 前保留，勿改）
+```
+
+架構鐵則（lint 強制）：`apps/app` 不得直接 import 任何平台 API——一律經由
+`PlatformBridge`。這使桌面殼未來可整顆替換（Electron ⇄ Tauri）而不動 UI。
+
+## 完整移除
+
+CozyPad 只寫三個地方，全部可以清乾淨：
+
+| 位置 | 內容 | 怎麼清 |
 | --- | --- | --- |
-| [方式一：下載作者提供的執行檔](#方式一下載作者提供的執行檔) | 一般使用者 | 否 |
-| [方式二：Clone Repository 並自行編譯](#方式二clone-repository-並自行編譯) | 開發者 | 是 |
-
----
-
-# 方式一：下載作者提供的執行檔
-
-這個方式不需要安裝 Flutter、Dart 或 Visual Studio。
-
-## 1. 下載 Windows 版本
-
-請從作者提供的下載連結，或本專案的 [GitHub Releases](https://github.com/youchengchao/CozyPad/releases) 頁面下載 Windows 壓縮檔。
-
-## 2. 解壓縮完整資料夾
-
-將 `.zip` 完整解壓縮，例如：
-
-```text
-C:\Tools\CozyPad\
-```
-
-資料夾內應包含：
-
-```text
-ssh_dashboard.exe
-flutter_windows.dll
-其他 DLL
-data\
-```
-
-> [!IMPORTANT]
-> 不要只取出 `ssh_dashboard.exe`。
->
-> `.exe`、DLL 與 `data` 資料夾必須放在一起，程式才能正常啟動。
-
-## 3. 啟動程式
-
-雙擊：
-
-```text
-ssh_dashboard.exe
-```
-
-即可啟動 CozyPad。
-
-## 4. Windows SmartScreen
-
-若執行檔尚未經過程式碼簽章，Windows 可能顯示：
-
-```text
-Windows 已保護您的電腦
-```
-
-請先確認檔案來自本專案作者或可信任的 GitHub Releases，再執行：
-
-1. 點選「其他資訊」。
-2. 確認檔案名稱。
-3. 點選「仍要執行」。
-
-也可以在解壓縮前，對 `.zip` 按右鍵：
-
-```text
-內容 → 解除封鎖 → 套用
-```
-
----
-
-# 方式二：Clone Repository 並自行編譯
-
-這個方式適合希望檢查程式碼、修改功能或自行產生執行檔的使用者。
-
-## 1. 安裝必要工具
-
-### Git
-
-```bash
-git --version
-```
-
-### Flutter SDK
-
-安裝 Flutter stable channel，並將 Flutter 加入系統環境變數。
-
-本專案使用的 Dart SDK 範圍為：
-
-```text
->=3.0.0 <4.0.0
-```
-
-### Visual Studio 2022
-
-安裝 Visual Studio 2022，並勾選以下 workload：
-
-```text
-Desktop development with C++
-使用 C++ 的桌面開發
-```
-
-### 檢查環境
-
-```bash
-flutter doctor
-```
-
-請確認 Flutter、Windows Version、Visual Studio 與 Windows toolchain 沒有阻止建置的錯誤。
-
-必要時啟用 Windows Desktop：
-
-```bash
-flutter config --enable-windows-desktop
-```
-
-## 2. Clone Repository
-
-```bash
-git clone https://github.com/youchengchao/CozyPad.git
-cd CozyPad
-```
-
-## 3. 安裝 Flutter Dependencies
-
-```bash
-flutter pub get
-```
-
-`pubspec.yaml` 內的 Dart／Flutter packages 會自動安裝，不需要逐一手動下載。
-
-## 4. 檢查程式碼
-
-```bash
-flutter analyze
-```
-
-## 5. Debug 執行
-
-```bash
-flutter run -d windows
-```
-
-## 6. 編譯 Release
-
-```bash
-flutter build windows
-```
-
-編譯結果通常位於：
-
-```text
-build\windows\x64\runner\Release\
-```
-
-若要將程式提供給其他使用者，請壓縮整個 `Release` 資料夾：
-
-```text
-Release\
-├─ ssh_dashboard.exe
-├─ flutter_windows.dll
-├─ 其他 DLL
-└─ data\
-```
-
-不要只複製 `.exe`。
-
-## 建置問題排除
-
-可以依序執行：
-
-```bash
-flutter clean
-flutter pub get
-flutter analyze
-flutter build windows
-```
-
-若 `flutter doctor` 顯示 Visual Studio 或 Windows toolchain 不完整，請回到 Visual Studio Installer，確認已安裝「使用 C++ 的桌面開發」。
-
----
-
-# 遠端主機需要哪些工具
-
-CozyPad 會透過 SSH 在遠端主機執行監控、檔案與任務操作。
-
-## 基本需求
-
-遠端主機建議為 Linux，並具備：
-
-- SSH Server
-- 可使用的帳號與密碼
-- `bash`
-- 可寫入的使用者家目錄
-- 常見 Linux 指令：
-  - `cat`
-  - `ps`
-  - `free`
-  - `kill`
-  - `nohup`
-  - `cp`
-  - `mv`
-  - `rm`
-  - `mkdir`
-
-> [!NOTE]
-> 目前 Connection Profile 使用帳號密碼登入，尚未實作 SSH private key 登入。
-
-## NVIDIA GPU 監控
-
-要顯示 GPU 使用率、顯示記憶體、溫度與 GPU process，遠端主機需要：
-
-```bash
-nvidia-smi
-```
-
-確認方式：
-
-```bash
-nvidia-smi
-```
-
-沒有 NVIDIA GPU 或 `nvidia-smi` 時，SSH、Files 與 Terminal 等其他功能仍可使用。
-
-## Persistent Session
-
-要使用中斷 App 後仍能持續執行的遠端 session，需要安裝：
-
-```bash
-tmux
-```
-
-Ubuntu／Debian：
-
-```bash
-sudo apt update
-sudo apt install tmux
-```
-
-Rocky Linux／RHEL／Fedora：
-
-```bash
-sudo dnf install tmux
-```
-
-## 專案環境
-
-依實際專案需求，遠端主機可能還需要：
-
-- Git
-- Python
-- Conda
-- Docker
-- CUDA
-- Node.js
-- 其他 CLI 或訓練工具
-
-CozyPad 不會自動建立 these 專案環境。
-
----
-
-# 第一次使用
-
-## 1. 新增 SSH Connection
-
-在 CozyPad 中新增連線並填入：
-
-- Connection 名稱
-- Host 或 IP
-- Port，預設為 `22`
-- Username
-- Password
-- 是否自動登入
-
-連線資料會透過 `flutter_secure_storage` 儲存在本機。
-
-## 2. 建立 Project
-
-Project 用來表示一個邏輯上的專案，並記錄它在不同遠端主機上的 codebase 路徑。
-
-例如：
-
-```text
-Project: Deepfake Localization
-Server A: ~/projects/TRACE
-Server B: /data2/user/TRACE
-```
-
-## 3. 連線到遠端主機
-
-選擇已建立的 Connection 並連線。
-
-成功連線後即可使用：
-
-- Monitor
-- Files
-- Terminal
-
-## 4. 登記 Codebase 路徑
-
-選擇 Project 後，登記該專案在目前主機上的路徑：
-
-```text
-~/projects/CozyPad
-```
-
-完成後即可進入 Hermes Workspace。
-
-> [!IMPORTANT]
-> Project Transfer 目前會記錄來源主機、目標主機、路徑與搬遷歷史。
->
-> 它不會自動複製整份 codebase。實際同步仍需使用 Git、`rsync`、Files、Terminal 或 Hermes 完成。
-
-## 5. 設定 Hermes
-
-要使用 Hermes Agent，請在設定頁面填入：
-
-- LLM Base URL
-- Model
-- API Key
-- Hermes Home
-- Remote-tool permissions
-- Approval policies
-
-目前程式實作支援：
-
-- Google Generative Language API
-- OpenAI-compatible `/chat/completions` API
-
-例如本機 Ollama：
-
-```text
-http://localhost:11434/v1
-```
-
-請使用你的帳號或本機服務目前實際可用的 Model。
-
-API Key 會另外存入本機 secure storage。
-
----
-
-# 使用提醒
-
-- CozyPad 目前主要以 Windows Desktop 為目標。
-- 遠端監控主要假設 Linux 環境。
-- SSH private key 登入尚未實作。
-- Remote Files 的刪除與覆寫會直接修改遠端主機。
-- Hermes 執行檔案寫入、程序終止或任務啟動前，請再次確認主機、路徑與指令。
-- 使用雲端 LLM 時，對話與相關內容會傳送到你設定的 API endpoint。
+| Windows 本機 | 程式本體 + Electron user data（連線設定、加密憑證、known hosts、快取） | 從「設定 → 應用程式」解除安裝即可，**app data 會一併刪除** |
+| Android | app 私有資料 | 一般解除安裝即可（Android 保證清除私有目錄）；你主動下載的檔案留在 `Downloads/CozyPad`（Android 7–9 則是儲存時選擇的位置） |
+| 遠端主機 | `~/.cozypad/`（建置暫存與 log）、shell rc 與 `~/.tmux.conf` 的 CozyPad 管理區塊、（若由 CozyPad 安裝）`~/.local/bin/tmux` | **Settings → 移除與清理 → 清除**（可選是否一併移除 tmux）；只動 CozyPad 自己的區塊，不碰你其他設定 |
+
+安裝 tmux 用的建置暫存（數百 MB）在安裝成功後會自動刪除，不需手動處理。
+
+## 安全性
+
+- Desktop 以 Electron `safeStorage` 加密整份連線 profile 與 host trust（包含名稱、
+  host、port、username、密碼、私鑰與 passphrase），舊版明文 metadata 會在首次載入時
+  原子遷移；Android 以 Android Keystore 管理的 AES-256-GCM 金鑰保護 profile secret
+  與 host trust。儲存後不再把 secret 回傳 renderer／WebView
+- 已記憶的憑證綁定 profile ID、host、port、username 與驗證方式，避免
+  profile metadata 遭竄改後把憑證送往其他主機
+- SSH host key 使用標準 OpenSSH `SHA256:` fingerprint；首次或變更時必須確認，
+  已信任資料只由 privileged platform layer 管理
+- Desktop 與 Android 僅協商現代 SSH 演算法；SHA-1、DSA、CBC、3DES、RC4 與 MD5
+  不會為相容老舊伺服器而自動降級
+- Renderer 全程 sandbox + contextIsolation + 嚴格 CSP；IPC 雙向 Zod 驗證
+- 不執行模型產生的任意 shell 字串（見 [ADR 0001](docs/adr/0001-solution-agent-bridge.md)）
