@@ -73,8 +73,9 @@ packages/
   adapter-claude/ Claude CLI stream-json → normalized events
   test-fixtures/  mock 檔案系統／PTY／telemetry／agent 資料
 docs/           開發指南、教學、ADR、協定
-lib/ 等          舊 Flutter 版（cutover 前保留，勿改）
 ```
+
+舊 Flutter 完整原始碼已封存在 Git tag `v1.0.2`；目前 `main` 不再需要 Flutter／Dart toolchain。
 
 架構鐵則（lint 強制）：`apps/app` 不得直接 import 任何平台 API——一律經由
 `PlatformBridge`。這使桌面殼未來可整顆替換（Electron ⇄ Tauri）而不動 UI。

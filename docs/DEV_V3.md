@@ -50,8 +50,9 @@ packages/
   telemetry/  Linux CPU、RAM、GPU 指標解析
   tmux-runtime/  tmux session/runtime
   test-fixtures/  MockPtyEngine、ssh byte fixtures、mock agent 資料
-lib/ 等       舊 Flutter 版（V3 cutover 前保持可發佈，不要動）
 ```
+
+舊 Flutter 完整原始碼已封存在 Git tag `v1.0.2`；目前工作樹只維護 Electron + Capacitor 架構。
 
 ## 鐵則（lint 會擋，別繞）
 
