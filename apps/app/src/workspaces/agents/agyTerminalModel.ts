@@ -93,7 +93,7 @@ const TOOL_ROW_PATTERN = /^\s*([●○◐◑◒◓◉])\s+([A-Za-z][\w.-]*)\((.*
 const THINKING_PATTERN = /^\s*[▸▾▶▼]?\s*Thought for\s+(.+?)\s*$/iu;
 const EXPAND_HINT_PATTERN = /\s*\(ctrl\+o to expand\)\s*$/iu;
 const APPROVAL_PATTERN =
-  /permission|approval|required access|allow once|allow always|approve|authorize|run this command|execute this command|do you want to (?:allow|run|proceed)|\byes\b.*\bno\b/iu;
+  /permission required|requires permission|approval required|required access|allow once|allow always|\bapprove\b|\bauthorize\b|wants? to run|run this command|execute this command|do you want to (?:allow|run|proceed)|do you trust|\byes\b.*\bno\b/iu;
 const ERROR_PATTERN =
   /(^|\s)(error|failed|failure|fatal|panic|unauthorized|forbidden|quota exceeded|not authenticated|login required)(:|\s|$)/iu;
 const PANEL_PATTERN =
@@ -522,15 +522,16 @@ function comparablePromptLine(line: string): string {
 function cleanAssistantLine(line: string): string | null {
   const clean = withoutBox(line).replace(/^✓\s*/u, '').trimEnd();
   if (clean === '' || SEPARATOR_PATTERN.test(clean)) return '';
+  // A completed AGY tool may end with `(ctrl+o to expand)`. Preserve the
+  // whole row before the generic key-hint filter sees that suffix; otherwise
+  // the final tool in a multi-tool turn disappears from the chat transcript.
+  if (TOOL_ROW_PATTERN.test(clean)) return clean;
   if (isChromeLine(clean) || KEY_HINT_PATTERN.test(clean)) return null;
   if (INPUT_PATTERN.test(clean)) return null;
   if (/^selected\s*:/iu.test(clean)) return null;
   if (/^what would you like .*\?$/iu.test(clean)) return null;
   if (SPINNER_PATTERN.test(clean)) return null;
   if (/^(?:press esc|type \/)(?:…|\.{3})?$/iu.test(clean)) return null;
-  // Tool rows look like option rows but are transcript content — they carry
-  // what the agent actually did and belong in the reply, as cards.
-  if (TOOL_ROW_PATTERN.test(clean)) return clean;
   if (SLASH_OPTION_PATTERN.test(clean)) return null;
   // `•` is how AGY renders a markdown list item — reply content, not a
   // selectable row. Dropping it with the radio glyphs ate whole explanation
@@ -746,7 +747,12 @@ export function nextSuggestionIndex(
 export type AgyReplyBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; meta: string; title: string }
-  | { kind: 'tool'; name: string; detail: string; status: 'running' | 'completed' };
+  | { kind: 'tool'; name: string; detail: string; status: 'running' | 'completed' }
+  | { kind: 'diff'; diff: string }
+  | { kind: 'gitHistory'; entries: string[] };
+
+const GIT_DIFF_HEADER_PATTERN = /^diff --git\s+\S+\s+\S+\s*$/u;
+const GIT_HISTORY_ENTRY_PATTERN = /^[0-9a-f]{7,40}\s+\S/iu;
 
 /**
  * Split a reply into the pieces a chat UI can render distinctly: prose, the
@@ -768,6 +774,39 @@ export function segmentAgyReply(text: string): AgyReplyBlock[] {
   const lines = text.split('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
+    if (GIT_DIFF_HEADER_PATTERN.test(line)) {
+      flush();
+      const diff = [line];
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1]!;
+        if (GIT_HISTORY_ENTRY_PATTERN.test(next)) break;
+        diff.push(next);
+        index += 1;
+      }
+      while (
+        diff.at(-1)?.trim() === '' ||
+        /^#{1,6}\s+(?:commit|git\s+history|history)\b/iu.test(
+          diff.at(-1)?.trim() ?? '',
+        )
+      ) {
+        diff.pop();
+      }
+      blocks.push({ kind: 'diff', diff: diff.join('\n') });
+      continue;
+    }
+    if (GIT_HISTORY_ENTRY_PATTERN.test(line)) {
+      flush();
+      const entries = [line];
+      while (
+        index + 1 < lines.length &&
+        GIT_HISTORY_ENTRY_PATTERN.test(lines[index + 1]!)
+      ) {
+        entries.push(lines[index + 1]!);
+        index += 1;
+      }
+      blocks.push({ kind: 'gitHistory', entries });
+      continue;
+    }
     const tool = line.match(TOOL_ROW_PATTERN);
     if (tool !== null) {
       flush();

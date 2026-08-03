@@ -90,8 +90,45 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
    * 一個 chunk 一次 IPC 會把 renderer 淹掉。以 16ms（約一幀）為窗口合併。
    */
   const outputBuffers = new Map<string, Uint8Array[]>();
+  const terminalOutputSequences = new Map<string, number>();
+  const terminalReplayBuffers = new Map<
+    string,
+    { data: Uint8Array; throughSequence: number }
+  >();
+  const MAX_TERMINAL_REPLAY_BYTES = 512 * 1024;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const rememberTerminalOutput = (
+    terminalId: string,
+    data: Uint8Array,
+    throughSequence: number,
+  ): void => {
+    const previous = terminalReplayBuffers.get(terminalId)?.data;
+    if (data.length >= MAX_TERMINAL_REPLAY_BYTES) {
+      terminalReplayBuffers.set(terminalId, {
+        data: data.slice(data.length - MAX_TERMINAL_REPLAY_BYTES),
+        throughSequence,
+      });
+      return;
+    }
+
+    const previousLength = Math.min(
+      previous?.length ?? 0,
+      MAX_TERMINAL_REPLAY_BYTES - data.length,
+    );
+    const combined = new Uint8Array(previousLength + data.length);
+    if (previousLength > 0 && previous !== undefined) {
+      combined.set(previous.subarray(previous.length - previousLength));
+    }
+    combined.set(data, previousLength);
+    terminalReplayBuffers.set(terminalId, {
+      data: combined,
+      throughSequence,
+    });
+  };
+
   const flushTerminalOutput = (): void => {
+    if (flushTimer !== null) clearTimeout(flushTimer);
     flushTimer = null;
     for (const [terminalId, chunks] of outputBuffers) {
       if (chunks.length === 0) continue;
@@ -102,9 +139,13 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
         merged.set(chunk, offset);
         offset += chunk.length;
       }
+      const sequence = (terminalOutputSequences.get(terminalId) ?? 0) + 1;
+      terminalOutputSequences.set(terminalId, sequence);
+      rememberTerminalOutput(terminalId, merged, sequence);
       send(IpcChannels.terminalOutput, {
         terminalId,
         dataBase64: bytesToBase64(merged),
+        sequence,
       });
     }
     outputBuffers.clear();
@@ -152,6 +193,8 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
         exitCode,
         ...(reason === undefined ? {} : { reason }),
       });
+      terminalOutputSequences.delete(terminalId);
+      terminalReplayBuffers.delete(terminalId);
     },
   });
 
@@ -348,12 +391,25 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     );
   });
 
-  ipcMain.handle(IpcChannels.agentTerminalOpen, (event, raw: unknown) => {
+  ipcMain.handle(IpcChannels.agentTerminalOpen, async (event, raw: unknown) => {
     assertSender(event);
     if (agentCommunication === null) {
       throw new Error('Agent communication is unavailable in mock desktop mode');
     }
-    return agentCommunication.openTerminal(AgentTerminalOpenRequestSchema.parse(raw));
+    const opened = await agentCommunication.openTerminal(
+      AgentTerminalOpenRequestSchema.parse(raw),
+    );
+    // Include every chunk emitted before this response. The renderer already
+    // subscribed, so sequence numbers prevent the replay/live overlap from
+    // being applied twice.
+    flushTerminalOutput();
+    const replay = terminalReplayBuffers.get(opened.terminalId);
+    if (replay === undefined || replay.data.length === 0) return opened;
+    return {
+      ...opened,
+      replayDataBase64: bytesToBase64(replay.data),
+      replayThroughSequence: replay.throughSequence,
+    };
   });
 
   ipcMain.handle(IpcChannels.agentSessionRename, (event, raw: unknown) => {

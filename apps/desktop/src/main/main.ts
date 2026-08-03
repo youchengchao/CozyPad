@@ -47,7 +47,15 @@ const SMOKE_TEST = process.argv.includes('--smoke-test');
 const AGY_SMOKE_TEST = process.argv.includes('--agy-smoke-test');
 const AGY_BACKEND_SMOKE_TEST = process.argv.includes('--agy-backend-smoke-test');
 const AGY_SMOKE_CWD = process.env.COZYPAD_AGY_SMOKE_CWD ?? '~';
+const AGY_HISTORY_ONLY = process.env.COZYPAD_AGY_SMOKE_HISTORY_ONLY === '1';
+const AGY_INTERACTION_CASE =
+  process.env.COZYPAD_AGY_SMOKE_INTERACTION_CASE ?? '';
 const USE_MOCK = process.env.COZYPAD_MOCK === '1' || SMOKE_TEST;
+
+// Windows' GPU Viz process can reject capturePage immediately after repeated
+// full-screen smoke launches. Software compositing makes the visual regression
+// harness deterministic and does not affect ordinary CozyPad launches.
+if (AGY_SMOKE_TEST) app.disableHardwareAcceleration();
 
 const CSP = [
   "default-src 'self'",
@@ -399,12 +407,17 @@ async function runAgyBackendSmokeTest(win: BrowserWindow): Promise<void> {
             throw new Error('AGY did not advertise a launch mode');
           }
           const home = await bridge.fsList({ path: ${JSON.stringify(AGY_SMOKE_CWD)} });
+          const launchMode =
+            ${JSON.stringify(AGY_INTERACTION_CASE)} === 'approval'
+              ? installation.launchModes.find((mode) => mode.id === 'sandbox') ||
+                installation.launchModes[0]
+              : installation.launchModes[0];
           const bundle = await bridge.createAgentSession({
             profileId,
             agentKind: 'agy',
             cwd: home.path,
             interactionMode: 'terminal',
-            launchMode: installation.launchModes[0].id,
+            launchMode: launchMode.id,
             title: 'CozyPad AGY smoke ' + new Date().toISOString(),
           });
           sessionId = bundle.session.id;
@@ -529,15 +542,61 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
         }
 
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const terminalOutputEvents = [];
+        const observations = [];
+        const unsubscribeTerminalOutput = bridge.onTerminalOutput((event) => {
+          terminalOutputEvents.push(event);
+        });
+        const terminalOutputText = () => {
+          const binary = terminalOutputEvents
+            .map((event) => atob(event.dataBase64))
+            .join('');
+          const bytes = Uint8Array.from(
+            binary,
+            (character) => character.charCodeAt(0),
+          );
+          return new TextDecoder().decode(bytes);
+        };
         const markStage = async (label) => {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          await sleep(450);
+          delete document.documentElement.dataset.agySmokeCaptured;
           document.documentElement.dataset.agySmokeStage = label;
-          await sleep(900);
+          const deadline = Date.now() + 8_000;
+          while (
+            document.documentElement.dataset.agySmokeCaptured !== label &&
+            Date.now() < deadline
+          ) {
+            await sleep(100);
+          }
+          if (document.documentElement.dataset.agySmokeCaptured !== label) {
+            throw new Error('Timed out waiting for screenshot ' + label);
+          }
+          await sleep(180);
+          observations.push({
+            label,
+            terminalOutputTail: terminalOutputText().slice(-24_000),
+            cozyPadText:
+              document.querySelector('[data-testid="agy-surface"]')?.textContent || '',
+            terminalEventCount: terminalOutputEvents.length,
+          });
         };
         const waitFor = async (predicate, timeoutMs, label) => {
           const deadline = Date.now() + timeoutMs;
           while (Date.now() < deadline) {
             if (predicate()) return;
             await sleep(100);
+          }
+          const surface = document.querySelector('[data-testid="agy-surface"]');
+          const debug = surface?.textContent || '';
+          throw new Error('Timed out waiting for ' + label + '\\nAGY screen:\\n' + debug);
+        };
+        const waitForAsync = async (predicate, timeoutMs, label) => {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            if (await predicate()) return;
+            await sleep(150);
           }
           const surface = document.querySelector('[data-testid="agy-surface"]');
           const debug = surface?.textContent || '';
@@ -568,6 +627,12 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
         const assistantContains = (value) =>
           Array.from(document.querySelectorAll('.agy-chat-turn .msg-assistant'))
             .some((element) => element.textContent.includes(value));
+        const assistantTextContaining = (value) =>
+          Array.from(document.querySelectorAll('.agy-chat-turn .msg-assistant'))
+            .find((element) => element.textContent.includes(value))?.textContent || null;
+        const userContains = (value) =>
+          Array.from(document.querySelectorAll('.agy-chat-turn .msg-user'))
+            .some((element) => element.textContent.includes(value));
         const submitFromUi = async (value) => {
           setComposer(value);
           await waitFor(
@@ -577,7 +642,14 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
           );
           click(sendButton(), 'AGY Send button');
         };
-        const inspectOverlay = async (command, kind, stage) => {
+        const inspectOverlay = async (
+          command,
+          kind,
+          stage,
+          preservedPrompt = null,
+          preservedReplyToken = null,
+          preservedReplyText = null,
+        ) => {
           const selector = '[data-testid="agy-overlay-' + kind + '"]';
           await submitFromUi(command);
           await waitFor(
@@ -585,6 +657,19 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             20_000,
             command + ' native control surface',
           );
+          if (
+            preservedPrompt !== null &&
+            preservedReplyToken !== null &&
+            preservedReplyText !== null
+          ) {
+            await waitFor(
+              () =>
+                userContains(preservedPrompt) &&
+                assistantTextContaining(preservedReplyToken) === preservedReplyText,
+              5_000,
+              'conversation while ' + command + ' is open',
+            );
+          }
           await markStage(stage);
           click(
             document.querySelector(selector + ' .agy-overlay-actions button.ghost'),
@@ -595,6 +680,19 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             20_000,
             'prompt after closing ' + command,
           );
+          if (
+            preservedPrompt !== null &&
+            preservedReplyToken !== null &&
+            preservedReplyText !== null
+          ) {
+            await waitFor(
+              () =>
+                userContains(preservedPrompt) &&
+                assistantTextContaining(preservedReplyToken) === preservedReplyText,
+              5_000,
+              'conversation after closing ' + command,
+            );
+          }
         };
 
         try {
@@ -663,6 +761,54 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             'new AGY session selection',
           );
           await waitFor(
+            () =>
+              JSON.stringify(
+                Array.from(document.querySelectorAll('.context-menu .menu-label')).map(
+                  (label) => label.textContent.trim(),
+                ),
+              ) === JSON.stringify(['Rename', 'Delete']),
+            5_000,
+            'desktop session action menu',
+          );
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+          await waitFor(
+            () => document.querySelector('.context-menu') === null,
+            5_000,
+            'desktop session action menu dismissal',
+          );
+          const sessionRow = document.querySelector(
+            '[data-session-id="' + CSS.escape(sessionId) + '"]',
+          );
+          sessionRow.dispatchEvent(
+            new PointerEvent('pointerdown', {
+              bubbles: true,
+              clientX: 150,
+              clientY: 220,
+              pointerId: 7,
+              pointerType: 'touch',
+            }),
+          );
+          await waitFor(
+            () => document.querySelector('.context-menu') !== null,
+            2_000,
+            'touch long-press session action menu',
+          );
+          sessionRow.dispatchEvent(
+            new PointerEvent('pointerup', {
+              bubbles: true,
+              clientX: 150,
+              clientY: 220,
+              pointerId: 7,
+              pointerType: 'touch',
+            }),
+          );
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+          await waitFor(
+            () => document.querySelector('.context-menu') === null,
+            5_000,
+            'touch session action menu dismissal',
+          );
+          await waitFor(
             () => document.querySelector('[data-testid="agy-surface"]') !== null,
             30_000,
             'AGY chat surface',
@@ -671,6 +817,62 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
 
           const welcomeSeen =
             document.querySelector('[data-testid="agy-welcome"]') !== null;
+          await waitFor(
+            () => {
+              const panel = document.querySelector('[data-testid="agy-panel"]');
+              return (
+                (panel !== null && /trust/i.test(panel.textContent || '')) ||
+                document.querySelector('[data-testid="agy-start-option"]') !== null ||
+                composer()?.disabled === false
+              );
+            },
+            30_000,
+            'AGY workspace trust, start choices, or prompt',
+          );
+          const trustPanel = document.querySelector('[data-testid="agy-panel"]');
+          const workspaceTrustSeen =
+            trustPanel !== null && /trust/i.test(trustPanel.textContent || '');
+          if (workspaceTrustSeen) {
+            await markStage('02-workspace-trust');
+            if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'trust-deny') {
+              const trustOptions = Array.from(
+                trustPanel.querySelectorAll('[data-testid="agy-panel-option"]'),
+              ).map((option) => option.textContent.trim());
+              const denyTrust = Array.from(
+                trustPanel.querySelectorAll('[data-testid="agy-panel-option"]'),
+              ).find((option) => /no|exit|do not trust|don't trust/i.test(option.textContent || ''));
+              click(denyTrust, 'deny trust for this AGY workspace');
+              await waitFor(
+                () => document.querySelector('[aria-label="AGY approval"]') === null,
+                20_000,
+                'AGY workspace trust denial',
+              );
+              await markStage('03-workspace-trust-denied');
+              return {
+                profile: profile.name,
+                version: installation.version || 'unknown',
+                uiDriven: true,
+                interactionCase: 'trust-deny',
+                trustOptions,
+                observations,
+              };
+            }
+            const trustOption = Array.from(
+              trustPanel.querySelectorAll('[data-testid="agy-panel-option"]'),
+            ).find((option) => /yes.*trust/i.test(option.textContent || ''));
+            click(trustOption, 'trust this AGY workspace option');
+            await waitFor(
+              () => {
+                const panel = document.querySelector('[data-testid="agy-panel"]');
+                return panel === null || !/trust/i.test(panel.textContent || '');
+              },
+              20_000,
+              'AGY workspace trust dismissal',
+            );
+          }
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'trust-deny') {
+            throw new Error('AGY did not show the expected workspace trust interface');
+          }
           await waitFor(
             () =>
               document.querySelector('[data-testid="agy-start-option"]') !== null ||
@@ -688,16 +890,332 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             20_000,
             'AGY prompt after start choice',
           );
-          await waitFor(
-            () => {
-              const statusline =
-                document.querySelector('[data-testid="agy-statusline"]')?.textContent || '';
-              return /Context\\s*\\d+%/i.test(statusline) && /Weekly\\s*\\d+%/i.test(statusline);
-            },
-            20_000,
-            'automatic AGY context and usage status',
-          );
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === '') {
+            await waitFor(
+              () => {
+                const statusline =
+                  document.querySelector('[data-testid="agy-statusline"]')?.textContent || '';
+                return /Context\\s*\\d+%/i.test(statusline) && /Weekly\\s*\\d+%/i.test(statusline);
+              },
+              20_000,
+              'automatic AGY context and usage status',
+            );
+          }
           await markStage('03-ready');
+
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'question') {
+            const completionToken = 'COZYPAD_AGY_QUESTION_' + Date.now();
+            const questionPrompt = [
+              'Use your native interactive question interface before doing anything else.',
+              'Ask exactly: Choose the greeting style?',
+              'Offer these choices in this order: Formal, Friendly.',
+              'Leave the native Write-in option enabled.',
+              'Wait for my selection. After I select an option, reply with exactly ' +
+                completionToken,
+            ].join(' ');
+            await submitFromUi(questionPrompt);
+            await waitFor(
+              () =>
+                document
+                  .querySelector('[data-testid="agy-panel"]')
+                  ?.getAttribute('aria-label') === 'AGY question' &&
+                document.querySelectorAll('[data-testid="agy-panel-option"]').length >= 3,
+              60_000,
+              'AGY native question interface',
+            );
+            const questionOptions = Array.from(
+              document.querySelectorAll('[data-testid="agy-panel-option"]'),
+            ).map((option) => option.textContent.trim());
+            if (
+              JSON.stringify(questionOptions) !==
+              JSON.stringify(['Formal', 'Friendly', 'Write-in...'])
+            ) {
+              throw new Error(
+                'Unexpected question options: ' + JSON.stringify(questionOptions),
+              );
+            }
+            if (
+              document.querySelector('.agy-chat-turn .msg-assistant') !== null
+            ) {
+              throw new Error('Question terminal furniture leaked into an assistant message');
+            }
+            await markStage('04-question');
+            click(
+              document.querySelectorAll('[data-testid="agy-panel-option"]')[1],
+              'Friendly question option',
+            );
+            await waitFor(
+              () => document.querySelector('[aria-label="AGY question"]') === null,
+              30_000,
+              'question interface dismissal',
+            );
+            await waitFor(
+              () => assistantContains(completionToken),
+              120_000,
+              'post-question AGY reply',
+            );
+            await markStage('05-question-answered');
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              interactionCase: 'question',
+              questionOptions,
+              completionToken,
+              workspaceTrustSeen,
+              observations,
+            };
+          }
+
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'file-edit') {
+            const completionToken = 'COZYPAD_AGY_FILE_EDIT_' + Date.now();
+            const filePath = home.path.replace(/[\\\\/]+$/u, '') + '/src/demo.ts';
+            const beforeContent = (await bridge.fsRead({
+              path: filePath,
+              maxBytes: 64_000,
+              offset: 0,
+            })).content;
+            if (
+              beforeContent.includes('export function farewell') ||
+              beforeContent.includes('Greeting is disabled')
+            ) {
+              throw new Error('File-edit fixture was not reset before the test');
+            }
+            const editPrompt = [
+              'Modify src/demo.ts now using your native file-editing tool.',
+              "Change 'Greeting disabled' to 'Greeting is disabled'.",
+              "Add exactly: export function farewell(name: string): string { return 'Goodbye, ' + name + '!'; }",
+              'Do not modify any other file.',
+              'After saving, run exactly: git -c safe.directory=* diff -- src/demo.ts',
+              'Also run exactly: git -c safe.directory=* log -1 --oneline',
+              'Your final reply must start with ' + completionToken + '.',
+              'Then include the exact unified diff in a fenced code block labelled diff.',
+              'Then include the exact commit line in a fenced code block labelled gitlog.',
+            ].join(' ');
+            await submitFromUi(editPrompt);
+
+            await waitForAsync(
+              async () => {
+                const approval = document.querySelector('[aria-label="AGY approval"]');
+                if (approval !== null) return true;
+                const content = (await bridge.fsRead({
+                  path: filePath,
+                  maxBytes: 64_000,
+                  offset: 0,
+                })).content;
+                return (
+                  content.includes('export function farewell') &&
+                  content.includes('Greeting is disabled')
+                );
+              },
+              120_000,
+              'AGY approval or saved file edit',
+            );
+
+            const approval = document.querySelector('[aria-label="AGY approval"]');
+            let approvalSeen = false;
+            if (approval !== null) {
+              approvalSeen = true;
+              await markStage('04-file-edit-approval');
+              const allow =
+                Array.from(
+                  approval.querySelectorAll('[data-testid="agy-panel-option"]'),
+                ).find((option) => /yes|allow|approve|proceed/i.test(option.textContent || '')) ||
+                approval.querySelector('.btn-allow');
+              click(allow, 'allow AGY file edit');
+            }
+
+            await waitForAsync(
+              async () => {
+                const content = (await bridge.fsRead({
+                  path: filePath,
+                  maxBytes: 64_000,
+                  offset: 0,
+                })).content;
+                return (
+                  content.includes('export function farewell') &&
+                  content.includes('Greeting is disabled')
+                );
+              },
+              120_000,
+              'saved src/demo.ts modification',
+            );
+            await markStage('04-file-edited');
+            await waitFor(
+              () =>
+                assistantContains(completionToken) &&
+                document.querySelector('.agy-diff-card .diff-add') !== null &&
+                document.querySelector('.agy-diff-card .diff-del') !== null &&
+                document.querySelector('.agy-diff-card .diff-hunk') !== null &&
+                document.querySelector('.agy-git-history') !== null,
+              120_000,
+              'post-edit AGY diff and git history reply',
+            );
+            await markStage('05-file-edit-complete');
+            const afterContent = (await bridge.fsRead({
+              path: filePath,
+              maxBytes: 64_000,
+              offset: 0,
+            })).content;
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              interactionCase: 'file-edit',
+              approvalSeen,
+              completionToken,
+              fileChanged: beforeContent !== afterContent,
+              diffStat:
+                document.querySelector('.agy-diff-card .diff-stat')?.textContent || null,
+              gitHistory:
+                document.querySelector('.agy-git-history pre')?.textContent || null,
+              observations,
+            };
+          }
+
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'diff-report') {
+            const completionToken = 'COZYPAD_AGY_DIFF_REPORT_' + Date.now();
+            const filePath = home.path.replace(/[\\\\/]+$/u, '') + '/src/demo.ts';
+            const content = (await bridge.fsRead({
+              path: filePath,
+              maxBytes: 64_000,
+              offset: 0,
+            })).content;
+            if (
+              !content.includes('export function farewell') ||
+              !content.includes('Greeting is disabled')
+            ) {
+              throw new Error('Diff-report fixture has no pending file modification');
+            }
+            const reportPrompt = [
+              'Inspect the existing uncommitted change without modifying any file.',
+              'Run exactly: git -c safe.directory=* diff -- src/demo.ts',
+              'Run exactly: git -c safe.directory=* log -1 --oneline',
+              'Your final reply must start with ' + completionToken + '.',
+              'Then reproduce the exact unified diff and the exact commit line.',
+            ].join(' ');
+            await submitFromUi(reportPrompt);
+            await waitFor(
+              () =>
+                assistantContains(completionToken) &&
+                document.querySelector('.agy-diff-card .diff-add') !== null &&
+                document.querySelector('.agy-diff-card .diff-del') !== null &&
+                document.querySelector('.agy-diff-card .diff-hunk') !== null &&
+                document.querySelector('.agy-git-history') !== null,
+              120_000,
+              'AGY diff and git history cards',
+            );
+            await markStage('04-diff-history');
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              interactionCase: 'diff-report',
+              completionToken,
+              diffStat:
+                document.querySelector('.agy-diff-card .diff-stat')?.textContent || null,
+              gitHistory:
+                document.querySelector('.agy-git-history pre')?.textContent || null,
+              observations,
+            };
+          }
+
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'approval') {
+            const completionToken = 'COZYPAD_AGY_DENIED_' + Date.now();
+            const approvalPrompt = [
+              'Use your native shell tool to run exactly: node -p 6*7',
+              'Request permission through the native approval interface before running it.',
+              'Wait for my decision.',
+              'If I deny it, do not retry and reply with exactly ' + completionToken,
+            ].join(' ');
+            await submitFromUi(approvalPrompt);
+            await waitFor(
+              () => document.querySelector('[aria-label="AGY approval"]') !== null,
+              120_000,
+              'AGY command approval interface',
+            );
+            const approval = document.querySelector('[aria-label="AGY approval"]');
+            const approvalOptions = Array.from(
+              approval.querySelectorAll('[data-testid="agy-panel-option"]'),
+            ).map((option) => option.textContent.trim());
+            const approvalCommand = approval.querySelector('code')?.textContent || null;
+            await markStage('04-command-approval');
+            const deny =
+              Array.from(
+                approval.querySelectorAll('[data-testid="agy-panel-option"]'),
+              ).find((option) => /no|deny|reject/i.test(option.textContent || '')) ||
+              approval.querySelector('.btn-deny');
+            click(deny, 'deny AGY command');
+            await waitFor(
+              () => document.querySelector('[aria-label="AGY approval"]') === null,
+              30_000,
+              'AGY command approval dismissal',
+            );
+            await waitFor(
+              () => assistantContains(completionToken),
+              120_000,
+              'post-denial AGY reply',
+            );
+            await markStage('05-command-denied');
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              interactionCase: 'approval',
+              launchMode: launchMode.id,
+              approvalOptions,
+              approvalCommand,
+              completionToken,
+              observations,
+            };
+          }
+
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'viewer') {
+            const completionToken = 'COZYPAD_AGY_VIEW_' + Date.now();
+            const viewPrompt = [
+              'Inspect README.md using your native Read tool.',
+              'Do not modify any files.',
+              'After reading it, reply with exactly ' + completionToken,
+            ].join(' ');
+            await submitFromUi(viewPrompt);
+            await waitFor(
+              () =>
+                assistantContains(completionToken) &&
+                Array.from(document.querySelectorAll('.tool-card .tool-name')).some(
+                  (name) => /^read$/i.test(name.textContent.trim()),
+                ),
+              120_000,
+              'AGY Read tool card and reply',
+            );
+            const readCard = Array.from(document.querySelectorAll('.tool-card')).find(
+              (card) => /^read$/i.test(card.querySelector('.tool-name')?.textContent.trim() || ''),
+            );
+            const readSummary = readCard?.querySelector('summary');
+            click(readSummary, 'AGY Read tool summary');
+            await markStage('04-read-tool');
+            const beforeNativeViewEvents = terminalOutputEvents.length;
+            click(
+              readCard?.querySelector('[data-testid="agy-tool-native-view"]'),
+              'View in AGY tool action',
+            );
+            await waitFor(
+              () => terminalOutputEvents.length > beforeNativeViewEvents,
+              20_000,
+              'AGY native tool detail redraw',
+            );
+            await markStage('05-read-native-view');
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              interactionCase: 'viewer',
+              completionToken,
+              nativeViewMode:
+                document.querySelector('[data-testid="agy-surface"]')?.getAttribute('data-mode'),
+              readCardText: readCard?.textContent || '',
+              observations,
+            };
+          }
 
           // Reproduce the original lock exactly. Every value change is sent by
           // the real React textarea while AGY redraws its slash TUI underneath.
@@ -769,13 +1287,50 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
           await inspectOverlay('/usage', 'quotaReport', '06-usage');
 
           const replyToken = 'COZYPAD_AGY_UI_REPLY_' + Date.now();
-          await submitFromUi('Reply with exactly ' + replyToken);
+          const replyPrompt = 'Reply with exactly ' + replyToken;
+          await submitFromUi(replyPrompt);
           await waitFor(
             () => assistantContains(replyToken),
             120_000,
             'AGY response rendered as an assistant message',
           );
           await markStage('07-reply');
+          const replySnapshot = assistantTextContaining(replyToken);
+          if (replySnapshot === null) {
+            throw new Error('Could not snapshot the completed AGY reply');
+          }
+
+          // Slash commands are modal controls, but they must never replace or
+          // erase the conversation that was already rendered in the timeline.
+          await inspectOverlay(
+            '/model',
+            'modelPicker',
+            '07-model-after-reply',
+            replyPrompt,
+            replyToken,
+            replySnapshot,
+          );
+          await inspectOverlay(
+            '/usage',
+            'quotaReport',
+            '07-usage-after-reply',
+            replyPrompt,
+            replyToken,
+            replySnapshot,
+          );
+          await markStage('07-conversation-preserved');
+
+          if (${JSON.stringify(AGY_HISTORY_ONLY)}) {
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              historyPreserved: true,
+              overlaysVerified: ['model-after-reply', 'usage-after-reply'],
+              replySnapshotVerified: true,
+              observations,
+            };
+          }
 
           const cancelPrompt =
             'Inspect this directory carefully and keep working for at least 30 seconds before replying.';
@@ -828,6 +1383,7 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             replyVerified: true,
             stopVerified: true,
             terminalChromeHidden: true,
+            observations,
           };
         } catch (error) {
           await markStage('99-error');
@@ -836,8 +1392,10 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
               error instanceof Error
                 ? error.message + '\\n' + (error.stack || '')
                 : String(error),
+            observations,
           };
         } finally {
+          unsubscribeTerminalOutput();
           if (sessionId !== null) {
             try { await bridge.deleteAgentSession({ sessionId }); } catch {}
           }
@@ -866,14 +1424,51 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
       );
       if (typeof stage === 'string' && stage !== '' && !captured.has(stage)) {
         captured.add(stage);
-        const image = await win.webContents.capturePage();
+        let image: Awaited<ReturnType<typeof win.webContents.capturePage>> | null = null;
+        let captureError: unknown;
+        for (let attempt = 0; attempt < 4 && image === null; attempt += 1) {
+          try {
+            image = await win.webContents.capturePage();
+          } catch (error) {
+            captureError = error;
+            await new Promise((resolve) => setTimeout(resolve, 180));
+          }
+        }
+        if (image === null) throw captureError;
         await fs.writeFile(path.join(visualDir, `${stage}.png`), image.toPNG());
+        await win.webContents.executeJavaScript(
+          `document.documentElement.dataset.agySmokeCaptured = ${JSON.stringify(stage)}`,
+          true,
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, 120));
     }
     await execution;
     if (executionError !== undefined) throw executionError;
     console.log('[agy-ui-smoke] screenshots:', visualDir);
+
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'observations' in result &&
+      Array.isArray(result.observations)
+    ) {
+      const observationFile = path.join(visualDir, 'observations.json');
+      await fs.writeFile(
+        observationFile,
+        JSON.stringify(result.observations, null, 2),
+        'utf8',
+      );
+      const observationCount = result.observations.length;
+      const summary = { ...(result as Record<string, unknown>) };
+      delete summary.observations;
+      result = {
+        ...summary,
+        observationCount,
+        observationFile,
+      };
+      console.log('[agy-ui-smoke] observations:', observationFile);
+    }
 
     if (
       typeof result === 'object' &&

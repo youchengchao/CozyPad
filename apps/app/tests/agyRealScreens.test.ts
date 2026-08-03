@@ -411,6 +411,38 @@ describe('real AGY 1.1.9 screens', () => {
     expect(blocks).toEqual([{ kind: 'text', text: 'PONG42' }]);
   });
 
+  it('turns visible AGY git output into diff and history cards', () => {
+    const blocks = segmentAgyReply([
+      'Changes completed.',
+      'diff --git a/src/demo.ts b/src/demo.ts',
+      'index d0a9731..d127c7f 100644',
+      '--- a/src/demo.ts',
+      '+++ b/src/demo.ts',
+      '@@ -4,2 +4,2 @@ export interface GreetingOptions {',
+      "-  if (!options.enabled) return 'Greeting disabled';",
+      "+  if (!options.enabled) return 'Greeting is disabled';",
+      '### Commit Line',
+      '223f40f baseline',
+    ].join('\n'));
+
+    expect(blocks).toEqual([
+      { kind: 'text', text: 'Changes completed.' },
+      {
+        kind: 'diff',
+        diff: [
+          'diff --git a/src/demo.ts b/src/demo.ts',
+          'index d0a9731..d127c7f 100644',
+          '--- a/src/demo.ts',
+          '+++ b/src/demo.ts',
+          '@@ -4,2 +4,2 @@ export interface GreetingOptions {',
+          "-  if (!options.enabled) return 'Greeting disabled';",
+          "+  if (!options.enabled) return 'Greeting is disabled';",
+        ].join('\n'),
+      },
+      { kind: 'gitHistory', entries: ['223f40f baseline'] },
+    ]);
+  });
+
   it('offers the model picker rows as clickable choices', () => {
     const model = deriveAgyScreenModel(MODEL_PICKER);
 

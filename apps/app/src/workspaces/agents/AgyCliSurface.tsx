@@ -1,4 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Children,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from 'react';
 import { Terminal } from '@xterm/xterm';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -167,6 +176,11 @@ function navigationKeyForEvent(event: React.KeyboardEvent): AgyNavigationKey | n
 }
 
 function panelCopy(model: AgyScreenModel): string[] {
+  // The question title and choices already carry the complete interaction.
+  // AGY also leaves fragments such as `Question 1/1` and the tail of the
+  // user's tool instruction on screen; presenting those as explanatory copy
+  // duplicates the question and leaks terminal furniture into the chat UI.
+  if (model.mode === 'question') return [];
   const optionLines = new Set(model.options.map((option) => option.lineIndex));
   return model.rawLines
     .filter((line, index) => index !== model.promptLineIndex && !optionLines.has(index))
@@ -178,6 +192,82 @@ function panelCopy(model: AgyScreenModel): string[] {
         !/(?:↑|↓|←|→|arrow|enter\s+select|tab\s+to|ctrl\+|esc\s+to)/iu.test(line),
     )
     .slice(-5);
+}
+
+function DiffLines({ diff }: { diff: string }) {
+  return (
+    <pre className="diff-body">
+      {diff.split('\n').map((line, index) => {
+        const className =
+          line.startsWith('+++') || line.startsWith('---')
+            ? 'diff-file'
+            : line.startsWith('+')
+              ? 'diff-add'
+              : line.startsWith('-')
+                ? 'diff-del'
+                : line.startsWith('@@')
+                  ? 'diff-hunk'
+                  : '';
+        return (
+          <span className={className} key={index}>
+            {line}
+            {'\n'}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}
+
+function AgyDiffCard({ diff }: { diff: string }) {
+  const lines = diff.split('\n');
+  const path =
+    lines
+      .find((line) => line.startsWith('+++ '))
+      ?.replace(/^\+\+\+\s+(?:b\/)?/u, '') ?? 'File changes';
+  const additions = lines.filter(
+    (line) => line.startsWith('+') && !line.startsWith('+++'),
+  ).length;
+  const deletions = lines.filter(
+    (line) => line.startsWith('-') && !line.startsWith('---'),
+  ).length;
+  return (
+    <details className="card diff-card agy-diff-card" open>
+      <summary>
+        <span className="mono diff-path">{path}</span>
+        <span className="diff-stat">
+          <span className="diff-add">+{additions}</span>{' '}
+          <span className="diff-del">-{deletions}</span>
+        </span>
+      </summary>
+      <DiffLines diff={diff} />
+    </details>
+  );
+}
+
+function MarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) {
+  const child = Children.count(children) === 1 ? Children.only(children) : null;
+  if (
+    isValidElement<{
+      className?: string;
+      children?: ReactNode;
+    }>(child)
+  ) {
+    const language = child.props.className ?? '';
+    const text = String(child.props.children ?? '').replace(/\n$/u, '');
+    if (/\blanguage-(?:diff|patch)\b/u.test(language)) {
+      return <AgyDiffCard diff={text} />;
+    }
+    if (/\blanguage-(?:gitlog|git-log)\b/u.test(language)) {
+      return (
+        <section className="card agy-git-history">
+          <strong>Git history</strong>
+          <pre>{text}</pre>
+        </section>
+      );
+    }
+  }
+  return <pre>{children}</pre>;
 }
 
 /**
@@ -443,7 +533,15 @@ function AgyOverlay({
  * bubble, each tool run as its own card, and the agent's reasoning collapsed
  * behind a disclosure — rather than one block of terminal text.
  */
-function AgyReply({ text, streaming }: { text: string; streaming: boolean }) {
+function AgyReply({
+  text,
+  streaming,
+  onToggleToolDetails,
+}: {
+  text: string;
+  streaming: boolean;
+  onToggleToolDetails(): void;
+}) {
   const blocks = useMemo(() => segmentAgyReply(text), [text]);
   return (
     <>
@@ -460,6 +558,14 @@ function AgyReply({ text, streaming }: { text: string; streaming: boolean }) {
               {block.detail === '' ? null : (
                 <pre className="tool-output">{block.detail}</pre>
               )}
+              <button
+                type="button"
+                className="agy-tool-native-view"
+                data-testid="agy-tool-native-view"
+                onClick={onToggleToolDetails}
+              >
+                View in AGY
+              </button>
             </details>
           );
         }
@@ -475,10 +581,26 @@ function AgyReply({ text, streaming }: { text: string; streaming: boolean }) {
             </details>
           );
         }
+        if (block.kind === 'diff') {
+          return <AgyDiffCard diff={block.diff} key={index} />;
+        }
+        if (block.kind === 'gitHistory') {
+          return (
+            <section className="card agy-git-history" key={index}>
+              <strong>Git history</strong>
+              <pre>{block.entries.join('\n')}</pre>
+            </section>
+          );
+        }
         return (
           <div className="msg msg-assistant" key={index}>
             <div className="msg-body markdown">
-              <Markdown remarkPlugins={[remarkGfm]}>{block.text}</Markdown>
+              <Markdown
+                components={{ pre: MarkdownPre }}
+                remarkPlugins={[remarkGfm]}
+              >
+                {block.text}
+              </Markdown>
               {streaming && last ? <span className="caret" /> : null}
             </div>
           </div>
@@ -505,6 +627,7 @@ export function AgyCliSurface({
   const writeRawRef = useRef<(data: string) => void>(() => undefined);
   const remoteDraftRef = useRef('');
   const inputFingerprintRef = useRef('');
+  const activeTurnIdRef = useRef<string | null>(null);
   const composingRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const stopFingerprintRef = useRef('');
@@ -551,6 +674,7 @@ export function AgyCliSurface({
     let disposed = false;
     let writePending = false;
     let refreshAgain = false;
+    let lastOutputSequence = -1;
     const earlyOutput: TerminalOutputEvent[] = [];
     const earlyClosed: TerminalClosedEvent[] = [];
 
@@ -565,6 +689,10 @@ export function AgyCliSurface({
       setTurns((current) => {
         if (current.length === 0) return current;
         const latest = current.at(-1)!;
+        // Terminal redraws are global to the CLI session. Only the ordinary
+        // prompt that initiated the active turn may consume them; otherwise a
+        // later `/model` or `/usage` repaint can overwrite a completed reply.
+        if (latest.id !== activeTurnIdRef.current) return current;
         // A recovered turn's text came from AGY's store in full; the screen
         // only shows its tail and would overwrite better with worse.
         if (latest.id.startsWith('recovered-')) return current;
@@ -606,13 +734,21 @@ export function AgyCliSurface({
       });
     };
 
+    const applyOutput = (event: TerminalOutputEvent) => {
+      if (event.sequence !== undefined) {
+        if (event.sequence <= lastOutputSequence) return;
+        lastOutputSequence = event.sequence;
+      }
+      parseOutput(event);
+    };
+
     const unsubscribeOutput = bridge.onTerminalOutput((event) => {
       const terminalId = terminalIdRef.current;
       if (terminalId === null) {
         earlyOutput.push(event);
         if (earlyOutput.length > 256) earlyOutput.shift();
       } else if (event.terminalId === terminalId) {
-        parseOutput(event);
+        applyOutput(event);
       }
     });
     const unsubscribeClosed = bridge.onTerminalClosed((event) => {
@@ -641,6 +777,15 @@ export function AgyCliSurface({
           return;
         }
         terminalIdRef.current = opened.terminalId;
+        if (opened.replayDataBase64 !== undefined) {
+          applyOutput({
+            terminalId: opened.terminalId,
+            dataBase64: opened.replayDataBase64,
+            ...(opened.replayThroughSequence === undefined
+              ? {}
+              : { sequence: opened.replayThroughSequence }),
+          });
+        }
         // Re-assert the size the parser uses. tmux sizes a pane from its
         // attached client, so this is the only thing keeping the remote screen
         // the same shape as the buffer we read.
@@ -650,7 +795,7 @@ export function AgyCliSurface({
           rows: AGY_ROWS,
         });
         for (const event of earlyOutput) {
-          if (event.terminalId === opened.terminalId) parseOutput(event);
+          if (event.terminalId === opened.terminalId) applyOutput(event);
         }
         earlyOutput.length = 0;
         const wasClosed = earlyClosed.some(
@@ -829,13 +974,21 @@ export function AgyCliSurface({
   const sendPrompt = () => {
     const prompt = draft.trim();
     if (prompt === '' || connection !== 'connected') return;
-    const turn: AgyLocalTurn = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      prompt,
-      assistantText: '',
-      createdAt: Date.now(),
-    };
-    updateTurns((current) => [...current, turn]);
+    if (prompt.startsWith('/')) {
+      // Slash commands control AGY's modal terminal surface. Freeze the last
+      // conversational turn before the CLI repaints, and never add a temporary
+      // slash turn that a later overlay effect would have to remove again.
+      activeTurnIdRef.current = null;
+    } else {
+      const turn: AgyLocalTurn = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        prompt,
+        assistantText: '',
+        createdAt: Date.now(),
+      };
+      activeTurnIdRef.current = turn.id;
+      updateTurns((current) => [...current, turn]);
+    }
     remoteDraftRef.current = '';
     inputFingerprintRef.current = '';
     setDraft('');
@@ -1125,21 +1278,6 @@ export function AgyCliSurface({
   }, [statusSyncPhase]);
 
   useEffect(() => {
-    if (overlay === null) return;
-    // A slash command that opens an overlay is a control action, not something
-    // said to the agent. Leaving `/resume` sitting in the transcript makes the
-    // conversation read as if it had been asked a question it never answered.
-    // Removal is unconditional for slash turns: even if a frame was scraped
-    // into it before the overlay was recognisable, that text is the overlay's
-    // own content and showing it as a reply duplicates the overlay.
-    updateTurns((current) => {
-      const latest = current.at(-1);
-      if (latest === undefined || !latest.prompt.startsWith('/')) return current;
-      return current.slice(0, -1);
-    });
-  }, [overlay?.kind ?? null]);
-
-  useEffect(() => {
     // Keyboard control must not depend on clicking first. While an overlay is
     // up the composer is disabled, so nothing would hold focus and the arrow
     // keys would go nowhere; hand focus to the overlay and give it back when
@@ -1191,7 +1329,14 @@ export function AgyCliSurface({
 
   // An open overlay renders the same rows with real controls, so the welcome
   // screen underneath would show every choice twice.
-  const showWelcome = turns.length === 0 && !slashAutocomplete && overlay === null;
+  const showWelcome =
+    turns.length === 0 &&
+    !slashAutocomplete &&
+    overlay === null &&
+    (screen.mode === 'booting' ||
+      screen.mode === 'welcome' ||
+      screen.mode === 'prompt' ||
+      screen.mode === 'running');
   // A card answered by typed keys (`1. Yes`, `[y] Allow once`) is shown on its
   // own merit, so keeping the composer usable never costs the user the buttons.
   const hasKeyedChoices = screen.options.some(
@@ -1301,13 +1446,17 @@ export function AgyCliSurface({
 
         {turns.map((turn, index) => {
           const current = index === turns.length - 1;
-          const visibleAssistantText = isStaleAgyReplyCandidate(
-            turn.assistantText,
-            turns.slice(0, index).map((earlier) => earlier.assistantText),
-            current && running,
-          )
-            ? ''
-            : turn.assistantText;
+          const interactiveTurn =
+            current && (screen.mode === 'approval' || screen.mode === 'question');
+          const visibleAssistantText =
+            interactiveTurn ||
+            isStaleAgyReplyCandidate(
+              turn.assistantText,
+              turns.slice(0, index).map((earlier) => earlier.assistantText),
+              current && running,
+            )
+              ? ''
+              : turn.assistantText;
           return (
             <div className="agy-chat-turn" key={turn.id}>
               {turn.prompt === '' ? null : (
@@ -1319,6 +1468,7 @@ export function AgyCliSurface({
                 <AgyReply
                   text={visibleAssistantText}
                   streaming={current && running}
+                  onToggleToolDetails={() => sendRaw('\u000f')}
                 />
               ) : current && running ? (
                 <div className="agy-chat-working" role="status">

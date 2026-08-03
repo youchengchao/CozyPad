@@ -944,6 +944,8 @@ button.danger:hover {
   padding: 9px 10px;
   border-radius: 8px;
   border: 1px solid transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 .session-item:hover {
@@ -1576,6 +1578,10 @@ button.danger:hover {
 
 .diff-hunk {
   color: var(--blue);
+}
+
+.diff-file {
+  color: var(--text-dim);
 }
 
 .diff-body {
@@ -2408,6 +2414,41 @@ button.danger:hover {
   background:
     radial-gradient(circle at 50% -18%, rgba(124, 58, 237, 0.09), transparent 38%),
     linear-gradient(180deg, color-mix(in srgb, var(--bg) 94%, #171020), var(--bg) 42%);
+}
+
+.agy-git-history {
+  padding: 0;
+  overflow: hidden;
+}
+
+.agy-git-history > strong {
+  display: block;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agy-git-history > pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  color: var(--text-dim);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.agy-tool-native-view {
+  margin-top: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agy-tool-native-view:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .agy-chat-timeline {

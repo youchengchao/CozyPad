@@ -225,6 +225,18 @@ describe('AGY terminal-to-UI model', () => {
     expect(model.options.map((option) => option.shortcut)).toEqual(['y', 'n']);
   });
 
+  it('does not mistake ListPermissions activity for an approval gate', () => {
+    const model = deriveAgyScreenModel([
+      'Executing the Command',
+      'ListPermissions(You have read and write access to the following workspace(s):)',
+      'Tip: Press shift+tab to cycle modes (default, accept-edits, plan).',
+      'esc to cancel',
+    ]);
+
+    expect(model.mode).toBe('running');
+    expect(model.options).toEqual([]);
+  });
+
   it('keeps AGY slash autocomplete as an interactive suggestion surface', () => {
     const model = deriveAgyScreenModel([
       'What would you like AGY to work on?',
@@ -305,6 +317,7 @@ describe('AGY terminal-to-UI model', () => {
     expect(model.mode).toBe('running');
     expect(extractAgyAssistantText(model, prompt)).not.toContain('FIRST_TOKEN');
     expect(extractAgyAssistantText(model, prompt)).toContain('ListDir');
+    expect(extractAgyAssistantText(model, prompt)).toContain('Schedule');
   });
 
   it('does not mistake typed prompt text for a blocking menu option', () => {

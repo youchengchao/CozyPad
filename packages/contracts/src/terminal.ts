@@ -9,6 +9,13 @@ export type TerminalOpenRequest = z.infer<typeof TerminalOpenRequestSchema>;
 
 export const TerminalOpenedSchema = z.object({
   terminalId: z.string().min(1),
+  /**
+   * Bounded terminal output captured before the renderer attached. The
+   * sequence lets a subscriber discard live events that are also present in
+   * this replay.
+   */
+  replayDataBase64: z.string().optional(),
+  replayThroughSequence: z.number().int().nonnegative().optional(),
 });
 export type TerminalOpened = z.infer<typeof TerminalOpenedSchema>;
 
@@ -33,6 +40,7 @@ export type TerminalCloseRequest = z.infer<typeof TerminalCloseRequestSchema>;
 export const TerminalOutputEventSchema = z.object({
   terminalId: z.string().min(1),
   dataBase64: z.string(),
+  sequence: z.number().int().nonnegative().optional(),
 });
 export type TerminalOutputEvent = z.infer<typeof TerminalOutputEventSchema>;
 

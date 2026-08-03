@@ -9,6 +9,7 @@ import type {
   SlashCommand,
 } from '@cozypad/contracts';
 import { MAX_AGENT_ATTACHMENT_BYTES } from '@cozypad/contracts';
+import { ContextMenu, useLongPress } from '../../components/ContextMenu';
 import { getBridge } from '../../platform/bridge';
 import { AgyCliSurface, clearAgySessionCache } from './AgyCliSurface';
 import { ChatComposer } from './ChatComposer';
@@ -118,6 +119,75 @@ function environmentText(installation: AgentInstallation): string | null {
     .join(' ');
 }
 
+function SessionListItem({
+  session,
+  status,
+  active,
+  waking,
+  menuOpen,
+  onActivate,
+  onOpenMenu,
+}: {
+  session: AgentSessionSummary;
+  status: AgentSessionStatus;
+  active: boolean;
+  waking: boolean;
+  menuOpen: boolean;
+  onActivate(): void;
+  onOpenMenu(x: number, y: number): void;
+}) {
+  const lastPointerType = useRef('mouse');
+  const longPressOpened = useRef(false);
+  const longPress = useLongPress((x, y) => {
+    longPressOpened.current = true;
+    onOpenMenu(x, y);
+  });
+
+  return (
+    <button
+      data-session-id={session.id}
+      className={`session-item${active ? ' session-item-active' : ''}`}
+      aria-haspopup="menu"
+      aria-expanded={menuOpen}
+      onClick={(event) => {
+        const keyboardClick = event.detail === 0;
+        const desktopClick =
+          keyboardClick || lastPointerType.current === 'mouse';
+
+        if (!longPressOpened.current) onActivate();
+        if (desktopClick) {
+          const bounds = event.currentTarget.getBoundingClientRect();
+          onOpenMenu(
+            keyboardClick ? bounds.left + bounds.width / 2 : event.clientX,
+            keyboardClick ? bounds.bottom : event.clientY,
+          );
+        }
+        longPressOpened.current = false;
+      }}
+      onContextMenu={longPress.onContextMenu}
+      onPointerDown={(event) => {
+        lastPointerType.current = event.pointerType;
+        longPressOpened.current = false;
+        longPress.onPointerDown(event);
+      }}
+      onPointerMove={longPress.onPointerMove}
+      onPointerUp={longPress.onPointerUp}
+      onPointerCancel={longPress.onPointerCancel}
+    >
+      <span className="session-title">{session.title}</span>
+      <span className="session-meta">
+        {session.host} · {session.project}
+      </span>
+      <span className="session-footer">
+        <span className={`chip chip-${status}`}>
+          {waking ? 'waking…' : STATUS_LABEL[status]}
+        </span>
+        <span className="session-time">{formatTime(session.updatedAt)}</span>
+      </span>
+    </button>
+  );
+}
+
 interface AgentsWorkspaceProps {
   connected: boolean;
   profileId: string | null;
@@ -165,6 +235,11 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   const [deleteSession, setDeleteSession] = useState<AgentSessionSummary | null>(
     null,
   );
+  const [sessionMenu, setSessionMenu] = useState<{
+    session: AgentSessionSummary;
+    x: number;
+    y: number;
+  } | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [modelPickerSessionId, setModelPickerSessionId] = useState<string | null>(
     null,
@@ -216,7 +291,11 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     setUploading(drop);
     setInterrupting(drop);
     setAgyActivity(drop);
+    setRenameSession((current) => (current?.id === sessionId ? null : current));
     setDeleteSession((current) => (current?.id === sessionId ? null : current));
+    setSessionMenu((current) =>
+      current?.session.id === sessionId ? null : current,
+    );
     setModelPickerSessionId((current) => (current === sessionId ? null : current));
   }, []);
 
@@ -829,13 +908,14 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                 const status = liveStatus(session);
                 const bucket = sessionBucket(status);
                 return (
-                  <button
+                  <SessionListItem
                     key={session.id}
-                    data-session-id={session.id}
-                    className={`session-item${
-                      session.id === selectedSessionId ? ' session-item-active' : ''
-                    }`}
-                    onClick={() => {
+                    session={session}
+                    status={status}
+                    active={session.id === selectedSessionId}
+                    waking={waking[session.id] === true}
+                    menuOpen={sessionMenu?.session.id === session.id}
+                    onActivate={() => {
                       setSelected((current) => ({
                         ...current,
                         [agent]: session.id,
@@ -844,22 +924,8 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                         void wakeSession(session.id);
                       }
                     }}
-                  >
-                    <span className="session-title">{session.title}</span>
-                    <span className="session-meta">
-                      {session.host} · {session.project}
-                    </span>
-                    <span className="session-footer">
-                      <span className={`chip chip-${status}`}>
-                        {waking[session.id] === true
-                          ? 'waking…'
-                          : STATUS_LABEL[status]}
-                      </span>
-                      <span className="session-time">
-                        {formatTime(session.updatedAt)}
-                      </span>
-                    </span>
-                  </button>
+                    onOpenMenu={(x, y) => setSessionMenu({ session, x, y })}
+                  />
                 );
               })}
               {agentSessions.length === 0 ? (
@@ -892,26 +958,10 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                     </span>
                     <span className="mono">{selectedSession.cwd}</span>
                   </div>
-                  <div className="chat-session-actions">
-                    <button
-                      className="ghost"
-                      onClick={() => {
-                        setRenameSession(selectedSession);
-                        setRenameTitle(selectedSession.title);
-                      }}
-                    >
-                      Rename
-                    </button>
-                    <button
-                      className="ghost danger"
-                      disabled={busy}
-                      onClick={() => setDeleteSession(selectedSession)}
-                    >
-                      Delete
-                    </button>
-                    {selectedSession.agentKind !== 'agy' &&
-                    (selectedSession.status === 'running' ||
-                      selectedSession.status === 'waiting_approval') ? (
+                  {selectedSession.agentKind !== 'agy' &&
+                  (selectedSession.status === 'running' ||
+                    selectedSession.status === 'waiting_approval') ? (
+                    <div className="chat-session-actions">
                       <button
                         className="ghost"
                         disabled={interrupting[selectedSession.id] === true}
@@ -921,8 +971,8 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                           ? 'Stopping…'
                           : 'Stop'}
                       </button>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
                 </div>
                 {selectedSession.agentKind === 'agy' ? (
                   <AgyCliSurface
@@ -1011,6 +1061,34 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
 
         </div>
       )}
+
+      {sessionMenu !== null ? (
+        <ContextMenu
+          x={sessionMenu.x}
+          y={sessionMenu.y}
+          title={sessionMenu.session.title}
+          subtitle={sessionMenu.session.cwd}
+          actions={[
+            { id: 'rename', label: 'Rename' },
+            {
+              id: 'delete',
+              label: 'Delete',
+              danger: true,
+              separatorBefore: true,
+              disabled: busy,
+            },
+          ]}
+          onSelect={(actionId) => {
+            if (actionId === 'rename') {
+              setRenameSession(sessionMenu.session);
+              setRenameTitle(sessionMenu.session.title);
+            } else if (actionId === 'delete') {
+              setDeleteSession(sessionMenu.session);
+            }
+          }}
+          onClose={() => setSessionMenu(null)}
+        />
+      ) : null}
 
       {createOpen ? (
         <div className="modal-overlay" role="presentation">
