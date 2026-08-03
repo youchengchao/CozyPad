@@ -84,6 +84,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@cozypad/adapter-claude':
+        specifier: workspace:*
+        version: link:../../packages/adapter-claude
       '@cozypad/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

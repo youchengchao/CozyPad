@@ -4,6 +4,7 @@ import { sshFixtures } from '@cozypad/test-fixtures';
 import type {
   Ssh2ClientLike,
   Ssh2ExecStreamLike,
+  Ssh2SftpLike,
   Ssh2ShellStreamLike,
 } from '../src/main/transport/ssh2Transport';
 import {
@@ -91,6 +92,24 @@ class FakeExecStream implements Ssh2ExecStreamLike {
   }
 }
 
+class FakeSftp implements Ssh2SftpLike {
+  readonly writes: Array<{ path: string; data: Buffer }> = [];
+  ended = false;
+
+  writeFile(
+    remotePath: string,
+    data: Buffer,
+    callback: (error?: Error | null) => void,
+  ): void {
+    this.writes.push({ path: remotePath, data });
+    callback();
+  }
+
+  end(): void {
+    this.ended = true;
+  }
+}
+
 class FakeClient implements Ssh2ClientLike {
   connectConfig: Record<string, unknown> | null = null;
   connectError: Error | null = null;
@@ -101,8 +120,17 @@ class FakeClient implements Ssh2ClientLike {
   }[] = [];
   readonly execRequests: {
     command: string;
-    callback: (error: Error | undefined, stream: Ssh2ExecStreamLike) => void;
+    options?: {
+      pty: { term: string; cols: number; rows: number; width: number; height: number };
+    };
+    callback: (
+      error: Error | undefined,
+      stream: Ssh2ExecStreamLike | Ssh2ShellStreamLike,
+    ) => void;
   }[] = [];
+  readonly sftpRequests: Array<
+    (error: Error | undefined, sftp: Ssh2SftpLike) => void
+  > = [];
   private readonly handlers = new Map<string, ((...args: never[]) => void)[]>();
 
   on(event: 'ready' | 'error' | 'close', listener: (...args: never[]) => void): this {
@@ -127,8 +155,56 @@ class FakeClient implements Ssh2ClientLike {
   exec(
     command: string,
     callback: (error: Error | undefined, stream: Ssh2ExecStreamLike) => void,
+  ): void;
+  exec(
+    command: string,
+    options: {
+      pty: { term: string; cols: number; rows: number; width: number; height: number };
+    },
+    callback: (error: Error | undefined, stream: Ssh2ShellStreamLike) => void,
+  ): void;
+  exec(
+    command: string,
+    optionsOrCallback:
+      | {
+          pty: {
+            term: string;
+            cols: number;
+            rows: number;
+            width: number;
+            height: number;
+          };
+        }
+      | ((error: Error | undefined, stream: Ssh2ExecStreamLike) => void),
+    terminalCallback?: (
+      error: Error | undefined,
+      stream: Ssh2ShellStreamLike,
+    ) => void,
   ): void {
-    this.execRequests.push({ command, callback });
+    if (typeof optionsOrCallback === 'function') {
+      this.execRequests.push({
+        command,
+        callback: optionsOrCallback as (
+          error: Error | undefined,
+          stream: Ssh2ExecStreamLike | Ssh2ShellStreamLike,
+        ) => void,
+      });
+      return;
+    }
+    this.execRequests.push({
+      command,
+      options: optionsOrCallback,
+      callback: terminalCallback! as (
+        error: Error | undefined,
+        stream: Ssh2ExecStreamLike | Ssh2ShellStreamLike,
+      ) => void,
+    });
+  }
+
+  sftp(
+    callback: (error: Error | undefined, sftp: Ssh2SftpLike) => void,
+  ): void {
+    this.sftpRequests.push(callback);
   }
 
   end(): void {
@@ -343,6 +419,28 @@ describe('Ssh2Transport', () => {
     await expect(openPromise).resolves.toMatch(/^ssh-term-/);
   });
 
+  it('starts a terminal command directly on an explicitly allocated PTY', async () => {
+    const { transport, client } = await connectedTransport();
+    const openPromise = transport.openTerminal(
+      { profileId: 'p1', cols: 132, rows: 44 },
+      "tmux -L 'cozypad' attach-session -t '$0'",
+    );
+    expect(client.shellRequests).toHaveLength(0);
+    const request = client.execRequests[0]!;
+    expect(request.command).toBe("tmux -L 'cozypad' attach-session -t '$0'");
+    expect(request.options).toEqual({
+      pty: {
+        term: 'xterm-256color',
+        cols: 132,
+        rows: 44,
+        width: 0,
+        height: 0,
+      },
+    });
+    request.callback(undefined, new FakeShellStream());
+    await expect(openPromise).resolves.toMatch(/^ssh-term-/);
+  });
+
   it('forwards PTY output bytes exactly, including split UTF-8 chunks', async () => {
     const { transport, client, recorder } = await connectedTransport();
     const stream = new FakeShellStream();
@@ -452,6 +550,19 @@ describe('Ssh2Transport', () => {
     stream.emitStderr('nope\n');
     stream.emitClose(1);
     await expect(execPromise).rejects.toThrow('nope');
+  });
+
+  it('writes remote binary files through SFTP on the active SSH connection', async () => {
+    const { transport, client } = await connectedTransport();
+    const data = new Uint8Array([0, 255, 4, 8]);
+    const writePromise = transport.writeFile('/srv/project/image.png', data);
+    const sftp = new FakeSftp();
+    client.sftpRequests[0]!(undefined, sftp);
+
+    await expect(writePromise).resolves.toBeUndefined();
+    expect(sftp.writes[0]?.path).toBe('/srv/project/image.png');
+    expect([...sftp.writes[0]!.data]).toEqual([...data]);
+    expect(sftp.ended).toBe(true);
   });
 
   it('passes the host verifier result through to ssh2', async () => {

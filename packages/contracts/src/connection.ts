@@ -17,6 +17,12 @@ export const ConnectionProfileSchema = z.object({
   hasPrivateKey: z.boolean().optional(),
   /** True only when the active credential is persisted in OS-protected storage. */
   credentialPersisted: z.boolean().optional(),
+  /**
+   * The machine CozyPad is running on. Nothing is dialled, nothing listens, and
+   * there is no credential to ask for — the user is already logged in. Callers
+   * must check this instead of inferring "no saved password" and prompting.
+   */
+  isLocal: z.boolean().optional(),
 });
 export type ConnectionProfile = z.infer<typeof ConnectionProfileSchema>;
 

@@ -22,6 +22,17 @@ interface RawContentBlock {
   is_error?: boolean;
 }
 
+interface RawQuestionOption {
+  label?: unknown;
+  description?: unknown;
+}
+
+interface RawQuestion {
+  question?: unknown;
+  header?: unknown;
+  options?: unknown;
+}
+
 function contentToText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -39,6 +50,40 @@ function contentToText(content: unknown): string {
 function summarizeInput(input: unknown, maxLength = 200): string {
   const text = input === undefined ? '' : JSON.stringify(input);
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function parseQuestions(toolCallId: string, input: unknown) {
+  if (typeof input !== 'object' || input === null) return [];
+  const rawQuestions = (input as { questions?: unknown }).questions;
+  if (!Array.isArray(rawQuestions)) return [];
+  return rawQuestions.flatMap((rawQuestion: RawQuestion, index) => {
+    if (typeof rawQuestion !== 'object' || rawQuestion === null) return [];
+    if (typeof rawQuestion.question !== 'string') return [];
+    if (!Array.isArray(rawQuestion.options)) return [];
+    const options = rawQuestion.options.flatMap((option: RawQuestionOption) => {
+      if (typeof option !== 'object' || option === null) return [];
+      if (typeof option.label !== 'string' || option.label.trim() === '') return [];
+      return [
+        {
+          label: option.label,
+          ...(typeof option.description === 'string'
+            ? { description: option.description }
+            : {}),
+        },
+      ];
+    });
+    if (options.length < 2 || options.length > 6) return [];
+    return [
+      {
+        questionId: `${toolCallId}:${index}`,
+        prompt:
+          typeof rawQuestion.header === 'string' && rawQuestion.header.trim() !== ''
+            ? `${rawQuestion.header}: ${rawQuestion.question}`
+            : rawQuestion.question,
+        options,
+      },
+    ];
+  });
 }
 
 /**
@@ -87,6 +132,12 @@ export function parseClaudeStreamLine(
 
   if (type === 'system') {
     if (raw.subtype === 'init' && sessionId !== undefined) {
+      const slashCommands = Array.isArray(raw.slash_commands)
+        ? raw.slash_commands.filter(
+            (command): command is string =>
+              typeof command === 'string' && command.trim() !== '',
+          )
+        : undefined;
       return [
         {
           ...envelope(),
@@ -94,10 +145,79 @@ export function parseClaudeStreamLine(
           agentConversationId: sessionId,
           ...(typeof raw.model === 'string' ? { model: raw.model } : {}),
           ...(typeof raw.cwd === 'string' ? { cwd: raw.cwd } : {}),
+          ...(slashCommands === undefined ? {} : { slashCommands }),
         },
       ];
     }
     return [];
+  }
+
+  if (type === 'stream_event') {
+    const streamEvent = raw.event;
+    if (typeof streamEvent !== 'object' || streamEvent === null) return [];
+    const eventRecord = streamEvent as Record<string, unknown>;
+    if (eventRecord.type === 'content_block_start') {
+      const contentBlock = eventRecord.content_block;
+      if (
+        typeof contentBlock === 'object' &&
+        contentBlock !== null &&
+        (contentBlock as { type?: unknown }).type === 'text'
+      ) {
+        return [{ ...envelope(), kind: 'assistant_message_started' }];
+      }
+    }
+    if (eventRecord.type === 'content_block_delta') {
+      const delta = eventRecord.delta;
+      if (
+        typeof delta === 'object' &&
+        delta !== null &&
+        (delta as { type?: unknown }).type === 'text_delta' &&
+        typeof (delta as { text?: unknown }).text === 'string'
+      ) {
+        return [
+          {
+            ...envelope(),
+            kind: 'assistant_text_delta',
+            text: (delta as { text: string }).text,
+          },
+        ];
+      }
+    }
+    return [];
+  }
+
+  if (type === 'control_request') {
+    const request = raw.request;
+    if (typeof request !== 'object' || request === null) return [];
+    const requestRecord = request as Record<string, unknown>;
+    if (requestRecord.subtype !== 'can_use_tool') return [];
+    const approvalId =
+      typeof raw.request_id === 'string'
+        ? raw.request_id
+        : typeof raw.id === 'string'
+          ? raw.id
+          : undefined;
+    if (approvalId === undefined) return [];
+    const toolName =
+      typeof requestRecord.tool_name === 'string'
+        ? requestRecord.tool_name
+        : 'unknown tool';
+    if (toolName === 'AskUserQuestion') {
+      return parseQuestions(approvalId, requestRecord.input).map((question) => ({
+        ...envelope(),
+        kind: 'question_requested' as const,
+        ...question,
+      }));
+    }
+    return [
+      {
+        ...envelope(),
+        kind: 'approval_requested',
+        approvalId,
+        command: `${toolName} ${summarizeInput(requestRecord.input)}`.trim(),
+        riskSummary: `Claude requests permission to use ${toolName}`,
+      },
+    ];
   }
 
   if (type === 'assistant' || type === 'user') {
@@ -118,10 +238,11 @@ export function parseClaudeStreamLine(
           });
         }
       } else if (type === 'assistant' && block.type === 'tool_use') {
+        const toolCallId = block.id ?? 'unknown';
         events.push({
           ...envelope(),
           kind: 'tool_call_started',
-          toolCallId: block.id ?? 'unknown',
+          toolCallId,
           name: block.name ?? 'unknown',
           inputSummary: summarizeInput(block.input),
         });

@@ -85,4 +85,35 @@ describe('MockPtyEngine', () => {
     engine.resize(120, 40);
     expect(engine.size).toEqual({ cols: 120, rows: 40 });
   });
+
+  it('drives the AGY TUI with all four direction-key sequences and Enter', () => {
+    const { engine, output } = collect();
+    engine.startAgy();
+    expect(output()).toContain('AGY 1.1.9');
+
+    type(engine, '\u001b[B');
+    expect(output()).toContain('❯ Resume a conversation');
+    type(engine, '\u001b[C');
+    expect(output()).toContain('❯ Review settings');
+    type(engine, '\u001b[A');
+    expect(output()).toContain('❯ Resume a conversation');
+    type(engine, '\u001b[D');
+    expect(output()).toContain('❯ Start a task');
+
+    type(engine, '\r');
+    expect(output()).toContain('What would you like AGY to work on?');
+  });
+
+  it('redraws slash autocomplete after every character without losing the draft', () => {
+    const { engine, output } = collect();
+    engine.startAgy();
+    type(engine, '\r');
+    type(engine, '/');
+    expect(output()).toContain('/model');
+    type(engine, 'm');
+    type(engine, 'o');
+    expect(output()).toContain('❯ /mo');
+    type(engine, '\t');
+    expect(output()).toContain('❯ /model');
+  });
 });

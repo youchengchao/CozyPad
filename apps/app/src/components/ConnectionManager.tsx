@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState } from "react";
 import type {
   AuthenticationMethod,
   ConnectionProfile,
   HostKeyPromptEvent,
-} from '@cozypad/contracts';
-import { getBridge } from '../platform/bridge';
+} from "@cozypad/contracts";
+import { getBridge } from "../platform/bridge";
 
 interface ConnectionManagerProps {
   profiles: ConnectionProfile[];
@@ -26,29 +26,33 @@ interface FormState {
 }
 
 const EMPTY_FORM: FormState = {
-  name: '',
-  host: '',
-  port: '22',
-  username: '',
-  authMethod: 'password',
-  password: '',
-  privateKey: '',
-  passphrase: '',
+  name: "",
+  host: "",
+  port: "22",
+  username: "",
+  authMethod: "password",
+  password: "",
+  privateKey: "",
+  passphrase: "",
   rememberCredential: true,
 };
 
 const profileAuthMethod = (profile: ConnectionProfile): AuthenticationMethod =>
-  profile.authMethod ?? 'password';
+  profile.authMethod ?? "password";
 
 const hasCredential = (
   profile: ConnectionProfile,
   authMethod = profileAuthMethod(profile),
 ): boolean =>
-  authMethod === 'privateKey'
+  authMethod === "privateKey"
     ? profile.hasPrivateKey === true
     : profile.hasPassword === true;
 
-export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionManagerProps) {
+export function ConnectionManager({
+  profiles,
+  onClose,
+  onChanged,
+}: ConnectionManagerProps) {
   const bridge = getBridge();
   const [form, setForm] = useState<FormState | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -62,7 +66,7 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
     if (!form) return;
     const port = Number(form.port);
     if (!form.name || !form.host || !form.username || !Number.isInteger(port)) {
-      setError('name / host / port / username 為必填');
+      setError("name / host / port / username 為必填");
       return;
     }
     const existing = form.id
@@ -79,19 +83,23 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
       profileAuthMethod(existing) === form.authMethod &&
       hasCredential(existing);
     const suppliedCredential =
-      form.authMethod === 'privateKey'
-        ? form.privateKey.trim() !== ''
-        : form.password !== '';
+      form.authMethod === "privateKey"
+        ? form.privateKey.trim() !== ""
+        : form.password !== "";
     if (!suppliedCredential && !keepsExistingCredential) {
-      setError(form.authMethod === 'privateKey' ? '請選取或貼上 SSH 私鑰' : '請輸入密碼');
+      setError(
+        form.authMethod === "privateKey"
+          ? "請選取或貼上 SSH 私鑰"
+          : "請輸入密碼",
+      );
       return;
     }
     if (
-      form.authMethod === 'privateKey' &&
-      form.privateKey.trim() !== '' &&
+      form.authMethod === "privateKey" &&
+      form.privateKey.trim() !== "" &&
       !/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(form.privateKey)
     ) {
-      setError('目前支援 OpenSSH 或 PEM 格式的私鑰');
+      setError("目前支援 OpenSSH 或 PEM 格式的私鑰");
       return;
     }
     setBusy(true);
@@ -104,14 +112,16 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
         port,
         username: form.username,
         authMethod: form.authMethod,
-        ...(form.authMethod !== 'password' || form.password === ''
+        ...(form.authMethod !== "password" || form.password === ""
           ? {}
           : { password: form.password }),
-        ...(form.authMethod !== 'privateKey' || form.privateKey.trim() === ''
+        ...(form.authMethod !== "privateKey" || form.privateKey.trim() === ""
           ? {}
           : {
               privateKey: form.privateKey,
-              ...(form.passphrase === '' ? {} : { passphrase: form.passphrase }),
+              ...(form.passphrase === ""
+                ? {}
+                : { passphrase: form.passphrase }),
             }),
         rememberCredential: form.rememberCredential,
       });
@@ -157,48 +167,62 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
                         <span
                           className="lock"
                           title={
-                            profileAuthMethod(profile) === 'privateKey'
-                              ? '已有 SSH 私鑰'
-                              : '已有密碼'
+                            profileAuthMethod(profile) === "privateKey"
+                              ? "已有 SSH 私鑰"
+                              : "已有密碼"
                           }
                         >
-                          {profileAuthMethod(profile) === 'privateKey' ? '🔑' : '🔒'}
+                          {profileAuthMethod(profile) === "privateKey"
+                            ? "🔑"
+                            : "🔒"}
                         </span>
                       ) : null}
                     </span>
                     <span className="profile-row-meta mono">
-                      {profile.username}@{profile.host}:{profile.port} ·{' '}
-                      {profileAuthMethod(profile) === 'privateKey' ? 'Key' : 'Password'}
+                      {profile.isLocal === true
+                        ? "本機 · 不經網路，無需登入"
+                        : `${profile.username}@${profile.host}:${profile.port} · ${
+                            profileAuthMethod(profile) === "privateKey"
+                              ? "Key"
+                              : "Password"
+                          }`}
                     </span>
                   </div>
-                  <button
-                    onClick={() =>
-                      setForm({
-                        id: profile.id,
-                        name: profile.name,
-                        host: profile.host,
-                        port: String(profile.port),
-                        username: profile.username,
-                        authMethod: profileAuthMethod(profile),
-                        password: '',
-                        privateKey: '',
-                        passphrase: '',
-                        rememberCredential: profile.credentialPersisted === true,
-                      })
-                    }
-                  >
-                    編輯
-                  </button>
-                  {confirmDelete === profile.id ? (
-                    <button
-                      className="danger"
-                      disabled={busy}
-                      onClick={() => void remove(profile.id)}
-                    >
-                      確定刪除
-                    </button>
-                  ) : (
-                    <button onClick={() => setConfirmDelete(profile.id)}>刪除</button>
+                  {profile.isLocal === true ? null : (
+                    <>
+                      <button
+                        onClick={() =>
+                          setForm({
+                            id: profile.id,
+                            name: profile.name,
+                            host: profile.host,
+                            port: String(profile.port),
+                            username: profile.username,
+                            authMethod: profileAuthMethod(profile),
+                            password: "",
+                            privateKey: "",
+                            passphrase: "",
+                            rememberCredential:
+                              profile.credentialPersisted === true,
+                          })
+                        }
+                      >
+                        編輯
+                      </button>
+                      {confirmDelete === profile.id ? (
+                        <button
+                          className="danger"
+                          disabled={busy}
+                          onClick={() => void remove(profile.id)}
+                        >
+                          確定刪除
+                        </button>
+                      ) : (
+                        <button onClick={() => setConfirmDelete(profile.id)}>
+                          刪除
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               ))}
@@ -206,7 +230,10 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
                 <p className="hint">還沒有連線，先新增一個。</p>
               ) : null}
             </div>
-            <button className="primary" onClick={() => setForm({ ...EMPTY_FORM })}>
+            <button
+              className="primary"
+              onClick={() => setForm({ ...EMPTY_FORM })}
+            >
               ＋ 新增連線
             </button>
           </>
@@ -246,29 +273,33 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
             </label>
             <div className="auth-method-field">
               <span>驗證方式</span>
-              <div className="auth-method-switch" role="group" aria-label="SSH 驗證方式">
-                {(['password', 'privateKey'] as const).map((authMethod) => (
+              <div
+                className="auth-method-switch"
+                role="group"
+                aria-label="SSH 驗證方式"
+              >
+                {(["password", "privateKey"] as const).map((authMethod) => (
                   <button
                     key={authMethod}
                     type="button"
-                    className={form.authMethod === authMethod ? 'active' : ''}
+                    className={form.authMethod === authMethod ? "active" : ""}
                     onClick={() =>
                       set({
                         authMethod,
-                        password: '',
-                        privateKey: '',
-                        passphrase: '',
+                        password: "",
+                        privateKey: "",
+                        passphrase: "",
                       })
                     }
                   >
-                    {authMethod === 'password' ? '密碼' : 'SSH Key'}
+                    {authMethod === "password" ? "密碼" : "SSH Key"}
                   </button>
                 ))}
               </div>
             </div>
-            {form.authMethod === 'password' ? (
+            {form.authMethod === "password" ? (
               <label>
-                Password{form.id !== undefined ? '（留空表示不變更）' : ''}
+                Password{form.id !== undefined ? "（留空表示不變更）" : ""}
                 <input
                   type="password"
                   value={form.password}
@@ -279,11 +310,13 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
             ) : (
               <>
                 <label>
-                  SSH 私鑰{form.id !== undefined ? '（留空表示不變更）' : ''}
+                  SSH 私鑰{form.id !== undefined ? "（留空表示不變更）" : ""}
                   <textarea
                     className="private-key-input mono"
                     value={form.privateKey}
-                    onChange={(event) => set({ privateKey: event.target.value })}
+                    onChange={(event) =>
+                      set({ privateKey: event.target.value })
+                    }
                     placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                     spellCheck={false}
                     autoCapitalize="none"
@@ -297,7 +330,10 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
                     accept=".pem,.key,application/x-pem-file,text/plain"
                     onChange={(event) => {
                       const file = event.target.files?.[0];
-                      if (file) void file.text().then((privateKey) => set({ privateKey }));
+                      if (file)
+                        void file
+                          .text()
+                          .then((privateKey) => set({ privateKey }));
                     }}
                   />
                 </label>
@@ -306,7 +342,9 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
                   <input
                     type="password"
                     value={form.passphrase}
-                    onChange={(event) => set({ passphrase: event.target.value })}
+                    onChange={(event) =>
+                      set({ passphrase: event.target.value })
+                    }
                     autoComplete="new-password"
                   />
                 </label>
@@ -316,14 +354,20 @@ export function ConnectionManager({ profiles, onClose, onChanged }: ConnectionMa
               <input
                 type="checkbox"
                 checked={form.rememberCredential}
-                onChange={(event) => set({ rememberCredential: event.target.checked })}
+                onChange={(event) =>
+                  set({ rememberCredential: event.target.checked })
+                }
               />
               以 OS 安全儲存保留驗證資料（關閉時只保留到 app 結束）
             </label>
             {error ? <p className="form-error">{error}</p> : null}
             <div className="form-actions">
               <button onClick={() => setForm(null)}>取消</button>
-              <button className="primary" disabled={busy} onClick={() => void save()}>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => void save()}
+              >
                 儲存
               </button>
             </div>
@@ -340,12 +384,15 @@ interface HostKeyDialogProps {
 }
 
 export function HostKeyDialog({ prompt, onRespond }: HostKeyDialogProps) {
-  const changed = prompt.status === 'changed';
+  const changed = prompt.status === "changed";
   return (
     <div className="modal-overlay">
-      <div className="modal modal-narrow" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="modal modal-narrow"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-head">
-          <h2>{changed ? '⚠ Host key 已變更' : '首次連線此主機'}</h2>
+          <h2>{changed ? "⚠ Host key 已變更" : "首次連線此主機"}</h2>
         </div>
         {changed ? (
           <p className="hostkey-warning">
@@ -354,7 +401,8 @@ export function HostKeyDialog({ prompt, onRespond }: HostKeyDialogProps) {
           </p>
         ) : (
           <p className="hint">
-            無法自動驗證 {prompt.host}:{prompt.port} 的身分。請比對下方指紋後決定是否信任。
+            無法自動驗證 {prompt.host}:{prompt.port}{" "}
+            的身分。請比對下方指紋後決定是否信任。
           </p>
         )}
         <div className="hostkey-fp">
@@ -363,17 +411,19 @@ export function HostKeyDialog({ prompt, onRespond }: HostKeyDialogProps) {
           {changed && prompt.previousFingerprint ? (
             <>
               <span className="hint">先前記錄</span>
-              <code className="mono hostkey-old">{prompt.previousFingerprint}</code>
+              <code className="mono hostkey-old">
+                {prompt.previousFingerprint}
+              </code>
             </>
           ) : null}
         </div>
         <div className="form-actions">
           <button onClick={() => onRespond(false)}>中止連線</button>
           <button
-            className={changed ? 'danger' : 'primary'}
+            className={changed ? "danger" : "primary"}
             onClick={() => onRespond(true)}
           >
-            {changed ? '仍然信任並更新' : '信任並繼續'}
+            {changed ? "仍然信任並更新" : "信任並繼續"}
           </button>
         </div>
       </div>
@@ -395,23 +445,27 @@ interface CredentialPromptProps {
   onSubmit(credential: CredentialSubmission): void;
 }
 
-export function CredentialPrompt({ profile, onCancel, onSubmit }: CredentialPromptProps) {
+export function CredentialPrompt({
+  profile,
+  onCancel,
+  onSubmit,
+}: CredentialPromptProps) {
   const authMethod = profileAuthMethod(profile);
-  const [password, setPassword] = useState('');
-  const [privateKey, setPrivateKey] = useState('');
-  const [passphrase, setPassphrase] = useState('');
+  const [password, setPassword] = useState("");
+  const [privateKey, setPrivateKey] = useState("");
+  const [passphrase, setPassphrase] = useState("");
   const [remember, setRemember] = useState(false);
   const canSubmit =
-    authMethod === 'privateKey' ? privateKey.trim() !== '' : password !== '';
+    authMethod === "privateKey" ? privateKey.trim() !== "" : password !== "";
   const submit = (): void => {
     if (!canSubmit) return;
     onSubmit({
       authMethod,
-      ...(authMethod === 'password'
+      ...(authMethod === "password"
         ? { password }
         : {
             privateKey,
-            ...(passphrase === '' ? {} : { passphrase }),
+            ...(passphrase === "" ? {} : { passphrase }),
           }),
       rememberCredential: remember,
     });
@@ -419,9 +473,12 @@ export function CredentialPrompt({ profile, onCancel, onSubmit }: CredentialProm
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal modal-narrow" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="modal modal-narrow"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-head">
-          <h2>{authMethod === 'privateKey' ? '選取 SSH 私鑰' : '輸入密碼'}</h2>
+          <h2>{authMethod === "privateKey" ? "選取 SSH 私鑰" : "輸入密碼"}</h2>
           <button className="modal-close" onClick={onCancel}>
             ×
           </button>
@@ -429,7 +486,7 @@ export function CredentialPrompt({ profile, onCancel, onSubmit }: CredentialProm
         <p className="hint">
           {profile.username}@{profile.host}:{profile.port}
         </p>
-        {authMethod === 'password' ? (
+        {authMethod === "password" ? (
           <input
             autoFocus
             type="password"
@@ -437,7 +494,7 @@ export function CredentialPrompt({ profile, onCancel, onSubmit }: CredentialProm
             placeholder="SSH password"
             onChange={(event) => setPassword(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') submit();
+              if (event.key === "Enter") submit();
             }}
           />
         ) : (
@@ -469,7 +526,7 @@ export function CredentialPrompt({ profile, onCancel, onSubmit }: CredentialProm
               placeholder="Key passphrase（可留空）"
               onChange={(event) => setPassphrase(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') submit();
+                if (event.key === "Enter") submit();
               }}
             />
           </>
@@ -484,11 +541,7 @@ export function CredentialPrompt({ profile, onCancel, onSubmit }: CredentialProm
         </label>
         <div className="form-actions">
           <button onClick={onCancel}>取消</button>
-          <button
-            className="primary"
-            disabled={!canSubmit}
-            onClick={submit}
-          >
+          <button className="primary" disabled={!canSubmit} onClick={submit}>
             連線
           </button>
         </div>

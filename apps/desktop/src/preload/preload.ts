@@ -1,8 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
+  AgentCommunicationErrorEventSchema,
+  AgentAttachmentSchema,
+  AgentDetectionRequestSchema,
+  AgentInstallationSchema,
+  AgentSessionBundleSchema,
+  AgyTranscriptSchema,
+  AgentSessionChangedEventSchema,
+  AgentSessionDeletedEventSchema,
+  AgentSessionListRequestSchema,
+  AgentSessionRequestSchema,
+  AgentTerminalOpenRequestSchema,
+  AgentTimelineChangedEventSchema,
+  AnswerAgentQuestionRequestSchema,
   ConnectRequestSchema,
   ConnectionProfileDraftSchema,
   ConnectionStateChangedSchema,
+  CreateAgentSessionRequestSchema,
   DeleteProfileRequestSchema,
   FsCreateRequestSchema,
   FsPathRequestSchema,
@@ -14,6 +28,10 @@ import {
   HostKeyPromptEventSchema,
   IpcChannels,
   RemoteSettingsPatchSchema,
+  RenameAgentSessionRequestSchema,
+  ResolveAgentApprovalRequestSchema,
+  SendAgentMessageRequestSchema,
+  UploadAgentAttachmentRequestSchema,
   TelemetrySnapshotSchema,
   TmuxInstallLogSchema,
   TmuxInstallProgressSchema,
@@ -22,6 +40,7 @@ import {
   TerminalClosedEventSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
+  TerminalOpenedSchema,
   TerminalOutputEventSchema,
   TerminalResizeRequestSchema,
 } from '@cozypad/contracts';
@@ -172,6 +191,126 @@ const bridge: PlatformBridge = {
     ipcRenderer.invoke(
       IpcChannels.remoteSettingsSet,
       RemoteSettingsPatchSchema.parse(patch),
+    ),
+
+  detectAgent: async (request) =>
+    AgentInstallationSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentDetect,
+        AgentDetectionRequestSchema.parse(request),
+      ),
+    ),
+
+  listAgentSessions: async (request) =>
+    AgentSessionBundleSchema.array().parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentSessionsList,
+        AgentSessionListRequestSchema.parse(request),
+      ),
+    ),
+
+  createAgentSession: async (request) =>
+    AgentSessionBundleSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentSessionCreate,
+        CreateAgentSessionRequestSchema.parse(request),
+      ),
+    ),
+
+  reviveAgentSession: async (request) =>
+    AgentSessionBundleSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentSessionRevive,
+        AgentSessionRequestSchema.parse(request),
+      ),
+    ),
+
+  readAgyTranscript: async (request) =>
+    AgyTranscriptSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentAgyTranscript,
+        AgentSessionRequestSchema.parse(request),
+      ),
+    ),
+
+  openAgentTerminal: async (request) =>
+    TerminalOpenedSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentTerminalOpen,
+        AgentTerminalOpenRequestSchema.parse(request),
+      ),
+    ),
+
+  renameAgentSession: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentSessionRename,
+      RenameAgentSessionRequestSchema.parse(request),
+    ),
+
+  deleteAgentSession: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentSessionDelete,
+      AgentSessionRequestSchema.parse(request),
+    ),
+
+  uploadAgentAttachment: async (request) =>
+    AgentAttachmentSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentAttachmentUpload,
+        UploadAgentAttachmentRequestSchema.parse(request),
+      ),
+    ),
+
+  sendAgentMessage: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentSessionSend,
+      SendAgentMessageRequestSchema.parse(request),
+    ),
+
+  interruptAgentSession: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentSessionInterrupt,
+      AgentSessionRequestSchema.parse(request),
+    ),
+
+  resolveAgentApproval: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentApprovalResolve,
+      ResolveAgentApprovalRequestSchema.parse(request),
+    ),
+
+  answerAgentQuestion: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentQuestionAnswer,
+      AnswerAgentQuestionRequestSchema.parse(request),
+    ),
+
+  onAgentSessionChanged: (listener) =>
+    subscribe(
+      IpcChannels.agentSessionChanged,
+      AgentSessionChangedEventSchema,
+      listener,
+    ),
+
+  onAgentSessionDeleted: (listener) =>
+    subscribe(
+      IpcChannels.agentSessionDeleted,
+      AgentSessionDeletedEventSchema,
+      listener,
+    ),
+
+  onAgentTimelineChanged: (listener) =>
+    subscribe(
+      IpcChannels.agentTimelineChanged,
+      AgentTimelineChangedEventSchema,
+      listener,
+    ),
+
+  onAgentCommunicationError: (listener) =>
+    subscribe(
+      IpcChannels.agentCommunicationError,
+      AgentCommunicationErrorEventSchema,
+      listener,
     ),
 };
 

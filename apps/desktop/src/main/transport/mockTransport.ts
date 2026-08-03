@@ -40,6 +40,10 @@ export class MockTransport implements TransportPort {
     return this.exec();
   }
 
+  writeFile(): Promise<void> {
+    return Promise.reject(new Error('mock transport has no remote filesystem'));
+  }
+
   async connect(profileId: string): Promise<void> {
     this.emitState(profileId, 'connecting');
     await delay(200);

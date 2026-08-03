@@ -9,6 +9,11 @@ interface KeyDef {
   wide?: boolean;
 }
 
+export const TERMINAL_PAGE_SCROLL = {
+  PGUP: -1,
+  PGDN: 1,
+} as const;
+
 /** Termux 風格排列：上排符號與導航、下排 TAB/CTRL/ALT 與方向鍵。 */
 const ROW_TOP: KeyDef[] = [
   { label: 'ESC', seq: '' },
@@ -38,6 +43,7 @@ const REPEAT_INTERVAL_MS = 110;
 interface TerminalKeysBarProps {
   modifiers: TerminalModifiers;
   onSend(sequence: string): void;
+  onScrollPages(pageCount: number): void;
   onToggleModifier(mod: 'ctrl' | 'alt'): void;
 }
 
@@ -48,6 +54,7 @@ interface TerminalKeysBarProps {
 export function TerminalKeysBar({
   modifiers,
   onSend,
+  onScrollPages,
   onToggleModifier,
 }: TerminalKeysBarProps) {
   const repeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -65,6 +72,10 @@ export function TerminalKeysBar({
     event.preventDefault();
     if (key.mod !== undefined) {
       onToggleModifier(key.mod);
+      return;
+    }
+    if (key.label === 'PGUP' || key.label === 'PGDN') {
+      onScrollPages(TERMINAL_PAGE_SCROLL[key.label]);
       return;
     }
     if (key.seq === undefined) return;

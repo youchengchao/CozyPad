@@ -36,7 +36,7 @@
 3. Commit 前必跑：`pnpm lint && pnpm typecheck && pnpm test`
 4. 桌面自動驗收：`pnpm --filter @cozypad/desktop smoke`（Electron 啟動＋IPC 往返，exit 0 即過）
 
-平常使用（非開發）：雙擊根目錄 `CozyPad.bat`（真 SSH）或 `CozyPad-Demo.bat`（假主機）。
+平常使用（非開發）：雙擊根目錄 `CozyPad.bat`，以真實 SSH 連線啟動。
 
 ## 2. Android 真機測試
 

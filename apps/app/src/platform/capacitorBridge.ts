@@ -530,6 +530,43 @@ export function createCapacitorBridge(
       return () => installLogListeners.delete(listener);
     },
 
+    detectAgent: ({ agentKind }) =>
+      Promise.resolve({
+        agentKind,
+        installed: false,
+        supportsStructuredOutput: false,
+        supportsResume: false,
+        supportsInteractiveApproval: false,
+        launchModes: [],
+        detail: 'Agent communication is currently available in the desktop SSH app',
+      }),
+    listAgentSessions: () => Promise.resolve([]),
+    createAgentSession: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    reviveAgentSession: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    readAgyTranscript: () => Promise.resolve({ turns: [] }),
+    openAgentTerminal: () =>
+      Promise.reject(new Error('Native AGY terminal sessions are not available on mobile yet')),
+    renameAgentSession: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    deleteAgentSession: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    uploadAgentAttachment: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    sendAgentMessage: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    interruptAgentSession: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    resolveAgentApproval: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    answerAgentQuestion: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    onAgentSessionChanged: () => () => undefined,
+    onAgentSessionDeleted: () => () => undefined,
+    onAgentTimelineChanged: () => () => undefined,
+    onAgentCommunicationError: () => () => undefined,
+
     cleanupRemote: (removeTmuxBinary) => provisioner.cleanup(removeTmuxBinary),
   };
 }

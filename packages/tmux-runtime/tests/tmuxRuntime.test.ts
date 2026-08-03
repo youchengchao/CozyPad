@@ -70,9 +70,15 @@ describe('TmuxRuntime', () => {
     });
     expect(created).toEqual({ sessionId: '$5', paneId: '%9', createdEpoch: 1753760042 });
     expect(commands[0]).toContain("-P -F '__TMUX__\t#{session_id}\t#{pane_id}");
-    expect(commands[0]).toContain('claude');
-    expect(commands[0]).toContain('stream-json');
+    expect(commands[0]).toContain('while :; do sleep 3600; done');
     expect(commands[0]).toContain('new-session -d -s "$session" -c "$cwd"');
+    expect(commands[0]).toContain('tmux_status=$?');
+    expect(commands[0]).toContain('tmux new-session failed (exit %s)');
+    expect(commands[1]).toContain('set-option -p');
+    expect(commands[1]).toContain('remain-on-exit on');
+    expect(commands[1]).toContain('respawn-pane -k');
+    expect(commands[1]).toContain('claude');
+    expect(commands[1]).toContain('stream-json');
   });
 
   it('newSession surfaces remote errors', async () => {
@@ -81,6 +87,33 @@ describe('TmuxRuntime', () => {
     await expect(
       runtime.newSession({ name: 'x', cwd: '~', argv: [] }),
     ).rejects.toThrow('already exists');
+  });
+
+  it('surfaces the captured tmux exit code and stderr', async () => {
+    const { exec } = fakeExec([
+      '__ERROR__\ttmux new-session failed (exit 1): server exited unexpectedly\n',
+    ]);
+    const runtime = new TmuxRuntime(exec, 'cozypad');
+
+    await expect(
+      runtime.newSession({ name: 'x', cwd: '~', argv: ['agy'] }),
+    ).rejects.toThrow(
+      'tmux new-session failed (exit 1): server exited unexpectedly',
+    );
+  });
+
+  it('removes the placeholder session when respawning the agent fails', async () => {
+    const { exec, commands } = fakeExec([
+      '__TMUX__\t$5\t%9\t1753760042\n',
+      '__ERROR__\tfailed to respawn pane\n',
+      '__OK__\n',
+    ]);
+    const runtime = new TmuxRuntime(exec);
+
+    await expect(
+      runtime.newSession({ name: 'x', cwd: '~', argv: ['claude'] }),
+    ).rejects.toThrow('failed to respawn pane');
+    expect(commands[2]).toContain('kill-session');
   });
 
   it('sendText uses literal mode and quotes the payload', async () => {
@@ -92,6 +125,14 @@ describe('TmuxRuntime', () => {
     expect(command).toContain('-l --');
     expect(command).toContain(`'echo '"'"'hi'"'"'; rm -rf /'`);
     expect(command).toContain('Enter');
+  });
+
+  it('sends Escape as AGY native cancellation without Ctrl+C', async () => {
+    const { exec, commands } = fakeExec(['__OK__\n']);
+    const runtime = new TmuxRuntime(exec, 'cozypad-test');
+    await runtime.escape('%9');
+    expect(commands[0]).toContain("send-keys -t '%9' Escape");
+    expect(commands[0]).not.toContain(' C-c');
   });
 
   it('capturePane clamps the line count', async () => {
@@ -132,7 +173,7 @@ describe('TmuxRuntime', () => {
     const { exec, commands } = fakeExec(['no']);
     const runtime = new TmuxRuntime(exec, 'cozypad');
     await runtime.hasSession('$1');
-    expect(commands[0]).toContain(`tmux -L 'cozypad' has-session`);
+    expect(commands[0]).toContain(`tmux -L 'cozypad' -f /dev/null has-session`);
   });
 });
 

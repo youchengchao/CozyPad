@@ -23,6 +23,15 @@ export interface Ssh2ExecStreamLike {
   stderr?: { on(event: 'data', listener: (chunk: Uint8Array) => void): unknown };
 }
 
+export interface Ssh2SftpLike {
+  writeFile(
+    remotePath: string,
+    data: Buffer,
+    callback: (error?: Error | null) => void,
+  ): void;
+  end?(): void;
+}
+
 export interface Ssh2ClientLike {
   on(event: 'ready', listener: () => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
@@ -35,6 +44,16 @@ export interface Ssh2ClientLike {
   exec(
     command: string,
     callback: (error: Error | undefined, stream: Ssh2ExecStreamLike) => void,
+  ): void;
+  exec(
+    command: string,
+    options: {
+      pty: { term: string; cols: number; rows: number; width: number; height: number };
+    },
+    callback: (error: Error | undefined, stream: Ssh2ShellStreamLike) => void,
+  ): void;
+  sftp(
+    callback: (error: Error | undefined, sftp: Ssh2SftpLike) => void,
   ): void;
   end(): void;
 }
@@ -234,6 +253,7 @@ export class Ssh2Transport implements TransportPort {
     command: string,
     onLine: (line: string) => void,
     timeoutMs = 15_000,
+    collectOutput = true,
   ): Promise<string> {
     const client = this.client;
     if (!client) return Promise.reject(new Error('not connected'));
@@ -246,10 +266,14 @@ export class Ssh2Transport implements TransportPort {
         const stdout: Uint8Array[] = [];
         const stderr: Uint8Array[] = [];
         let pending = '';
-        const timer = setTimeout(
-          () => reject(new Error(`remote command timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
+        const timer =
+          timeoutMs === 0
+            ? null
+            : setTimeout(
+                () =>
+                  reject(new Error(`remote command timed out after ${timeoutMs}ms`)),
+                timeoutMs,
+              );
 
         const emitLines = (chunk: Uint8Array): void => {
           pending += Buffer.from(chunk).toString('utf8');
@@ -259,13 +283,17 @@ export class Ssh2Transport implements TransportPort {
         };
 
         stream.on('data', (chunk) => {
-          stdout.push(chunk);
+          if (collectOutput) stdout.push(chunk);
           emitLines(chunk);
         });
         stream.stderr?.on('data', (chunk) => stderr.push(chunk));
         stream.on('close', (code) => {
-          clearTimeout(timer);
+          if (timer !== null) clearTimeout(timer);
           if (pending !== '') onLine(pending);
+          if (!collectOutput && (code === 0 || code === null)) {
+            resolve('');
+            return;
+          }
           const out = Buffer.concat(stdout.map((chunk) => Buffer.from(chunk))).toString(
             'utf8',
           );
@@ -282,15 +310,46 @@ export class Ssh2Transport implements TransportPort {
     });
   }
 
-  async openTerminal(request: TerminalOpenRequest): Promise<string> {
+  writeFile(remotePath: string, data: Uint8Array): Promise<void> {
+    const client = this.client;
+    if (!client) return Promise.reject(new Error('not connected'));
+    return new Promise((resolve, reject) => {
+      client.sftp((sftpError, sftp) => {
+        if (sftpError) {
+          reject(sftpError);
+          return;
+        }
+        sftp.writeFile(remotePath, Buffer.from(data), (writeError) => {
+          sftp.end?.();
+          if (writeError) reject(writeError);
+          else resolve();
+        });
+      });
+    });
+  }
+
+  async openTerminal(request: TerminalOpenRequest, command?: string): Promise<string> {
     const client = this.client;
     if (!client) throw new Error('not connected');
     const terminalId = `ssh-term-${this.nextTerminalId++}`;
+    const shellPty = {
+      term: 'xterm-256color',
+      cols: request.cols,
+      rows: request.rows,
+    };
+    const commandPty = {
+      ...shellPty,
+      width: 0,
+      height: 0,
+    };
     const stream = await new Promise<Ssh2ShellStreamLike>((resolve, reject) => {
-      client.shell(
-        { term: 'xterm-256color', cols: request.cols, rows: request.rows },
-        (error, shellStream) => (error ? reject(error) : resolve(shellStream)),
-      );
+      const done = (error: Error | undefined, terminalStream: Ssh2ShellStreamLike) =>
+        error ? reject(error) : resolve(terminalStream);
+      if (command === undefined) {
+        client.shell(shellPty, done);
+      } else {
+        client.exec(command, { pty: commandPty }, done);
+      }
     });
     this.terminals.set(terminalId, stream);
     stream.on('data', (chunk) =>

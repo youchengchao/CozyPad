@@ -77,4 +77,60 @@ describe('createMockBridge', () => {
     await bridge.disconnect({ profileId: 'mock-local' });
     expect(closed).toEqual([terminalId]);
   });
+
+  it('opens AGY as a native TUI and Stop cancels without closing it', async () => {
+    const bridge = createMockBridge();
+    await bridge.connect({ profileId: 'mock-local' });
+    const bundle = await bridge.createAgentSession({
+      profileId: 'mock-local',
+      agentKind: 'agy',
+      cwd: '/home/cozy/project',
+      interactionMode: 'chat',
+    });
+    expect(bundle.session.interactionMode).toBe('terminal');
+
+    const chunks: TerminalOutputEvent[] = [];
+    const closed: string[] = [];
+    bridge.onTerminalOutput((event) => chunks.push(event));
+    bridge.onTerminalClosed((event) => closed.push(event.terminalId));
+    const { terminalId } = await bridge.openAgentTerminal({
+      sessionId: bundle.session.id,
+      cols: 100,
+      rows: 32,
+    });
+    await delay(80);
+    bridge.writeTerminal({ terminalId, dataBase64: textToBase64('\u001b[B') });
+    const text = chunks.map((chunk) => base64ToText(chunk.dataBase64)).join('');
+    expect(text).toContain('AGY 1.1.9');
+    expect(text).toContain('❯ Resume a conversation');
+
+    bridge.writeTerminal({ terminalId, dataBase64: textToBase64('\r') });
+    bridge.writeTerminal({ terminalId, dataBase64: textToBase64('slow task\r') });
+    await bridge.interruptAgentSession({ sessionId: bundle.session.id });
+    const afterStop = chunks.map((chunk) => base64ToText(chunk.dataBase64)).join('');
+    expect(afterStop).toContain('What would you like AGY to work on?');
+    expect(closed).toEqual([]);
+  });
+
+  it('deletes an agent session and emits a deletion event', async () => {
+    const bridge = createMockBridge();
+    await bridge.connect({ profileId: 'mock-local' });
+    const bundle = await bridge.createAgentSession({
+      profileId: 'mock-local',
+      agentKind: 'agy',
+      cwd: '/home/cozy/project',
+      interactionMode: 'terminal',
+    });
+    const deleted: string[] = [];
+    bridge.onAgentSessionDeleted((event) => deleted.push(event.sessionId));
+
+    await bridge.deleteAgentSession({ sessionId: bundle.session.id });
+
+    expect(deleted).toEqual([bundle.session.id]);
+    expect(
+      (await bridge.listAgentSessions({ profileId: 'mock-local' })).some(
+        ({ session }) => session.id === bundle.session.id,
+      ),
+    ).toBe(false);
+  });
 });

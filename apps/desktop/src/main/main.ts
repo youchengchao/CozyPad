@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { BrowserWindow, app, safeStorage, session } from 'electron';
+import { promises as fs } from 'node:fs';
+import { BrowserWindow, app, dialog, safeStorage, session } from 'electron';
 import { IpcChannels } from '@cozypad/contracts';
 import { MockRemoteFs, MockTelemetryGenerator } from '@cozypad/test-fixtures';
 import { TmuxRuntime } from '@cozypad/tmux-runtime';
@@ -14,19 +15,38 @@ import { TmuxSessionWatcher } from './tmuxWatcher';
 import type { RemoteFilesPort } from '@cozypad/remote-services';
 import { ShellRemoteFiles } from '@cozypad/remote-services';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
+import { AgentCommunicationService } from './agentCommunicationService';
+import type { AgentCommunicationPort } from './agentCommunicationService';
 import { registerIpc } from './ipc';
-import { MemoryProfileStore, ProfileStore } from './profileStore';
+import { MemoryProfileStore, ProfileStore, ProfileStoreWithLocal } from './profileStore';
 import type { ProfileCrypto, ProfileStorePort } from './profileStore';
 import { ShellTelemetry } from '@cozypad/remote-services';
 import type { TelemetrySource } from '@cozypad/remote-services';
 import { MOCK_PROFILE, MockTransport } from './transport/mockTransport';
 import { Ssh2Transport } from './transport/ssh2Transport';
+import {
+  LOCAL_PROFILE,
+  LocalTransport,
+  isLocalProfile,
+} from './transport/localTransport';
+import { LocalAgentRuntime } from './localAgentRuntime';
+import { RoutingAgentRuntime } from './routingAgentRuntime';
+import { readLatestAgyTranscript } from './agyTranscript';
+import { RoutingTransport } from './transport/routingTransport';
 import type { TransportPort } from './transport/TransportPort';
 
 const DEV_URL = process.env.COZYPAD_DEV_URL;
 /** 所有 agent conversation session 都開在這個 socket（SPEC_V3 §6）。 */
-const TMUX_SOCKET = process.env.COZYPAD_TMUX_SOCKET ?? 'default';
+// Agent sessions use an isolated tmux server. Sharing the user's default
+// socket makes CozyPad inherit that server's lifecycle and configuration and
+// can turn a perfectly valid detached launch into "server exited
+// unexpectedly". The environment variable remains available for deliberate
+// overrides and migration/debugging.
+const TMUX_SOCKET = process.env.COZYPAD_TMUX_SOCKET ?? 'cozypad';
 const SMOKE_TEST = process.argv.includes('--smoke-test');
+const AGY_SMOKE_TEST = process.argv.includes('--agy-smoke-test');
+const AGY_BACKEND_SMOKE_TEST = process.argv.includes('--agy-backend-smoke-test');
+const AGY_SMOKE_CWD = process.env.COZYPAD_AGY_SMOKE_CWD ?? '~';
 const USE_MOCK = process.env.COZYPAD_MOCK === '1' || SMOKE_TEST;
 
 const CSP = [
@@ -50,13 +70,30 @@ const electronProfileCrypto: ProfileCrypto = {
   decrypt: (encrypted) => safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
 };
 
+/**
+ * 啟動時可以降級但必須讓使用者知道的問題。本機設定檔讀不開絕不能讓
+ * 整個 app 沒有視窗地消失——那會讓使用者以為程式壞掉。
+ */
+const startupWarnings: string[] = [];
+
 async function createProfileStore(): Promise<ProfileStorePort> {
   if (USE_MOCK) return new MemoryProfileStore([MOCK_PROFILE]);
   const store = new ProfileStore(
     path.join(app.getPath('userData'), 'profiles.json'),
     electronProfileCrypto,
   );
-  await store.load();
+  try {
+    await store.load();
+  } catch (error) {
+    // load() 失敗時已把記憶體內容清空，繼續使用等於空的連線清單。
+    // 原檔一律保留：解不開有可能是暫時的（OS 金鑰服務尚未就緒），
+    // 直接刪掉會永久毀掉使用者存的憑證。
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[cozypad] profile store unavailable:', detail);
+    startupWarnings.push(
+      `${detail}。連線清單這次是空的，原始檔案沒有被刪除；請重新新增一次連線設定。`,
+    );
+  }
 
   const envHost = process.env.COZYPAD_SSH_HOST;
   if (envHost && store.list().length === 0) {
@@ -70,7 +107,8 @@ async function createProfileStore(): Promise<ProfileStorePort> {
       rememberCredential: false,
     });
   }
-  return store;
+  // Offered next to the saved hosts rather than behind a separate mode.
+  return new ProfileStoreWithLocal(store, LOCAL_PROFILE);
 }
 
 interface MainServices {
@@ -81,6 +119,7 @@ interface MainServices {
   remoteSettings: RemoteSettingsPort;
   tmuxProvisioner: TmuxProvisionerPort;
   tmuxWatcher: TmuxSessionWatcher | null;
+  agentCommunication: AgentCommunicationPort | null;
 }
 
 async function createServices(
@@ -96,6 +135,7 @@ async function createServices(
       remoteSettings: new MemoryRemoteSettings(),
       tmuxProvisioner: new MockTmuxProvisioner(),
       tmuxWatcher: null,
+      agentCommunication: null,
     };
   }
 
@@ -103,29 +143,83 @@ async function createServices(
     path.join(app.getPath('userData'), 'known_hosts.json'),
     electronProfileCrypto,
   );
-  await knownHosts.load();
+  try {
+    await knownHosts.load();
+  } catch (error) {
+    // 讀不到已信任的 host key 時退回「全部重新詢問」，不是「全部放行」。
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[cozypad] known-hosts store unavailable:', detail);
+    startupWarnings.push(
+      `${detail}。第一次連線會重新詢問主機指紋，請確認後再接受。`,
+    );
+  }
   const hostKeys = new HostKeyGate(knownHosts, (event) => {
     if (!win.isDestroyed()) win.webContents.send(IpcChannels.hostKeyPrompt, event);
   });
 
-  const transport = new Ssh2Transport({
-    getProfile: (profileId) => profileStore.get(profileId),
-    getCredential: (profileId) => profileStore.getCredential(profileId),
-    verifyHostKey: (profile, key) => hostKeys.verify(profile, key),
-  });
+  // "This computer" is a peer of the saved SSH hosts, so it is chosen the same
+  // way — by connecting to a profile — and everything downstream is unchanged.
+  const localTransport = new LocalTransport();
+  const transport = new RoutingTransport(
+    new Ssh2Transport({
+      getProfile: (profileId) => profileStore.get(profileId),
+      getCredential: (profileId) => profileStore.getCredential(profileId),
+      verifyHostKey: (profile, key) => hostKeys.verify(profile, key),
+    }),
+    localTransport,
+  );
   const exec = (command: string, timeoutMs?: number) => transport.exec(command, timeoutMs);
 
-  const tmux = new TmuxRuntime(exec, TMUX_SOCKET);
+  // Remote agents live in tmux so they survive a dropped link; local agents are
+  // children of this process and need nothing installed to run.
+  const localRuntime = new LocalAgentRuntime({
+    openTerminal: (request, command) => localTransport.openTerminal(request, command),
+    writeTerminal: (id, data) => localTransport.writeTerminal(id, data),
+    closeTerminal: (id) => localTransport.forceCloseTerminal(id),
+    hasTerminal: (id) => localTransport.hasTerminal(id),
+  });
+  // tmux settings and the session watcher describe a remote host only, so they
+  // keep talking to the real tmux rather than to the router.
+  const remoteTmux = new TmuxRuntime(exec, TMUX_SOCKET);
+  const tmux = new RoutingAgentRuntime(remoteTmux, localRuntime);
+  const agentCommunication = new AgentCommunicationService({
+    transport,
+    tmux,
+    profileStore,
+    storePath: path.join(app.getPath('userData'), 'agent-sessions.json'),
+    getHostFingerprint: (profileId) => {
+      // This machine has no host key to verify — it is the host. A fixed
+      // sentinel lets agent identities bind (and conversations resume) here
+      // exactly as they do against a trusted remote fingerprint.
+      if (isLocalProfile(profileId)) return 'local';
+      const profile = profileStore.get(profileId);
+      return profile === undefined
+        ? undefined
+        : knownHosts.get(profile.host, profile.port);
+    },
+    attachExisting: (sessionId) => {
+      const terminalId = tmux.terminalFor(sessionId);
+      // The viewer shares the session's console, so closing the view must not
+      // end the agent behind it.
+      if (terminalId !== undefined) localTransport.protectTerminal(terminalId);
+      return terminalId;
+    },
+    isLocalHost: (profileId) => isLocalProfile(profileId),
+    onHostChanged: (profileId) => tmux.useLocal(isLocalProfile(profileId)),
+    readLocalAgyTranscript: () => readLatestAgyTranscript(),
+  });
+  await agentCommunication.load();
   return {
     transport,
     files: new ShellRemoteFiles(exec),
     telemetry: new ShellTelemetry(exec),
     hostKeys,
-    remoteSettings: new TmuxRemoteSettings(tmux),
+    remoteSettings: new TmuxRemoteSettings(remoteTmux),
     tmuxProvisioner: new ShellTmuxProvisioner(exec, (command, onLine, timeoutMs) =>
       transport.execStream(command, onLine, timeoutMs),
     ),
-    tmuxWatcher: new TmuxSessionWatcher(tmux),
+    tmuxWatcher: new TmuxSessionWatcher(remoteTmux),
+    agentCommunication,
   };
 }
 
@@ -133,7 +227,8 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: USE_MOCK ? 'CozyPad — MOCK 模式（假主機）' : 'CozyPad — SSH 模式',
+    // Not "SSH mode" any more: this computer is the default connection.
+    title: USE_MOCK ? 'CozyPad — MOCK 模式（假主機）' : 'CozyPad',
     backgroundColor: '#101014',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -213,8 +308,595 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
   }
 }
 
+async function runAgyBackendSmokeTest(win: BrowserWindow): Promise<void> {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('renderer load timeout')), 15_000);
+      win.webContents.once('did-finish-load', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      win.webContents.once('did-fail-load', (_event, code, description) => {
+        clearTimeout(timer);
+        reject(new Error(`did-fail-load ${code} ${description}`));
+      });
+    });
+
+    const result: unknown = await win.webContents.executeJavaScript(
+      `(async () => {
+        const bridge = window.cozypad;
+        if (!bridge || bridge.kind !== 'electron') {
+          throw new Error('Electron preload bridge is unavailable');
+        }
+
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const waitFor = async (predicate, timeoutMs, label) => {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            if (predicate()) return;
+            await sleep(100);
+          }
+          const surface = document.querySelector('[data-testid="agy-surface"]');
+          const debug = surface?.textContent || '';
+          throw new Error('Timed out waiting for ' + label + '\\nAGY screen:\\n' + debug);
+        };
+        const encode = (value) => {
+          const bytes = new TextEncoder().encode(value);
+          let binary = '';
+          for (let index = 0; index < bytes.length; index += 1) {
+            binary += String.fromCharCode(bytes[index]);
+          }
+          return btoa(binary);
+        };
+        const outputEvents = [];
+        let terminalId = null;
+        let profileId = null;
+        let sessionId = null;
+        const unsubscribeOutput = bridge.onTerminalOutput((event) => {
+          outputEvents.push(event);
+        });
+        const terminalText = () => {
+          const binary = outputEvents
+            .filter((event) => terminalId === null || event.terminalId === terminalId)
+            .map((event) => atob(event.dataBase64))
+            .join('');
+          const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+          return new TextDecoder().decode(bytes);
+        };
+        const occurrences = (text, needle) => text.split(needle).length - 1;
+        const write = (value) => {
+          if (terminalId === null) throw new Error('AGY terminal is not open');
+          bridge.writeTerminal({ terminalId, dataBase64: encode(value) });
+        };
+        const sendPrompt = (value) => {
+          write('\\u001b[200~' + value + '\\u001b[201~\\r');
+        };
+
+        try {
+          const profiles = await bridge.listProfiles();
+          // Prefer this machine: no credential and no network means the
+          // whole flow is reachable in a test.
+          const profile =
+            profiles.find((candidate) => candidate.isLocal === true) ||
+            profiles.find((candidate) =>
+              candidate.authMethod === 'privateKey'
+                ? candidate.hasPrivateKey === true
+                : candidate.hasPassword === true,
+            ) ||
+            profiles[0];
+          if (!profile) throw new Error('No connection is available');
+          profileId = profile.id;
+          await bridge.connect({ profileId });
+
+          const installation = await bridge.detectAgent({
+            profileId,
+            agentKind: 'agy',
+          });
+          if (!installation.installed) {
+            throw new Error('AGY is not installed for profile ' + profile.name);
+          }
+          if (installation.launchModes.length === 0) {
+            throw new Error('AGY did not advertise a launch mode');
+          }
+          const home = await bridge.fsList({ path: ${JSON.stringify(AGY_SMOKE_CWD)} });
+          const bundle = await bridge.createAgentSession({
+            profileId,
+            agentKind: 'agy',
+            cwd: home.path,
+            interactionMode: 'terminal',
+            launchMode: installation.launchModes[0].id,
+            title: 'CozyPad AGY smoke ' + new Date().toISOString(),
+          });
+          sessionId = bundle.session.id;
+          const opened = await bridge.openAgentTerminal({
+            sessionId,
+            cols: 120,
+            rows: 40,
+          });
+          terminalId = opened.terminalId;
+          await waitFor(() => terminalText().length > 0, 20_000, 'AGY start screen');
+
+          // Select the default start action if AGY opened on its welcome screen.
+          write('\\r');
+          await sleep(1_200);
+
+          // Reproduce the original bug exactly: each character may trigger a
+          // full-screen slash-menu redraw, but no Stop/Ctrl+C is inserted.
+          const slashStart = terminalText().length;
+          write('/');
+          await waitFor(() => terminalText().length > slashStart, 5_000, 'slash redraw');
+          const slashM = terminalText().length;
+          write('m');
+          await waitFor(() => terminalText().length > slashM, 5_000, 'second slash character');
+          const slashO = terminalText().length;
+          write('o');
+          await waitFor(() => terminalText().length > slashO, 5_000, 'third slash character');
+          write('\\u001b\\u001b');
+          await sleep(800);
+
+          const replyToken = 'COZYPAD_AGY_REPLY_' + Date.now();
+          const replyBefore = occurrences(terminalText(), replyToken);
+          sendPrompt('Reply with exactly ' + replyToken);
+          await waitFor(
+            () => occurrences(terminalText(), replyToken) >= replyBefore + 2,
+            120_000,
+            'AGY response',
+          );
+
+          const cancelPrompt =
+            'Work on this slowly and do not finish immediately; inspect the current directory first.';
+          sendPrompt(cancelPrompt);
+          await sleep(900);
+          const beforeInterrupt = terminalText().length;
+          await bridge.interruptAgentSession({ sessionId });
+          await waitFor(
+            () => terminalText().length > beforeInterrupt,
+            10_000,
+            'Ctrl+C acknowledgement',
+          );
+          await sleep(900);
+
+          // A successful answer after interruption proves the Stop action
+          // returned terminal control instead of merely resolving its IPC call.
+          const stopToken = 'COZYPAD_AGY_AFTER_STOP_' + Date.now();
+          const stopBefore = occurrences(terminalText(), stopToken);
+          sendPrompt('Reply with exactly ' + stopToken);
+          await waitFor(
+            () => occurrences(terminalText(), stopToken) >= stopBefore + 2,
+            120_000,
+            'post-Stop AGY response',
+          );
+
+          return {
+            profile: profile.name,
+            version: installation.version || 'unknown',
+            slashCharacters: 3,
+            replyVerified: true,
+            stopVerified: true,
+          };
+        } finally {
+          unsubscribeOutput();
+          if (terminalId !== null) {
+            try { await bridge.closeTerminal({ terminalId }); } catch {}
+          }
+          if (sessionId !== null) {
+            try { await bridge.deleteAgentSession({ sessionId }); } catch {}
+          }
+          if (profileId !== null) {
+            try { await bridge.disconnect({ profileId }); } catch {}
+          }
+        }
+      })()`,
+      true,
+    );
+
+    console.log('[agy-smoke] OK:', JSON.stringify(result));
+    app.exit(0);
+  } catch (error) {
+    console.error('[agy-smoke] FAILED:', error);
+    app.exit(1);
+  }
+}
+
+async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('renderer load timeout')), 15_000);
+      win.webContents.once('did-finish-load', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      win.webContents.once('did-fail-load', (_event, code, description) => {
+        clearTimeout(timer);
+        reject(new Error(`did-fail-load ${code} ${description}`));
+      });
+    });
+
+    win.maximize();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const visualDir = path.join(app.getPath('temp'), 'cozypad-agy-ui-smoke');
+    await fs.rm(visualDir, { recursive: true, force: true });
+    await fs.mkdir(visualDir, { recursive: true });
+
+    let result: unknown;
+    let executionError: unknown;
+    let settled = false;
+    const execution = win.webContents.executeJavaScript(
+      `(async () => {
+        const bridge = window.cozypad;
+        if (!bridge || bridge.kind !== 'electron') {
+          throw new Error('Electron preload bridge is unavailable');
+        }
+
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const markStage = async (label) => {
+          document.documentElement.dataset.agySmokeStage = label;
+          await sleep(900);
+        };
+        const waitFor = async (predicate, timeoutMs, label) => {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            if (predicate()) return;
+            await sleep(100);
+          }
+          const surface = document.querySelector('[data-testid="agy-surface"]');
+          const debug = surface?.textContent || '';
+          throw new Error('Timed out waiting for ' + label + '\\nAGY screen:\\n' + debug);
+        };
+        let profileId = null;
+        let sessionId = null;
+        const composer = () => document.querySelector('[data-testid="agy-composer-input"]');
+        const sendButton = () => document.querySelector('[data-testid="agy-send"]');
+        const setComposer = (value) => {
+          const input = composer();
+          if (!(input instanceof HTMLTextAreaElement)) {
+            throw new Error('AGY composer is unavailable');
+          }
+          const setter = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            'value',
+          ).set;
+          setter.call(input, value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        const click = (element, label) => {
+          if (!(element instanceof HTMLElement)) {
+            throw new Error(label + ' is unavailable');
+          }
+          element.click();
+        };
+        const assistantContains = (value) =>
+          Array.from(document.querySelectorAll('.agy-chat-turn .msg-assistant'))
+            .some((element) => element.textContent.includes(value));
+        const submitFromUi = async (value) => {
+          setComposer(value);
+          await waitFor(
+            () => composer()?.value === value && composer()?.disabled === false,
+            5_000,
+            'editable composer value',
+          );
+          click(sendButton(), 'AGY Send button');
+        };
+        const inspectOverlay = async (command, kind, stage) => {
+          const selector = '[data-testid="agy-overlay-' + kind + '"]';
+          await submitFromUi(command);
+          await waitFor(
+            () => document.querySelector(selector) !== null,
+            20_000,
+            command + ' native control surface',
+          );
+          await markStage(stage);
+          click(
+            document.querySelector(selector + ' .agy-overlay-actions button.ghost'),
+            command + ' close button',
+          );
+          await waitFor(
+            () => document.querySelector(selector) === null && composer()?.disabled === false,
+            20_000,
+            'prompt after closing ' + command,
+          );
+        };
+
+        try {
+          const profiles = await bridge.listProfiles();
+          // Prefer this machine: no credential and no network means the
+          // whole flow is reachable in a test.
+          const profile =
+            profiles.find((candidate) => candidate.isLocal === true) ||
+            profiles.find((candidate) =>
+              candidate.authMethod === 'privateKey'
+                ? candidate.hasPrivateKey === true
+                : candidate.hasPassword === true,
+            ) ||
+            profiles[0];
+          if (!profile) throw new Error('No connection is available');
+          profileId = profile.id;
+          await bridge.connect({ profileId });
+          await waitFor(
+            () => document.querySelector('.status-connected') !== null,
+            10_000,
+            'connected application state',
+          );
+
+          const installation = await bridge.detectAgent({
+            profileId,
+            agentKind: 'agy',
+          });
+          if (!installation.installed) {
+            throw new Error('AGY is not installed for profile ' + profile.name);
+          }
+          if (installation.launchModes.length === 0) {
+            throw new Error('AGY did not advertise a launch mode');
+          }
+          const home = await bridge.fsList({ path: ${JSON.stringify(AGY_SMOKE_CWD)} });
+          const bundle = await bridge.createAgentSession({
+            profileId,
+            agentKind: 'agy',
+            cwd: home.path,
+            interactionMode: 'terminal',
+            launchMode: installation.launchModes[0].id,
+            title: 'CozyPad AGY UI smoke ' + new Date().toISOString(),
+          });
+          sessionId = bundle.session.id;
+          // Create first, then reveal AGY. Otherwise opening the tab mounts the
+          // most recent persisted (often exited) session for a moment and its
+          // failed terminal attach races the fresh smoke-test session.
+          const agyTab = Array.from(document.querySelectorAll('.agent-tab')).find(
+            (button) => button.textContent.trim().toLowerCase() === 'agy',
+          );
+          click(agyTab, 'AGY tab');
+          await markStage('01-agents-tab');
+          await waitFor(
+            () => document.querySelector('[data-session-id="' + CSS.escape(sessionId) + '"]') !== null,
+            10_000,
+            'new AGY session row',
+          );
+          click(
+            document.querySelector('[data-session-id="' + CSS.escape(sessionId) + '"]'),
+            'new AGY session row',
+          );
+          await waitFor(
+            () =>
+              document.querySelector('.session-item-active')?.getAttribute('data-session-id') ===
+              sessionId,
+            5_000,
+            'new AGY session selection',
+          );
+          await waitFor(
+            () => document.querySelector('[data-testid="agy-surface"]') !== null,
+            30_000,
+            'AGY chat surface',
+          );
+          await markStage('02-agy-open');
+
+          const welcomeSeen =
+            document.querySelector('[data-testid="agy-welcome"]') !== null;
+          await waitFor(
+            () =>
+              document.querySelector('[data-testid="agy-start-option"]') !== null ||
+              composer()?.disabled === false,
+            30_000,
+            'AGY start choices or prompt',
+          );
+          const startOptions = document.querySelectorAll(
+            '[data-testid="agy-start-option"]',
+          ).length;
+          const startOption = document.querySelector('[data-testid="agy-start-option"]');
+          if (startOption !== null) click(startOption, 'first AGY start option');
+          await waitFor(
+            () => composer()?.disabled === false,
+            20_000,
+            'AGY prompt after start choice',
+          );
+          await waitFor(
+            () => {
+              const statusline =
+                document.querySelector('[data-testid="agy-statusline"]')?.textContent || '';
+              return /Context\\s*\\d+%/i.test(statusline) && /Weekly\\s*\\d+%/i.test(statusline);
+            },
+            20_000,
+            'automatic AGY context and usage status',
+          );
+          await markStage('03-ready');
+
+          // Reproduce the original lock exactly. Every value change is sent by
+          // the real React textarea while AGY redraws its slash TUI underneath.
+          for (const value of ['/', '/m', '/mo']) {
+            setComposer(value);
+            await waitFor(
+              () => composer()?.value === value && composer()?.disabled === false,
+              5_000,
+              'continuous slash value ' + value,
+            );
+            await sleep(250);
+            if (composer()?.disabled) {
+              throw new Error('AGY composer locked after typing ' + value);
+            }
+          }
+          await waitFor(
+            () =>
+              Array.from(document.querySelectorAll('.agy-slash-menu .slash-item'))
+                .some((item) => item.querySelector('.slash-name')?.textContent === '/model'),
+            10_000,
+            'live /model suggestion',
+          );
+          await markStage('04-slash-model');
+          const modelCommand = Array.from(
+            document.querySelectorAll('.agy-slash-menu .slash-item'),
+          ).find((item) => item.querySelector('.slash-name')?.textContent === '/model');
+          click(modelCommand, 'clickable /model suggestion');
+          await waitFor(() => composer()?.value === '/model', 5_000, '/model completion');
+          click(sendButton(), 'AGY Send button');
+          await waitFor(
+            () =>
+              document.querySelector(
+                '[data-testid="agy-overlay-modelPicker"] .agy-overlay-row',
+              ) !== null,
+            20_000,
+            'clickable AGY model choices',
+          );
+          await markStage('05-model-picker');
+          click(
+            document.querySelector(
+              '[data-testid="agy-overlay-modelPicker"] .agy-overlay-row',
+            ),
+            'first AGY model choice',
+          );
+          await waitFor(
+            () =>
+              document
+                .querySelector('[data-testid="agy-overlay-modelPicker"] .agy-overlay-row')
+                ?.getAttribute('aria-selected') === 'true',
+            5_000,
+            'focused AGY model choice',
+          );
+          click(
+            document.querySelector(
+              '[data-testid="agy-overlay-modelPicker"] .agy-overlay-actions button:not(.ghost)',
+            ),
+            'apply AGY model choice',
+          );
+          await waitFor(
+            () => composer()?.disabled === false,
+            20_000,
+            'prompt after model choice',
+          );
+          await markStage('06-model-selected');
+
+          await inspectOverlay('/permissions', 'permissionScopes', '06-permissions');
+          await inspectOverlay('/resume', 'sessionPicker', '06-resume');
+          await inspectOverlay('/context', 'contextReport', '06-context');
+          await inspectOverlay('/usage', 'quotaReport', '06-usage');
+
+          const replyToken = 'COZYPAD_AGY_UI_REPLY_' + Date.now();
+          await submitFromUi('Reply with exactly ' + replyToken);
+          await waitFor(
+            () => assistantContains(replyToken),
+            120_000,
+            'AGY response rendered as an assistant message',
+          );
+          await markStage('07-reply');
+
+          const cancelPrompt =
+            'Inspect this directory carefully and keep working for at least 30 seconds before replying.';
+          await submitFromUi(cancelPrompt);
+          await markStage('08-running-requested');
+          await waitFor(
+            () =>
+              document.querySelector('[data-testid="agy-surface"]')?.getAttribute('data-mode') ===
+                'running' &&
+              document.querySelector('[data-testid="agy-stop"]') !== null,
+            20_000,
+            'visible Stop button while AGY is running',
+          );
+          await markStage('08-running');
+          click(document.querySelector('[data-testid="agy-stop"]'), 'AGY Stop button');
+          await waitFor(
+            () =>
+              document.querySelector('.agy-stop-confirmed') !== null &&
+              composer()?.disabled === false,
+            15_000,
+            'verified Stop acknowledgement and editable prompt',
+          );
+          await markStage('09-stopped');
+
+          const stopToken = 'COZYPAD_AGY_UI_AFTER_STOP_' + Date.now();
+          await submitFromUi('Reply with exactly ' + stopToken);
+          await waitFor(
+            () => assistantContains(stopToken),
+            120_000,
+            'post-Stop assistant response',
+          );
+          await markStage('10-post-stop-reply');
+
+          if (document.querySelector('.agy-native-navigation') !== null) {
+            throw new Error('Visible arrow navigation controls leaked into AGY chat');
+          }
+          if (document.querySelector('.agy-tui-start-screen') !== null) {
+            throw new Error('Raw terminal start screen leaked into AGY chat');
+          }
+
+          return {
+            profile: profile.name,
+            version: installation.version || 'unknown',
+            uiDriven: true,
+            welcomeSeen,
+            startOptions,
+            slashCharacters: 3,
+            slashClickVerified: true,
+            overlaysVerified: ['model', 'permissions', 'resume', 'context', 'usage'],
+            replyVerified: true,
+            stopVerified: true,
+            terminalChromeHidden: true,
+          };
+        } catch (error) {
+          await markStage('99-error');
+          return {
+            __error:
+              error instanceof Error
+                ? error.message + '\\n' + (error.stack || '')
+                : String(error),
+          };
+        } finally {
+          if (sessionId !== null) {
+            try { await bridge.deleteAgentSession({ sessionId }); } catch {}
+          }
+          if (profileId !== null) {
+            try { await bridge.disconnect({ profileId }); } catch {}
+          }
+        }
+      })()`,
+      true,
+    ).then(
+      (value) => {
+        result = value;
+        settled = true;
+      },
+      (error: unknown) => {
+        executionError = error;
+        settled = true;
+      },
+    );
+
+    const captured = new Set<string>();
+    while (!settled) {
+      const stage: unknown = await win.webContents.executeJavaScript(
+        'document.documentElement.dataset.agySmokeStage || ""',
+        true,
+      );
+      if (typeof stage === 'string' && stage !== '' && !captured.has(stage)) {
+        captured.add(stage);
+        const image = await win.webContents.capturePage();
+        await fs.writeFile(path.join(visualDir, `${stage}.png`), image.toPNG());
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    await execution;
+    if (executionError !== undefined) throw executionError;
+    console.log('[agy-ui-smoke] screenshots:', visualDir);
+
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      '__error' in result &&
+      typeof result.__error === 'string'
+    ) {
+      throw new Error(result.__error);
+    }
+    console.log('[agy-ui-smoke] OK:', JSON.stringify(result));
+    app.exit(0);
+  } catch (error) {
+    console.error('[agy-ui-smoke] FAILED:', error);
+    app.exit(1);
+  }
+}
+
 // 第二個實例會與第一個爭寫 profiles.json / known_hosts.json，直接把焦點還給既有視窗。
-const gotLock = SMOKE_TEST || app.requestSingleInstanceLock();
+const gotLock =
+  SMOKE_TEST ||
+  AGY_SMOKE_TEST ||
+  AGY_BACKEND_SMOKE_TEST ||
+  app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 }
@@ -251,17 +933,37 @@ app.whenReady().then(async () => {
     });
   }
 
-  const profileStore = await createProfileStore();
+  // 視窗必須先開。之後任何一步失敗都還有畫面可以顯示錯誤，
+  // 不會變成「雙擊 CozyPad.bat 什麼都沒發生」。
   const win = createWindow();
-  const services = await createServices(profileStore, win);
-  registerIpc({ ...services, profileStore, mockData: USE_MOCK }, win);
-  win.on('closed', () => {
-    services.telemetry.stop();
-    services.tmuxWatcher?.stop();
-    services.transport.dispose();
-  });
+  try {
+    const profileStore = await createProfileStore();
+    const services = await createServices(profileStore, win);
+    registerIpc(
+      {
+        ...services,
+        profileStore,
+        mockData: USE_MOCK,
+        startupWarnings,
+        isLocalProfile: (profileId) => !USE_MOCK && isLocalProfile(profileId),
+      },
+      win,
+    );
+    win.on('closed', () => {
+      services.telemetry.stop();
+      services.tmuxWatcher?.stop();
+      services.transport.dispose();
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[cozypad] startup failed:', error);
+    startupWarnings.push(`CozyPad 啟動時發生錯誤：${detail}`);
+    dialog.showErrorBox('CozyPad 啟動失敗', detail);
+  }
 
   if (SMOKE_TEST) void runSmokeTest(win);
+  if (AGY_SMOKE_TEST) void runAgyUiSmokeTest(win);
+  if (AGY_BACKEND_SMOKE_TEST) void runAgyBackendSmokeTest(win);
 });
 
 app.on('window-all-closed', () => {

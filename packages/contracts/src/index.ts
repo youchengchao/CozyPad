@@ -14,3 +14,4 @@ export * from './remoteSettings';
 export * from './tmuxSetup';
 export * from './agentSession';
 export * from './agentEvents';
+export * from './agentCommunication';

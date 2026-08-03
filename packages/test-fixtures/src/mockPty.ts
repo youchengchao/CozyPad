@@ -34,6 +34,10 @@ const FILES = [
 export class MockPtyEngine {
   private line = '';
   private closed = false;
+  private agyActive = false;
+  private agyView: 'home' | 'prompt' | 'slash' | 'model' | 'running' = 'home';
+  private agySelection = 0;
+  private agySlashSelection = 0;
   private cols: number;
   private rows: number;
   private readonly decoder = new TextDecoder();
@@ -50,6 +54,15 @@ export class MockPtyEngine {
     this.emit(BANNER + PROMPT);
   }
 
+  startAgy(): void {
+    this.agyActive = true;
+    this.agyView = 'home';
+    this.agySelection = 0;
+    this.agySlashSelection = 0;
+    this.line = '';
+    this.renderAgyHome();
+  }
+
   resize(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
@@ -62,6 +75,10 @@ export class MockPtyEngine {
   write(data: Uint8Array): void {
     if (this.closed) return;
     const text = this.decoder.decode(data, { stream: true });
+    if (this.agyActive) {
+      this.writeAgy(text);
+      return;
+    }
     for (const ch of text) {
       if (ch === '\r' || ch === '\n') {
         this.emit('\r\n');
@@ -166,6 +183,198 @@ export class MockPtyEngine {
       default:
         this.emit(`mock: command not found: ${input}\r\n`);
     }
+  }
+
+  private writeAgy(text: string): void {
+    if (this.agyView === 'home') {
+      if (text.includes('\u001b[A') || text.includes('\u001b[D')) {
+        this.agySelection = Math.max(0, this.agySelection - 1);
+        this.renderAgyHome();
+      }
+      if (text.includes('\u001b[B') || text.includes('\u001b[C')) {
+        this.agySelection = Math.min(2, this.agySelection + 1);
+        this.renderAgyHome();
+      }
+      if (text.includes('\r') || text.includes('\n')) {
+        this.agyView = 'prompt';
+        this.line = '';
+        this.renderAgyPrompt();
+      }
+      if (text.includes('\u0003')) {
+        this.emit('\u001b[?1049l');
+        this.close();
+      }
+      return;
+    }
+
+    if (this.agyView === 'model') {
+      if (text.includes('\u001b[A') || text.includes('\u001b[D')) {
+        this.agySelection = Math.max(0, this.agySelection - 1);
+        this.renderAgyModelMenu();
+      }
+      if (text.includes('\u001b[B') || text.includes('\u001b[C')) {
+        this.agySelection = Math.min(2, this.agySelection + 1);
+        this.renderAgyModelMenu();
+      }
+      if (text.includes('\r') || text.includes('\n')) {
+        const model = ['Auto', 'Gemini Flash', 'Gemini Pro'][this.agySelection];
+        this.agyView = 'prompt';
+        this.line = '';
+        this.renderAgyPrompt(`Model changed to ${model}.`);
+      } else if (text.includes('\u001b') || text.includes('\u0003')) {
+        this.agyView = 'prompt';
+        this.line = '';
+        this.renderAgyPrompt();
+      }
+      return;
+    }
+
+    let input = text
+      .replaceAll('\u001b[200~', '')
+      .replaceAll('\u001b[201~', '');
+    while (input.length > 0) {
+      const direction = input.match(/^\u001b\[([ABCD])/u);
+      if (direction !== null) {
+        if (this.agyView === 'slash' && (direction[1] === 'A' || direction[1] === 'B')) {
+          const candidates = this.agySlashCandidates();
+          const delta = direction[1] === 'A' ? -1 : 1;
+          this.agySlashSelection = Math.max(
+            0,
+            Math.min(candidates.length - 1, this.agySlashSelection + delta),
+          );
+          this.renderAgyPrompt();
+        }
+        input = input.slice(direction[0].length);
+        continue;
+      }
+
+      const ch = input[0]!;
+      input = input.slice(1);
+      if (ch === '\r' || ch === '\n') {
+        const prompt = this.line.trim();
+        this.line = '';
+        if (prompt === '/model') {
+          this.agyView = 'model';
+          this.agySelection = 0;
+          this.renderAgyModelMenu();
+        } else if (prompt.startsWith('/')) {
+          this.agyView = 'prompt';
+          this.renderAgyPrompt(`Mock AGY command completed: ${prompt}`);
+        } else if (prompt.toLowerCase() === 'slow task') {
+          this.agyView = 'running';
+          this.emit(
+            '\u001b[2J\u001b[H\u001b[38;5;141mAGY\u001b[0m  Native CLI · mock\r\n\r\n' +
+              `❯ ${prompt}\r\n\r\n\u001b[2mThinking…  Esc to cancel\u001b[0m`,
+          );
+        } else {
+          this.agyView = 'prompt';
+          this.emit(
+            '\u001b[2J\u001b[H\u001b[38;5;141mAGY\u001b[0m  Native CLI · mock\r\n\r\n' +
+              `❯ ${prompt}\r\n\r\n` +
+              `\u001b[32m✓\u001b[0m Mock AGY received: ${prompt || '(empty prompt)'}\r\n\r\n` +
+              '\u001b[38;5;141m❯\u001b[0m ',
+          );
+        }
+      } else if (ch === '\u0003') {
+        this.line = '';
+        this.agyView = 'prompt';
+        this.renderAgyPrompt('Cancelled.');
+      } else if (ch === '\u001b') {
+        this.line = '';
+        this.agyView = 'prompt';
+        this.renderAgyPrompt();
+      } else if (ch === '\t' && this.agyView === 'slash') {
+        const selected = this.agySlashCandidates()[this.agySlashSelection];
+        if (selected !== undefined) this.line = selected.command;
+        this.agyView = 'prompt';
+        this.renderAgyPrompt();
+      } else if (ch === '\u007f' || ch === '\b') {
+        if (this.line.length > 0) {
+          this.line = this.line.slice(0, -1);
+          this.agyView = this.line.startsWith('/') ? 'slash' : 'prompt';
+          if (this.agyView === 'slash') this.renderAgyPrompt();
+          else this.emit('\b \b');
+        }
+      } else if (ch >= ' ') {
+        this.line += ch;
+        if (this.line.startsWith('/')) {
+          this.agyView = 'slash';
+          this.agySlashSelection = 0;
+          // Full-screen redraw on every character intentionally reproduces the
+          // behavior that used to lock CozyPad's composer after typing `/`.
+          this.renderAgyPrompt();
+        } else {
+          this.emit(ch);
+        }
+      }
+    }
+  }
+
+  private agySlashCandidates(): { command: string; description: string }[] {
+    const commands = [
+      { command: '/model', description: 'Select the active model' },
+      { command: '/memory', description: 'Open memory controls' },
+      { command: '/help', description: 'Show available commands' },
+      { command: '/status', description: 'Show session status' },
+    ];
+    const query = this.line.toLowerCase();
+    return commands.filter(({ command }) => command.startsWith(query));
+  }
+
+  private renderAgyPrompt(message?: string): void {
+    const candidates = this.line.startsWith('/') ? this.agySlashCandidates() : [];
+    if (candidates.length > 0) this.agyView = 'slash';
+    this.emit(
+      '\u001b[2J\u001b[H\u001b[38;5;141mAGY\u001b[0m  Native CLI · mock\r\n\r\n' +
+        (message === undefined ? '' : `${message}\r\n\r\n`) +
+        '\u001b[1mWhat would you like AGY to work on?\u001b[0m\r\n' +
+        `\u001b[38;5;141m❯\u001b[0m ${this.line}` +
+        (candidates.length === 0
+          ? ''
+          : '\r\n\r\n' +
+            candidates
+              .map(({ command, description }, index) =>
+                index === this.agySlashSelection
+                  ? `\u001b[38;5;141m❯ ${command}\u001b[0m  ${description}`
+                  : `  ${command}  ${description}`,
+              )
+              .join('\r\n') +
+            '\r\n\r\n\u001b[2mTab to complete · Enter to run · Esc to close\u001b[0m'),
+    );
+  }
+
+  private renderAgyModelMenu(): void {
+    const models = ['Auto', 'Gemini Flash', 'Gemini Pro'];
+    this.emit(
+      '\u001b[2J\u001b[H\u001b[38;5;141mAGY\u001b[0m  Native CLI · mock\r\n\r\n' +
+        '\u001b[1mSelect model\u001b[0m\r\n\r\n' +
+        models
+          .map((model, index) =>
+            index === this.agySelection
+              ? `\u001b[38;5;141m❯ ${model}\u001b[0m`
+              : `  ${model}`,
+          )
+          .join('\r\n') +
+        '\r\n\r\n\u001b[2mEnter to select · Esc to go back\u001b[0m',
+    );
+  }
+
+  private renderAgyHome(): void {
+    const choices = ['Start a task', 'Resume a conversation', 'Review settings'];
+    this.emit(
+      '\u001b[?1049h\u001b[2J\u001b[H' +
+        '\u001b[38;5;141m   ▄▀█ █▀▀ █▄█\u001b[0m\r\n' +
+        '\u001b[38;5;141m   █▀█ █▄█  █ \u001b[0m\r\n\r\n' +
+        '\u001b[1mAGY 1.1.9\u001b[0m  Native CLI · /home/cozy/project\r\n\r\n' +
+        choices
+          .map((choice, index) =>
+            index === this.agySelection
+              ? `\u001b[38;5;141m❯ ${choice}\u001b[0m`
+              : `  ${choice}`,
+          )
+          .join('\r\n') +
+        '\r\n\r\n\u001b[2m↑/↓ move · Enter select · Ctrl+C exit\u001b[0m',
+    );
   }
 
   private emit(text: string): void {

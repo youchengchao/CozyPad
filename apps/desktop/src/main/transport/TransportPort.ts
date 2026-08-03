@@ -15,13 +15,21 @@ export interface TransportPort {
   exec(command: string, timeoutMs?: number): Promise<string>;
   /**
    * 同 exec，但每收到一行就回呼——長時間作業（如建置 tmux）才能顯示即時進度。
+   * timeoutMs=0 表示由遠端程序／連線生命週期決定何時結束。
    */
   execStream(
     command: string,
     onLine: (line: string) => void,
     timeoutMs?: number,
+    collectOutput?: boolean,
   ): Promise<string>;
-  openTerminal(request: TerminalOpenRequest): Promise<string>;
+  writeFile(path: string, data: Uint8Array): Promise<void>;
+  /**
+   * Opens an interactive SSH channel with a real PTY. When command is supplied,
+   * the command is started directly on that PTY instead of being typed into a
+   * login shell. This avoids shell-startup races and is required by tmux attach.
+   */
+  openTerminal(request: TerminalOpenRequest, command?: string): Promise<string>;
   writeTerminal(terminalId: string, data: Uint8Array): void;
   resizeTerminal(terminalId: string, cols: number, rows: number): void;
   closeTerminal(terminalId: string): void;

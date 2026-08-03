@@ -29,6 +29,26 @@ import type {
 } from './tmuxSetup';
 import type { TelemetrySnapshot } from './telemetry';
 import type {
+  AgentCommunicationErrorEvent,
+  AgentAttachment,
+  AgentDetectionRequest,
+  AgentInstallation,
+  AgentSessionBundle,
+  AgyTranscript,
+  AgentSessionChangedEvent,
+  AgentSessionDeletedEvent,
+  AgentSessionListRequest,
+  AgentSessionRequest,
+  AgentTerminalOpenRequest,
+  AgentTimelineChangedEvent,
+  AnswerAgentQuestionRequest,
+  CreateAgentSessionRequest,
+  RenameAgentSessionRequest,
+  ResolveAgentApprovalRequest,
+  SendAgentMessageRequest,
+  UploadAgentAttachmentRequest,
+} from './agentCommunication';
+import type {
   TerminalCloseRequest,
   TerminalClosedEvent,
   TerminalInput,
@@ -45,6 +65,11 @@ export type PlatformBridgeKind = 'electron' | 'capacitor' | 'mock';
 export interface AppInfo {
   /** true = 內建假資料模式（COZYPAD_MOCK=1 或瀏覽器 mock bridge）。 */
   mockData: boolean;
+  /**
+   * 啟動時降級處理過的問題（例如本機設定檔解不開）。App 仍可使用，
+   * 但相關資料是空的，必須讓使用者看得到原因。
+   */
+  startupWarnings?: string[];
 }
 
 /**
@@ -118,6 +143,44 @@ export interface PlatformBridge {
   onTmuxInstallProgress(listener: (progress: TmuxInstallProgress) => void): Unsubscribe;
   /** 安裝過程的即時指令與輸出（批次送達以免洗版）。 */
   onTmuxInstallLog(listener: (log: TmuxInstallLog) => void): Unsubscribe;
+
+  detectAgent(request: AgentDetectionRequest): Promise<AgentInstallation>;
+  listAgentSessions(request: AgentSessionListRequest): Promise<AgentSessionBundle[]>;
+  createAgentSession(request: CreateAgentSessionRequest): Promise<AgentSessionBundle>;
+  /**
+   * Relaunch an exited session's agent in place: same record, same timeline,
+   * resuming the bound conversation when the agent supports it.
+   */
+  reviveAgentSession(request: AgentSessionRequest): Promise<AgentSessionBundle>;
+  /**
+   * The transcript of a revived AGY session, recovered from AGY's own
+   * conversation store so an app restart does not lose the visible history.
+   * Empty for sessions that were never revived, and on hosts whose store
+   * cannot be read.
+   */
+  readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript>;
+  openAgentTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
+  renameAgentSession(request: RenameAgentSessionRequest): Promise<void>;
+  deleteAgentSession(request: AgentSessionRequest): Promise<void>;
+  uploadAgentAttachment(
+    request: UploadAgentAttachmentRequest,
+  ): Promise<AgentAttachment>;
+  sendAgentMessage(request: SendAgentMessageRequest): Promise<void>;
+  interruptAgentSession(request: AgentSessionRequest): Promise<void>;
+  resolveAgentApproval(request: ResolveAgentApprovalRequest): Promise<void>;
+  answerAgentQuestion(request: AnswerAgentQuestionRequest): Promise<void>;
+  onAgentSessionChanged(
+    listener: (event: AgentSessionChangedEvent) => void,
+  ): Unsubscribe;
+  onAgentSessionDeleted(
+    listener: (event: AgentSessionDeletedEvent) => void,
+  ): Unsubscribe;
+  onAgentTimelineChanged(
+    listener: (event: AgentTimelineChangedEvent) => void,
+  ): Unsubscribe;
+  onAgentCommunicationError(
+    listener: (event: AgentCommunicationErrorEvent) => void,
+  ): Unsubscribe;
 
   /** 移除 CozyPad 在遠端主機留下的痕跡（建置暫存、PATH／tmux 設定區塊）。 */
   cleanupRemote(removeTmuxBinary: boolean): Promise<string>;

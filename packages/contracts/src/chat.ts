@@ -15,6 +15,9 @@ export const AgentSessionStatusSchema = z.enum([
 ]);
 export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
 
+export const AgentInteractionModeSchema = z.enum(['chat', 'terminal']);
+export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>;
+
 export const AgentSessionSummarySchema = z.object({
   id: z.string().min(1),
   agentKind: AgentKindSchema,
@@ -22,8 +25,14 @@ export const AgentSessionSummarySchema = z.object({
   host: z.string().min(1),
   project: z.string().min(1),
   cwd: z.string().min(1),
+  interactionMode: AgentInteractionModeSchema.optional(),
   status: AgentSessionStatusSchema,
   unread: z.number().int().min(0).default(0),
+  slashCommands: z.array(z.string().trim().min(1)).default([]),
+  slashCommandDescriptions: z.record(z.string(), z.string()).optional(),
+  slashCommandBehaviors: z
+    .record(z.string(), z.enum(['insert', 'submit', 'picker']))
+    .optional(),
   updatedAt: z.string(),
 });
 export type AgentSessionSummary = z.infer<typeof AgentSessionSummarySchema>;
@@ -110,4 +119,5 @@ export type ChatItem = z.infer<typeof ChatItemSchema>;
 export interface SlashCommand {
   name: string;
   description: string;
+  behavior?: 'insert' | 'submit' | 'picker';
 }

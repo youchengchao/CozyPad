@@ -43,7 +43,6 @@ pnpm test         # 全綠即環境就緒
 | 做什麼 | 操作 |
 | --- | --- |
 | 連真實主機使用 | 雙擊 `CozyPad.bat`，或 `pnpm --filter @cozypad/desktop start` |
-| Demo（內建假主機，零設定） | 雙擊 `CozyPad-Demo.bat` |
 | UI 開發（瀏覽器熱更新） | `pnpm dev` → http://localhost:5173 |
 | 桌面開發（Electron 熱更新，mock） | `pnpm dev:desktop` |
 | 桌面開發（真 SSH） | `pnpm dev:desktop:ssh` |

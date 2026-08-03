@@ -1,8 +1,14 @@
 import { clipboard, ipcMain } from 'electron';
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import {
+  AgentDetectionRequestSchema,
+  AgentSessionListRequestSchema,
+  AgentSessionRequestSchema,
+  AgentTerminalOpenRequestSchema,
+  AnswerAgentQuestionRequestSchema,
   ConnectRequestSchema,
   ConnectionProfileDraftSchema,
+  CreateAgentSessionRequestSchema,
   DeleteProfileRequestSchema,
   FsCreateRequestSchema,
   FsPathRequestSchema,
@@ -13,6 +19,10 @@ import {
   HostKeyDecisionSchema,
   IpcChannels,
   RemoteSettingsPatchSchema,
+  RenameAgentSessionRequestSchema,
+  ResolveAgentApprovalRequestSchema,
+  SendAgentMessageRequestSchema,
+  UploadAgentAttachmentRequestSchema,
   TerminalCloseRequestSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
@@ -20,6 +30,7 @@ import {
   base64ToBytes,
   bytesToBase64,
 } from '@cozypad/contracts';
+import type { AgentCommunicationPort } from './agentCommunicationService';
 import type { RemoteFilesPort } from '@cozypad/remote-services';
 import type { HostKeyGate } from './hostKeys';
 import type { ProfileStorePort } from './profileStore';
@@ -38,7 +49,12 @@ export interface IpcServices {
   remoteSettings: RemoteSettingsPort;
   tmuxProvisioner: TmuxProvisionerPort;
   tmuxWatcher: TmuxSessionWatcher | null;
+  agentCommunication: AgentCommunicationPort | null;
   mockData: boolean;
+  /** 啟動時降級處理過的問題，交給 UI 顯示（見 main.ts startupWarnings）。 */
+  startupWarnings?: string[];
+  /** 本機連線不經 tmux：agent 直接以子行程執行，也就沒有東西要偵測或安裝。 */
+  isLocalProfile?: (profileId: string) => boolean;
 }
 
 /** 所有 IPC 進出都經 Zod 驗證，且只接受主視窗的 sender（SPEC_V3 4.1、13）。 */
@@ -52,12 +68,22 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     remoteSettings,
     tmuxProvisioner,
     tmuxWatcher,
+    agentCommunication,
     mockData,
+    startupWarnings = [],
+    isLocalProfile,
   } = services;
 
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   };
+
+  agentCommunication?.setEvents({
+    onSessionChanged: (event) => send(IpcChannels.agentSessionChanged, event),
+    onSessionDeleted: (event) => send(IpcChannels.agentSessionDeleted, event),
+    onTimelineChanged: (event) => send(IpcChannels.agentTimelineChanged, event),
+    onError: (event) => send(IpcChannels.agentCommunicationError, event),
+  });
 
   /**
    * 終端機輸出合併：`cat` 大檔或編譯輸出時，PTY 會以極小的 chunk 高頻回傳，
@@ -88,19 +114,26 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     onConnectionState: (event) => {
       send(IpcChannels.connectionState, event);
       if (event.state === 'connected') {
+        void agentCommunication?.connected(event.profileId);
         telemetry.start(event.profileId, (snapshot) =>
           send(IpcChannels.telemetryUpdated, snapshot),
         );
-        // 連線後立即偵測 tmux，缺少或版本過舊時由 UI 詢問安裝。
-        void tmuxProvisioner
-          .status()
-          .then((status) => send(IpcChannels.tmuxStatusChanged, status))
-          .catch(() => undefined);
-        tmuxWatcher?.start({
-          onSessions: (sessions) => send(IpcChannels.tmuxSessionsChanged, sessions),
-        });
+        if (isLocalProfile?.(event.profileId) === true) {
+          // 本機沒有也不需要 tmux；偵測只會叫使用者在 Windows 上裝 Linux 套件。
+          send(IpcChannels.tmuxSessionsChanged, []);
+        } else {
+          // 連線後立即偵測 tmux，缺少或版本過舊時由 UI 詢問安裝。
+          void tmuxProvisioner
+            .status()
+            .then((status) => send(IpcChannels.tmuxStatusChanged, status))
+            .catch(() => undefined);
+          tmuxWatcher?.start({
+            onSessions: (sessions) => send(IpcChannels.tmuxSessionsChanged, sessions),
+          });
+        }
       }
       if (event.state === 'disconnected' || event.state === 'error') {
+        agentCommunication?.disconnected(event.profileId);
         telemetry.stop();
         tmuxWatcher?.stop();
         send(IpcChannels.tmuxSessionsChanged, []);
@@ -128,7 +161,7 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
 
   ipcMain.handle(IpcChannels.appInfo, (event) => {
     assertSender(event);
-    return { mockData };
+    return { mockData, startupWarnings: [...startupWarnings] };
   });
 
   ipcMain.handle(IpcChannels.listProfiles, (event) => {
@@ -275,6 +308,114 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
   ipcMain.handle(IpcChannels.remoteCleanup, (event, raw: unknown) => {
     assertSender(event);
     return tmuxProvisioner.cleanup(raw === true);
+  });
+
+  ipcMain.handle(IpcChannels.agentDetect, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.detect(AgentDetectionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionsList, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) return [];
+    return agentCommunication.list(AgentSessionListRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionCreate, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.create(CreateAgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionRevive, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.revive(AgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentAgyTranscript, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) return { turns: [] };
+    return agentCommunication.readAgyTranscript(
+      AgentSessionRequestSchema.parse(raw),
+    );
+  });
+
+  ipcMain.handle(IpcChannels.agentTerminalOpen, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.openTerminal(AgentTerminalOpenRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionRename, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.rename(RenameAgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionDelete, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.delete(AgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentAttachmentUpload, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.uploadAttachment(
+      UploadAgentAttachmentRequestSchema.parse(raw),
+    );
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionSend, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.send(SendAgentMessageRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionInterrupt, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.interrupt(AgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentApprovalResolve, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.resolveApproval(
+      ResolveAgentApprovalRequestSchema.parse(raw),
+    );
+  });
+
+  ipcMain.handle(IpcChannels.agentQuestionAnswer, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.answerQuestion(
+      AnswerAgentQuestionRequestSchema.parse(raw),
+    );
   });
 
   ipcMain.handle(IpcChannels.hostKeyDecision, (event, raw: unknown) => {

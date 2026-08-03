@@ -1,17 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AgentInstallation,
   AgentKind,
   AgentSessionStatus,
   AgentSessionSummary,
   ChatItem,
+  RemoteFileItem,
+  SlashCommand,
 } from '@cozypad/contracts';
-import {
-  mockAgentInstallState,
-  mockAgentSessions,
-  mockAgentTimelines,
-  mockSlashCommands,
-} from '@cozypad/test-fixtures';
+import { MAX_AGENT_ATTACHMENT_BYTES } from '@cozypad/contracts';
+import { getBridge } from '../../platform/bridge';
+import { AgyCliSurface, clearAgySessionCache } from './AgyCliSurface';
 import { ChatComposer } from './ChatComposer';
+import type { ComposerAttachment } from './ChatComposer';
 import { ChatTimeline } from './ChatTimeline';
 
 const AGENTS: { kind: AgentKind; label: string }[] = [
@@ -24,47 +25,339 @@ const STATUS_LABEL: Record<AgentSessionStatus, string> = {
   starting: 'starting',
   ready: 'ready',
   running: 'running',
-  waiting_approval: 'approval',
+  waiting_approval: 'needs input',
   disconnected: 'offline',
   exited: 'exited',
   error: 'error',
 };
 
-const MOCK_REPLIES: Record<AgentKind, string> = {
-  claude:
-    '（mock 回覆）收到。這裡還沒接上真正的 Claude adapter——Phase 2 會用 stream-json 事件取代這段假字。',
-  codex:
-    '（mock 回覆）了解。Codex adapter 會在 Phase 3 以 app-server / JSONL exec 接上。',
-  agy: '（mock 回覆）agy adapter 尚未定義 protocol。',
+/** The three states a user actually reasons about when scanning the list. */
+type SessionBucket = 'running' | 'idle' | 'exited';
+
+const BUCKET_LABEL: Record<SessionBucket, string> = {
+  running: 'running',
+  idle: 'idle',
+  exited: 'exited',
 };
+
+function sessionBucket(status: AgentSessionStatus): SessionBucket {
+  if (status === 'running' || status === 'waiting_approval' || status === 'starting') {
+    return 'running';
+  }
+  if (status === 'exited' || status === 'error') return 'exited';
+  return 'idle';
+}
+
+const SLASH_COMMAND_DESCRIPTIONS: Record<string, string> = {
+  'add-dir': 'Add a directory to later agent turns',
+  agents: 'Manage or inspect delegated agents',
+  btw: 'Ask a side question without interrupting the current task',
+  clear: 'Clear the current conversation context',
+  compact: 'Compact the conversation context',
+  context: 'Show current context usage',
+  diff: 'Show current workspace changes',
+  effort: 'Change the reasoning effort',
+  fork: 'Fork this conversation',
+  fast: 'Use the agent fast execution mode',
+  help: 'Show commands supported in CozyPad',
+  keybindings: 'Show or configure keyboard shortcuts',
+  mcp: 'Manage MCP servers',
+  model: 'Select or inspect the current model',
+  open: 'Open a file or location',
+  permissions: 'Review or change the permission mode',
+  plan: 'Enter or inspect plan mode',
+  planning: 'Use the agent planning mode',
+  rename: 'Rename the agent conversation',
+  resume: 'Resume a previous conversation',
+  review: 'Review current code changes',
+  rewind: 'Rewind the conversation',
+  skills: 'List or run installed skills',
+  status: 'Show current session status',
+  statusline: 'Configure the status line',
+  tasks: 'Show background tasks',
+  usage: 'Show token and usage information',
+};
+
+function slashCommandDescription(
+  agentKind: AgentKind,
+  name: string,
+  descriptions?: Record<string, string>,
+): string {
+  const normalized = name.replace(/^\/+/, '').toLowerCase();
+  return (
+    descriptions?.[normalized] ??
+    SLASH_COMMAND_DESCRIPTIONS[normalized] ??
+    `Available in this ${agentKind} session`
+  );
+}
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-export function AgentsWorkspace({ mockData }: { mockData: boolean }) {
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function environmentText(installation: AgentInstallation): string | null {
+  const environment = installation.environment;
+  if (environment === undefined) return null;
+  const platform = environment.distribution ?? environment.osName;
+  return [platform, environment.kernelRelease, environment.architecture]
+    .filter((value): value is string => value !== undefined && value !== '')
+    .join(' ');
+}
+
+interface AgentsWorkspaceProps {
+  connected: boolean;
+  profileId: string | null;
+}
+
+export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) {
+  const bridge = useMemo(() => getBridge(), []);
   const [agent, setAgent] = useState<AgentKind>('claude');
-  const [sessions, setSessions] = useState<AgentSessionSummary[]>(
-    mockData ? mockAgentSessions : [],
-  );
-  const [timelines, setTimelines] = useState<Record<string, ChatItem[]>>(
-    mockData ? mockAgentTimelines : {},
-  );
-  const [selected, setSelected] = useState<Record<AgentKind, string | null>>(
-    mockData
-      ? { claude: 'claude-s1', codex: 'codex-s1', agy: null }
-      : { claude: null, codex: null, agy: null },
-  );
+  const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
+  const [timelines, setTimelines] = useState<Record<string, ChatItem[]>>({});
+  const [installations, setInstallations] = useState<
+    Partial<Record<AgentKind, AgentInstallation>>
+  >({});
+  const [selected, setSelected] = useState<Record<AgentKind, string | null>>({
+    claude: null,
+    codex: null,
+    agy: null,
+  });
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [attachments, setAttachments] = useState<
+    Record<string, ComposerAttachment[]>
+  >({});
+  const [uploading, setUploading] = useState<Record<string, boolean>>({});
+  const [interrupting, setInterrupting] = useState<Record<string, boolean>>({});
   const [filters, setFilters] = useState<Record<AgentKind, string>>({
     claude: '',
     codex: '',
     agy: '',
   });
-  const [nextItemId, setNextItemId] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createTitle, setCreateTitle] = useState('');
+  const [launchMode, setLaunchMode] = useState('default');
+  const [createCwd, setCreateCwd] = useState('$HOME');
+  const [directoryJump, setDirectoryJump] = useState('$HOME');
+  const [directoryItems, setDirectoryItems] = useState<RemoteFileItem[]>([]);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
+  const [directoryTruncated, setDirectoryTruncated] = useState(false);
+  const [renameSession, setRenameSession] = useState<AgentSessionSummary | null>(
+    null,
+  );
+  const [deleteSession, setDeleteSession] = useState<AgentSessionSummary | null>(
+    null,
+  );
+  const [renameTitle, setRenameTitle] = useState('');
+  const [modelPickerSessionId, setModelPickerSessionId] = useState<string | null>(
+    null,
+  );
+  const [modelName, setModelName] = useState('');
+  /** Live status for native AGY sessions, whose record status never changes. */
+  const [agyActivity, setAgyActivity] = useState<Record<string, AgentSessionStatus>>({});
+  const [bucketFilter, setBucketFilter] = useState<SessionBucket | 'all'>('all');
+  const [waking, setWaking] = useState<Record<string, boolean>>({});
+  /**
+   * Bumped when a session is revived. The AGY surface is keyed on it: the old
+   * surface's terminal died with the old process, so the new process needs a
+   * fresh mount to attach to.
+   */
+  const [reviveNonce, setReviveNonce] = useState<Record<string, number>>({});
 
-  const agentSessions = useMemo(
+  /**
+   * Sessions the user removed. A late update for one — a follow stream ending,
+   * a status settling — must not resurrect the row it was deleted from.
+   */
+  const forgotten = useRef(new Set<string>());
+
+  /** Drop every trace of a session from the UI. */
+  const forgetSession = useCallback((sessionId: string, agentKind: AgentKind) => {
+    forgotten.current.add(sessionId);
+    clearAgySessionCache(sessionId);
+    setSessions((current) => current.filter((session) => session.id !== sessionId));
+    setSelected((selection) =>
+      selection[agentKind] === sessionId
+        ? { ...selection, [agentKind]: null }
+        : selection,
+    );
+    const drop = <T,>(current: Record<string, T>): Record<string, T> => {
+      if (!(sessionId in current)) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    };
+    setTimelines(drop);
+    setDrafts(drop);
+    setAttachments((current) => {
+      current[sessionId]?.forEach((attachment) => {
+        if (attachment.previewUrl !== undefined) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
+      return drop(current);
+    });
+    setUploading(drop);
+    setInterrupting(drop);
+    setAgyActivity(drop);
+    setDeleteSession((current) => (current?.id === sessionId ? null : current));
+    setModelPickerSessionId((current) => (current === sessionId ? null : current));
+  }, []);
+
+  useEffect(() => {
+    const unsubscribeSession = bridge.onAgentSessionChanged(({ session }) => {
+      if (forgotten.current.has(session.id)) return;
+      setSessions((current) => {
+        const exists = current.some((candidate) => candidate.id === session.id);
+        return exists
+          ? current.map((candidate) =>
+              candidate.id === session.id ? session : candidate,
+            )
+          : [session, ...current];
+      });
+      setSelected((current) => ({
+        ...current,
+        [session.agentKind]: current[session.agentKind] ?? session.id,
+      }));
+    });
+    const unsubscribeTimeline = bridge.onAgentTimelineChanged(
+      ({ sessionId, items }) => {
+        setTimelines((current) => ({ ...current, [sessionId]: items }));
+      },
+    );
+    const unsubscribeDeleted = bridge.onAgentSessionDeleted(
+      ({ sessionId, agentKind }) => forgetSession(sessionId, agentKind),
+    );
+    const unsubscribeError = bridge.onAgentCommunicationError((event) => {
+      setError(event.message);
+    });
+    return () => {
+      unsubscribeSession();
+      unsubscribeTimeline();
+      unsubscribeDeleted();
+      unsubscribeError();
+    };
+  }, [bridge, forgetSession]);
+
+  useEffect(() => {
+    setSelected((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const { kind } of AGENTS) {
+        if (
+          next[kind] === null ||
+          !sessions.some(
+            (session) => session.id === next[kind] && session.agentKind === kind,
+          )
+        ) {
+          const fallback = sessions.find((session) => session.agentKind === kind)?.id ?? null;
+          if (next[kind] !== fallback) {
+            next[kind] = fallback;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!connected || profileId === null) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void Promise.all([
+      bridge.listAgentSessions({ profileId }),
+      ...AGENTS.map(async ({ kind }) => {
+        try {
+          return await bridge.detectAgent({ profileId, agentKind: kind });
+        } catch (detectionError) {
+          return {
+            agentKind: kind,
+            installed: false,
+            supportsStructuredOutput: false,
+            supportsResume: false,
+            supportsInteractiveApproval: false,
+            launchModes: [],
+            detail: errorText(detectionError),
+          } satisfies AgentInstallation;
+        }
+      }),
+    ])
+      .then(([bundles, ...detected]) => {
+        if (cancelled) return;
+        setSessions(bundles.map((bundle) => bundle.session));
+        setTimelines(
+          Object.fromEntries(
+            bundles.map((bundle) => [bundle.session.id, bundle.items]),
+          ),
+        );
+        setInstallations(
+          Object.fromEntries(
+            detected.map((installation) => [
+              installation.agentKind,
+              installation,
+            ]),
+          ),
+        );
+        setSelected((current) => {
+          const next = { ...current };
+          for (const { kind } of AGENTS) {
+            if (
+              next[kind] === null ||
+              !bundles.some((bundle) => bundle.session.id === next[kind])
+            ) {
+              next[kind] =
+                bundles.find((bundle) => bundle.session.agentKind === kind)?.session
+                  .id ?? null;
+            }
+          }
+          return next;
+        });
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) setError(errorText(loadError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge, connected, profileId]);
+
+  /**
+   * A native AGY session's stored status is written once at launch, so the
+   * only thing that knows whether it is thinking right now is the live screen.
+   */
+  const liveStatus = useCallback(
+    (session: AgentSessionSummary): AgentSessionStatus =>
+      session.agentKind === 'agy'
+        ? (agyActivity[session.id] ?? session.status)
+        : session.status,
+    [agyActivity],
+  );
+
+  const searchedSessions = useMemo(
     () =>
       sessions
         .filter((session) => session.agentKind === agent)
@@ -74,172 +367,361 @@ export function AgentsWorkspace({ mockData }: { mockData: boolean }) {
             : `${session.title} ${session.host} ${session.project}`
                 .toLowerCase()
                 .includes(filters[agent].toLowerCase()),
-        ),
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     [sessions, agent, filters],
+  );
+  // Counted before the bucket filter narrows the list, so every chip shows
+  // what it would reveal rather than what currently survives it.
+  const bucketCounts = useMemo(() => {
+    const counts: Record<SessionBucket, number> = { running: 0, idle: 0, exited: 0 };
+    for (const session of searchedSessions) {
+      counts[sessionBucket(liveStatus(session))] += 1;
+    }
+    return counts;
+  }, [searchedSessions, liveStatus]);
+  const agentSessions = useMemo(
+    () =>
+      bucketFilter === 'all'
+        ? searchedSessions
+        : searchedSessions.filter(
+            (session) => sessionBucket(liveStatus(session)) === bucketFilter,
+          ),
+    [searchedSessions, bucketFilter, liveStatus],
   );
 
   const selectedSessionId = selected[agent];
   const selectedSession =
     sessions.find((session) => session.id === selectedSessionId) ?? null;
   const timeline = selectedSessionId ? (timelines[selectedSessionId] ?? []) : [];
+  const promptHistory = useMemo(
+    () =>
+      timeline
+        .filter(
+          (item): item is Extract<ChatItem, { kind: 'message' }> =>
+            item.kind === 'message' && item.role === 'user' && item.text.trim() !== '',
+        )
+        .map((item) => item.text),
+    [timeline],
+  );
+  const installation = installations[agent];
+  const canCreate =
+    connected &&
+    profileId !== null &&
+    installation?.installed === true &&
+    installation.installationScope === 'user' &&
+    (agent === 'agy' || installation.supportsStructuredOutput) &&
+    installation.launchModes.length > 0;
 
   const badge = (kind: AgentKind) => {
     const mine = sessions.filter((session) => session.agentKind === kind);
-    const waiting = mine.some((session) => session.status === 'waiting_approval');
-    const running = mine.some((session) => session.status === 'running');
-    const unread = mine.reduce((sum, session) => sum + session.unread, 0);
-    return { waiting, running, unread };
+    return {
+      waiting: mine.some((session) => session.status === 'waiting_approval'),
+      running: mine.some((session) => session.status === 'running'),
+      unread: mine.reduce((sum, session) => sum + session.unread, 0),
+    };
   };
 
-  const selectSession = (sessionId: string) => {
-    setSelected((current) => ({ ...current, [agent]: sessionId }));
-    setSessions((current) =>
-      current.map((session) =>
-        session.id === sessionId ? { ...session, unread: 0 } : session,
-      ),
-    );
+  const loadCreateDirectory = async (directory: string) => {
+    setDirectoryLoading(true);
+    setDirectoryError(null);
+    try {
+      const listing = await bridge.fsList({ path: directory });
+      setCreateCwd(listing.path);
+      setDirectoryJump(listing.path);
+      setDirectoryItems(
+        listing.items.filter(
+          (item) => item.type === 'd' || (item.type === 'l' && item.targetType === 'd'),
+        ),
+      );
+      setDirectoryTruncated(listing.truncated);
+    } catch (directoryLoadError) {
+      setDirectoryError(errorText(directoryLoadError));
+    } finally {
+      setDirectoryLoading(false);
+    }
   };
 
-  const appendItems = (sessionId: string, items: ChatItem[]) => {
-    setTimelines((current) => ({
-      ...current,
-      [sessionId]: [...(current[sessionId] ?? []), ...items],
-    }));
+  const openCreate = () => {
+    const initialDirectory = selectedSession?.cwd ?? '~';
+    setCreateCwd(initialDirectory);
+    setDirectoryJump(initialDirectory);
+    setDirectoryItems([]);
+    setDirectoryError(null);
+    setCreateTitle('');
+    setLaunchMode(installation?.launchModes[0]?.id ?? 'default');
+    setCreateOpen(true);
+    void loadCreateDirectory(initialDirectory);
   };
 
-  const streamAssistant = (sessionId: string, reply: string) => {
-    const assistantId = `local-a${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    appendItems(sessionId, [
-      {
-        kind: 'message',
-        id: assistantId,
-        role: 'assistant',
-        text: '',
-        streaming: true,
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-    let cursor = 0;
-    const interval = setInterval(() => {
-      cursor = Math.min(cursor + 3, reply.length);
-      const done = cursor >= reply.length;
+  const parentDirectory =
+    createCwd === '/'
+      ? '/'
+      : createCwd.slice(0, createCwd.lastIndexOf('/')) || '/';
+
+  const createSession = async () => {
+    if (!canCreate || profileId === null || createCwd.trim() === '') return;
+    setBusy(true);
+    setError(null);
+    try {
+      const bundle = await bridge.createAgentSession({
+        profileId,
+        agentKind: agent,
+        cwd: createCwd.trim(),
+        interactionMode: agent === 'agy' ? 'terminal' : 'chat',
+        launchMode,
+        ...(createTitle.trim() === '' ? {} : { title: createTitle.trim() }),
+      });
+      setSessions((current) => [
+        bundle.session,
+        ...current.filter((session) => session.id !== bundle.session.id),
+      ]);
       setTimelines((current) => ({
         ...current,
-        [sessionId]: (current[sessionId] ?? []).map((item) =>
-          item.id === assistantId && item.kind === 'message'
-            ? { ...item, text: reply.slice(0, cursor), streaming: !done }
-            : item,
-        ),
+        [bundle.session.id]: bundle.items,
       }));
-      if (done) clearInterval(interval);
-    }, 30);
+      setSelected((current) => ({
+        ...current,
+        [bundle.session.agentKind]: bundle.session.id,
+      }));
+      setCreateOpen(false);
+    } catch (createError) {
+      setError(errorText(createError));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const appendUserMessage = (sessionId: string, text: string) => {
-    appendItems(sessionId, [
-      {
-        kind: 'message',
-        id: `local-u${nextItemId}`,
-        role: 'user',
+  const rename = async () => {
+    if (renameSession === null || renameTitle.trim() === '') return;
+    setBusy(true);
+    setError(null);
+    try {
+      await bridge.renameAgentSession({
+        sessionId: renameSession.id,
+        title: renameTitle.trim(),
+      });
+      setRenameSession(null);
+    } catch (renameError) {
+      setError(errorText(renameError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeSession = async () => {
+    if (deleteSession === null) return;
+    const sessionId = deleteSession.id;
+    const agentKind = deleteSession.agentKind;
+    setBusy(true);
+    setError(null);
+    try {
+      await bridge.deleteAgentSession({ sessionId });
+      // Drop it from the UI here rather than waiting for the change event to
+      // come back. Until the surface unmounts it keeps talking about a session
+      // the host has already forgotten, which surfaced as "unknown agent
+      // session" right after a delete that had in fact worked.
+      forgetSession(sessionId, agentKind);
+    } catch (deleteError) {
+      setError(errorText(deleteError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendMessage = async (text: string) => {
+    if (selectedSessionId === null) return;
+    const pending = attachments[selectedSessionId] ?? [];
+    setDrafts((current) => ({ ...current, [selectedSessionId]: '' }));
+    setError(null);
+    try {
+      await bridge.sendAgentMessage({
+        sessionId: selectedSessionId,
         text,
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-    setNextItemId((current) => current + 1);
+        attachmentIds: pending.map((attachment) => attachment.id),
+      });
+      pending.forEach((attachment) => {
+        if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl);
+      });
+      setAttachments((current) => ({ ...current, [selectedSessionId]: [] }));
+    } catch (sendError) {
+      setDrafts((current) => ({ ...current, [selectedSessionId]: text }));
+      setError(errorText(sendError));
+    }
   };
 
-  const runSlashCommand = (sessionId: string, text: string) => {
-    const name = text.slice(1).split(/\s+/)[0] ?? '';
-    const known = mockSlashCommands[agent].find((command) => command.name === name);
-    if (name === 'clear') {
-      setTimelines((current) => ({ ...current, [sessionId]: [] }));
-      return;
+  const stopSession = async (sessionId: string) => {
+    setInterrupting((current) => ({ ...current, [sessionId]: true }));
+    setError(null);
+    try {
+      await bridge.interruptAgentSession({ sessionId });
+    } catch (interruptError) {
+      setError(errorText(interruptError));
+    } finally {
+      setInterrupting((current) => ({ ...current, [sessionId]: false }));
     }
-    appendUserMessage(sessionId, text);
-    if (name === 'help') {
-      const list = mockSlashCommands[agent]
-        .map((command) => `- \`/${command.name}\` — ${command.description}`)
-        .join('\n');
-      streamAssistant(sessionId, `可用指令：\n\n${list}`);
-      return;
-    }
-    if (known) {
-      streamAssistant(
+  };
+
+  const sendSlashCommand = async (sessionId: string, text: string) => {
+    setError(null);
+    try {
+      await bridge.sendAgentMessage({
         sessionId,
-        `（mock）已執行 \`/${known.name}\`——真實行為將由 ${agent} adapter 提供（Phase 2+）。`,
-      );
-      return;
+        text,
+        attachmentIds: [],
+      });
+    } catch (commandError) {
+      setDrafts((current) => ({ ...current, [sessionId]: text }));
+      setError(errorText(commandError));
     }
-    streamAssistant(sessionId, `未知指令 \`/${name}\`，輸入 \`/help\` 查看可用指令。`);
   };
 
-  const sendMessage = (text: string) => {
-    if (!selectedSessionId) return;
-    const sessionId = selectedSessionId;
-    setDrafts((current) => ({ ...current, [sessionId]: '' }));
-    if (text.startsWith('/')) {
-      runSlashCommand(sessionId, text);
+  const selectSlashCommand = (command: SlashCommand) => {
+    if (selectedSessionId === null) return;
+    const name = command.name.replace(/^\/+/, '').toLowerCase();
+    if (command.behavior === 'picker' && name === 'model') {
+      setModelPickerSessionId(selectedSessionId);
+      setModelName('');
       return;
     }
-    appendUserMessage(sessionId, text);
-    streamAssistant(sessionId, MOCK_REPLIES[agent]);
+    void sendSlashCommand(selectedSessionId, `/${name}`);
   };
 
-  const answerQuestion = (itemId: string, optionIndex: number) => {
-    if (!selectedSessionId) return;
+  const applyModelSelection = (useDefault = false) => {
+    if (modelPickerSessionId === null) return;
+    const value = modelName.trim();
+    if (!useDefault && value === '') return;
+    const sessionId = modelPickerSessionId;
+    setModelPickerSessionId(null);
+    setModelName('');
+    void sendSlashCommand(
+      sessionId,
+      useDefault ? '/model default' : `/model ${value}`,
+    );
+  };
+
+  const attachFiles = async (files: File[]) => {
+    if (selectedSessionId === null || files.length === 0) return;
     const sessionId = selectedSessionId;
-    let chosenLabel: string | null = null;
-    setTimelines((current) => ({
-      ...current,
-      [sessionId]: (current[sessionId] ?? []).map((item) => {
-        if (item.id === itemId && item.kind === 'question') {
-          chosenLabel = item.options[optionIndex]?.label ?? null;
-          return { ...item, selectedIndex: optionIndex };
+    const remaining = Math.max(0, 10 - (attachments[sessionId]?.length ?? 0));
+    const selectedFiles = files.slice(0, remaining);
+    if (selectedFiles.length === 0) return;
+    setUploading((current) => ({ ...current, [sessionId]: true }));
+    setError(null);
+    try {
+      for (const file of selectedFiles) {
+        if (file.size > MAX_AGENT_ATTACHMENT_BYTES) {
+          throw new Error(
+            `${file.name} is too large (${file.size} bytes; limit ${MAX_AGENT_ATTACHMENT_BYTES} bytes)`,
+          );
         }
-        return item;
-      }),
-    }));
-    setTimeout(() => {
-      if (chosenLabel !== null) {
-        appendUserMessage(sessionId, chosenLabel);
-        streamAssistant(
+        const uploaded = await bridge.uploadAgentAttachment({
           sessionId,
-          `好，採用 **${chosenLabel}**。（mock）我會照這個方向繼續——真實 agent 會由 adapter 把選擇回傳（Phase 2+）。`,
-        );
+          name: file.name,
+          mediaType: file.type || 'application/octet-stream',
+          dataBase64: await fileToBase64(file),
+        });
+        const previewUrl = file.type.startsWith('image/')
+          ? URL.createObjectURL(file)
+          : undefined;
+        setAttachments((current) => ({
+          ...current,
+          [sessionId]: [
+            ...(current[sessionId] ?? []),
+            {
+              id: uploaded.id,
+              name: uploaded.name,
+              mediaType: uploaded.mediaType,
+              sizeBytes: uploaded.sizeBytes,
+              ...(previewUrl === undefined ? {} : { previewUrl }),
+            },
+          ],
+        }));
       }
-    }, 0);
+    } catch (attachmentError) {
+      setError(errorText(attachmentError));
+    } finally {
+      setUploading((current) => ({ ...current, [sessionId]: false }));
+    }
   };
 
-  const resolveApproval = (itemId: string, resolution: 'allowed' | 'denied') => {
-    if (!selectedSessionId) return;
-    const sessionId = selectedSessionId;
-    setTimelines((current) => ({
-      ...current,
-      [sessionId]: (current[sessionId] ?? []).map((item) =>
-        item.id === itemId && item.kind === 'approval' ? { ...item, resolution } : item,
-      ),
-    }));
-    setSessions((current) =>
-      current.map((session) =>
-        session.id === sessionId
-          ? { ...session, status: resolution === 'allowed' ? 'running' : 'ready' }
-          : session,
-      ),
-    );
+  const removeAttachment = (sessionId: string, attachmentId: string) => {
+    setAttachments((current) => {
+      const target = current[sessionId]?.find(
+        (attachment) => attachment.id === attachmentId,
+      );
+      if (target?.previewUrl !== undefined) URL.revokeObjectURL(target.previewUrl);
+      return {
+        ...current,
+        [sessionId]: (current[sessionId] ?? []).filter(
+          (attachment) => attachment.id !== attachmentId,
+        ),
+      };
+    });
   };
 
-  const diffPaths = timeline
-    .filter((item): item is Extract<ChatItem, { kind: 'file_diff' }> => item.kind === 'file_diff')
-    .map((item) => item.path);
-  const usage = timeline
-    .filter((item): item is Extract<ChatItem, { kind: 'usage' }> => item.kind === 'usage')
-    .reduce(
-      (sum, item) => ({
-        input: sum.input + item.inputTokens,
-        output: sum.output + item.outputTokens,
-      }),
-      { input: 0, output: 0 },
-    );
+  const answerQuestion = async (itemId: string, optionIndex: number) => {
+    if (selectedSessionId === null) return;
+    setError(null);
+    try {
+      await bridge.answerAgentQuestion({
+        sessionId: selectedSessionId,
+        itemId,
+        optionIndex,
+      });
+    } catch (answerError) {
+      setError(errorText(answerError));
+    }
+  };
+
+  const resolveApproval = async (
+    itemId: string,
+    resolution: 'allowed' | 'denied',
+  ) => {
+    if (selectedSessionId === null) return;
+    setError(null);
+    try {
+      await bridge.resolveAgentApproval({
+        sessionId: selectedSessionId,
+        itemId,
+        resolution,
+      });
+    } catch (approvalError) {
+      setError(errorText(approvalError));
+    }
+  };
+
+  /**
+   * Selecting a dead session is the whole gesture: nobody clicks an exited
+   * conversation to admire it, so the click relaunches its agent in place.
+   */
+  const wakeSession = async (sessionId: string) => {
+    if (waking[sessionId] === true) return;
+    setWaking((current) => ({ ...current, [sessionId]: true }));
+    try {
+      await bridge.reviveAgentSession({ sessionId });
+      // The AGY surface must remount to attach to the new process's console,
+      // and its cached "exited" reading belongs to the old one.
+      setAgyActivity((current) => {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      setReviveNonce((current) => ({
+        ...current,
+        [sessionId]: (current[sessionId] ?? 0) + 1,
+      }));
+    } catch (reviveError) {
+      setError(errorText(reviveError));
+    } finally {
+      setWaking((current) => {
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+    }
+  };
 
   return (
     <div className="agents-workspace">
@@ -253,38 +735,60 @@ export function AgentsWorkspace({ mockData }: { mockData: boolean }) {
               onClick={() => setAgent(kind)}
             >
               {label}
-              {info.waiting ? <span className="dot dot-approval" title="waiting approval" /> : null}
-              {info.running ? <span className="dot dot-running" title="running" /> : null}
-              {info.unread > 0 ? <span className="unread">{info.unread}</span> : null}
+              {info.waiting ? (
+                <span className="dot dot-approval" title="needs input" />
+              ) : null}
+              {info.running ? (
+                <span className="dot dot-running" title="running" />
+              ) : null}
+              {info.unread > 0 ? (
+                <span className="unread">{info.unread}</span>
+              ) : null}
             </button>
           );
         })}
-        <button className="agent-tab agent-tab-disabled" title="Custom adapters：Phase 5 adapter SDK">
+        <button
+          className="agent-tab agent-tab-disabled"
+          title="Custom adapter SDK 尚未開放"
+        >
           ＋
         </button>
       </div>
 
-      {!mockData ? (
-        <div className="agent-setup">
-          <h2>尚未接上 {AGENTS.find((entry) => entry.kind === agent)?.label ?? agent} adapter</h2>
-          <p>
-            這裡會列出遠端主機 tmux 中執行的 agent session。Adapter
-            接線（啟動、讀取 structured 事件、resume）屬 Phase 2/3，尚未完成。
-          </p>
-          <p className="hint">
-            架構層已就緒：normalized event schema、複合 session identity、tmux runtime
-            與 stream-json parser 都已實作並通過測試。
-          </p>
-          <p className="hint">想看聊天介面的完整樣貌，請以 mock 模式啟動（CozyPad-Demo.bat）。</p>
+      {error !== null ? (
+        <div className="agent-error-banner">
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>×</button>
         </div>
-      ) : mockAgentInstallState[agent] === 'not_detected' ? (
+      ) : null}
+
+      {!connected ? (
         <div className="agent-setup">
-          <h2>agy 尚未偵測到</h2>
-          <p>遠端主機上找不到 agy 可執行檔。安裝後 CozyPad 會自動偵測版本與能力。</p>
-          <p className="hint">
-            在 adapter 完成 structured protocol 之前，agy 只提供 Terminal degraded
-            mode（SPEC_V3 7.5）。
+          <h2>先連線到遠端主機</h2>
+          <p>Agent 對話會在遠端指定路徑建立 tmux session，並立刻啟動 Agent。</p>
+        </div>
+      ) : loading || installation === undefined ? (
+        <div className="agent-setup">
+          <h2>正在偵測 {AGENTS.find((entry) => entry.kind === agent)?.label}</h2>
+          <p>
+            {agent === 'agy'
+              ? '確認遠端 AGY 執行檔與互動式 terminal 能力…'
+              : '確認遠端執行檔與 bidirectional stream-json 能力…'}
           </p>
+        </div>
+      ) : !installation.installed ||
+        (agent !== 'agy' && !installation.supportsStructuredOutput) ? (
+        <div className="agent-setup">
+          <h2>{AGENTS.find((entry) => entry.kind === agent)?.label} 尚不可用</h2>
+          <p>{installation.detail ?? '遠端 Agent 或 structured protocol 不可用。'}</p>
+          {environmentText(installation) !== null ? (
+            <p className="hint">
+              Remote: {environmentText(installation)}
+              {installation.environment?.loginShell === undefined
+                ? ''
+                : ` · shell ${installation.environment.loginShell}`}
+            </p>
+          ) : null}
         </div>
       ) : (
         <div className="agent-panes">
@@ -294,114 +798,467 @@ export function AgentsWorkspace({ mockData }: { mockData: boolean }) {
               placeholder="搜尋 sessions…"
               value={filters[agent]}
               onChange={(event) =>
-                setFilters((current) => ({ ...current, [agent]: event.target.value }))
+                setFilters((current) => ({
+                  ...current,
+                  [agent]: event.target.value,
+                }))
               }
             />
-            <div className="session-list">
-              {agentSessions.map((session) => (
+            <div className="session-bucket-filter" role="radiogroup" aria-label="Session status filter">
+              {(['all', 'running', 'idle', 'exited'] as const).map((bucket) => (
                 <button
-                  key={session.id}
-                  className={`session-item${
-                    session.id === selectedSessionId ? ' session-item-active' : ''
+                  key={bucket}
+                  role="radio"
+                  aria-checked={bucketFilter === bucket}
+                  className={`session-bucket${
+                    bucketFilter === bucket ? ' session-bucket-active' : ''
                   }`}
-                  onClick={() => selectSession(session.id)}
+                  onClick={() => setBucketFilter(bucket)}
                 >
-                  <span className="session-title">{session.title}</span>
-                  <span className="session-meta">
-                    {session.host} · {session.project}
-                  </span>
-                  <span className="session-footer">
-                    <span className={`chip chip-${session.status}`}>
-                      {STATUS_LABEL[session.status]}
+                  {bucket === 'all' ? '全部' : BUCKET_LABEL[bucket]}
+                  {bucket === 'all' ? null : (
+                    <span className="session-bucket-count">
+                      {bucketCounts[bucket]}
                     </span>
-                    {session.unread > 0 ? (
-                      <span className="unread">{session.unread}</span>
-                    ) : null}
-                    <span className="session-time">{formatTime(session.updatedAt)}</span>
-                  </span>
+                  )}
                 </button>
               ))}
+            </div>
+            <div className="session-list">
+              {agentSessions.map((session) => {
+                const status = liveStatus(session);
+                const bucket = sessionBucket(status);
+                return (
+                  <button
+                    key={session.id}
+                    data-session-id={session.id}
+                    className={`session-item${
+                      session.id === selectedSessionId ? ' session-item-active' : ''
+                    }`}
+                    onClick={() => {
+                      setSelected((current) => ({
+                        ...current,
+                        [agent]: session.id,
+                      }));
+                      if (bucket === 'exited' && connected) {
+                        void wakeSession(session.id);
+                      }
+                    }}
+                  >
+                    <span className="session-title">{session.title}</span>
+                    <span className="session-meta">
+                      {session.host} · {session.project}
+                    </span>
+                    <span className="session-footer">
+                      <span className={`chip chip-${status}`}>
+                        {waking[session.id] === true
+                          ? 'waking…'
+                          : STATUS_LABEL[status]}
+                      </span>
+                      <span className="session-time">
+                        {formatTime(session.updatedAt)}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
               {agentSessions.length === 0 ? (
-                <p className="hint session-empty">沒有符合的 session。</p>
+                <p className="hint session-empty">
+                  {bucketFilter === 'all'
+                    ? '還沒有對話。'
+                    : `沒有${BUCKET_LABEL[bucketFilter]} 狀態的對話。`}
+                </p>
               ) : null}
             </div>
-            <button className="session-new" title="Phase 2：由 adapter 啟動真實 session">
-              ＋ New session（mock）
+            <button
+              className="session-new"
+              disabled={!canCreate || busy}
+              onClick={openCreate}
+            >
+              ＋ New session
             </button>
           </aside>
 
           <div className="chat-column">
             {selectedSession ? (
               <>
-                <ChatTimeline
-                  sessionId={selectedSession.id}
-                  items={timeline}
-                  onResolveApproval={resolveApproval}
-                  onAnswerQuestion={answerQuestion}
-                />
-                <ChatComposer
-                  agentLabel={AGENTS.find((entry) => entry.kind === agent)?.label ?? agent}
-                  value={drafts[selectedSession.id] ?? ''}
-                  commands={mockSlashCommands[agent]}
-                  onChange={(value) =>
-                    setDrafts((current) => ({ ...current, [selectedSession.id]: value }))
-                  }
-                  onSend={sendMessage}
-                />
+                <div className="chat-session-head">
+                  <div>
+                    <span className="chat-session-title-row">
+                      <strong>{selectedSession.title}</strong>
+                      {selectedSession.agentKind === 'agy' ? (
+                        <span className="agent-surface-chip">AGY CLI</span>
+                      ) : null}
+                    </span>
+                    <span className="mono">{selectedSession.cwd}</span>
+                  </div>
+                  <div className="chat-session-actions">
+                    <button
+                      className="ghost"
+                      onClick={() => {
+                        setRenameSession(selectedSession);
+                        setRenameTitle(selectedSession.title);
+                      }}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      className="ghost danger"
+                      disabled={busy}
+                      onClick={() => setDeleteSession(selectedSession)}
+                    >
+                      Delete
+                    </button>
+                    {selectedSession.agentKind !== 'agy' &&
+                    (selectedSession.status === 'running' ||
+                      selectedSession.status === 'waiting_approval') ? (
+                      <button
+                        className="ghost"
+                        disabled={interrupting[selectedSession.id] === true}
+                        onClick={() => void stopSession(selectedSession.id)}
+                      >
+                        {interrupting[selectedSession.id] === true
+                          ? 'Stopping…'
+                          : 'Stop'}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {selectedSession.agentKind === 'agy' ? (
+                  <AgyCliSurface
+                    key={`${selectedSession.id}:${reviveNonce[selectedSession.id] ?? 0}`}
+                    sessionId={selectedSession.id}
+                    cwd={selectedSession.cwd}
+                    sessionStatus={selectedSession.status}
+                    stopping={interrupting[selectedSession.id] === true}
+                    onInterrupt={() => stopSession(selectedSession.id)}
+                    onNotify={(message) => setError(message)}
+                    onStatusChange={(status) =>
+                      setAgyActivity((current) =>
+                        current[selectedSession.id] === status
+                          ? current
+                          : { ...current, [selectedSession.id]: status },
+                      )
+                    }
+                  />
+                ) : (
+                  <>
+                    <ChatTimeline
+                      sessionId={selectedSession.id}
+                      items={timeline}
+                      onResolveApproval={(itemId, resolution) =>
+                        void resolveApproval(itemId, resolution)
+                      }
+                      onAnswerQuestion={(itemId, optionIndex) =>
+                        void answerQuestion(itemId, optionIndex)
+                      }
+                    />
+                    <ChatComposer
+                      key={selectedSession.id}
+                      agentLabel={
+                        AGENTS.find((entry) => entry.kind === agent)?.label ?? agent
+                      }
+                      value={drafts[selectedSession.id] ?? ''}
+                      history={promptHistory}
+                      commands={(selectedSession.slashCommands ?? []).map((name) => ({
+                        name,
+                        description: slashCommandDescription(
+                          selectedSession.agentKind,
+                          name,
+                          selectedSession.slashCommandDescriptions,
+                        ),
+                        behavior:
+                          selectedSession.slashCommandBehaviors?.[
+                            name.replace(/^\/+/, '').toLowerCase()
+                          ],
+                      }))}
+                      attachments={attachments[selectedSession.id] ?? []}
+                      uploading={uploading[selectedSession.id] === true}
+                      running={
+                        selectedSession.status === 'running' ||
+                        selectedSession.status === 'waiting_approval'
+                      }
+                      stopping={interrupting[selectedSession.id] === true}
+                      disabled={
+                        selectedSession.status === 'running' ||
+                        selectedSession.status === 'waiting_approval' ||
+                        selectedSession.status === 'starting' ||
+                        selectedSession.status === 'exited'
+                      }
+                      onChange={(value) =>
+                        setDrafts((current) => ({
+                          ...current,
+                          [selectedSession.id]: value,
+                        }))
+                      }
+                      onAttach={(files) => void attachFiles(files)}
+                      onRemoveAttachment={(attachmentId) =>
+                        removeAttachment(selectedSession.id, attachmentId)
+                      }
+                      onCommand={selectSlashCommand}
+                      onStop={() => void stopSession(selectedSession.id)}
+                      onSend={(text) => void sendMessage(text)}
+                    />
+                  </>
+                )}
               </>
             ) : (
               <div className="placeholder">
-                <p>選一個 session 開始。</p>
+                <p>新增或選擇一個對話。</p>
               </div>
             )}
           </div>
 
-          <aside className="context-panel">
-            {selectedSession ? (
-              <>
-                <h3>Context</h3>
-                <dl>
-                  <dt>Host</dt>
-                  <dd>{selectedSession.host}</dd>
-                  <dt>Project</dt>
-                  <dd>{selectedSession.project}</dd>
-                  <dt>cwd</dt>
-                  <dd className="mono">{selectedSession.cwd}</dd>
-                  <dt>Status</dt>
-                  <dd>
-                    <span className={`chip chip-${selectedSession.status}`}>
-                      {STATUS_LABEL[selectedSession.status]}
-                    </span>
-                  </dd>
-                  <dt>tmux</dt>
-                  <dd className="mono">sdh_{selectedSession.id.replace('-', '_')}</dd>
-                </dl>
-                <h3>Changed files</h3>
-                {diffPaths.length > 0 ? (
-                  <ul className="changed-files">
-                    {diffPaths.map((path) => (
-                      <li key={path} className="mono">
-                        {path}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="hint">尚無變更。</p>
-                )}
-                <h3>Usage</h3>
-                {usage.input + usage.output > 0 ? (
-                  <p className="hint">
-                    in {usage.input.toLocaleString()} / out {usage.output.toLocaleString()}{' '}
-                    tokens
-                  </p>
-                ) : (
-                  <p className="hint">此對話尚無 usage 事件。</p>
-                )}
-              </>
-            ) : null}
-          </aside>
         </div>
       )}
+
+      {createOpen ? (
+        <div className="modal-overlay" role="presentation">
+          <div className="modal modal-directory" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h2>
+                New {AGENTS.find((entry) => entry.kind === agent)?.label} session
+              </h2>
+              <button className="modal-close" onClick={() => setCreateOpen(false)}>
+                ×
+              </button>
+            </div>
+            <div className="directory-picker">
+              <div className="directory-toolbar">
+                <button onClick={() => void loadCreateDirectory('~')}>Home</button>
+                <button onClick={() => void loadCreateDirectory('/')}>Root</button>
+                <button
+                  disabled={createCwd === '/'}
+                  onClick={() => void loadCreateDirectory(parentDirectory)}
+                >
+                  Up
+                </button>
+              </div>
+              <div className="directory-jump">
+                <input
+                  className="mono"
+                  value={directoryJump}
+                  onChange={(event) => setDirectoryJump(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      void loadCreateDirectory(directoryJump);
+                    }
+                  }}
+                  placeholder="/home/user/project"
+                  autoFocus
+                />
+                <button onClick={() => void loadCreateDirectory(directoryJump)}>
+                  Go
+                </button>
+              </div>
+              <div className="directory-selected">
+                <span>Selected</span>
+                <strong className="mono">{createCwd}</strong>
+              </div>
+              <div className="directory-list">
+                {directoryLoading ? (
+                  <p className="hint">Loading directories…</p>
+                ) : directoryItems.length > 0 ? (
+                  directoryItems.map((item) => (
+                    <button
+                      key={item.path}
+                      className="directory-item"
+                      onClick={() => void loadCreateDirectory(item.path)}
+                    >
+                      <span aria-hidden="true">▸</span>
+                      <span>{item.name}</span>
+                      {item.type === 'l' ? (
+                        <span className="hint">symlink</span>
+                      ) : null}
+                    </button>
+                  ))
+                ) : (
+                  <p className="hint">This directory has no subdirectories.</p>
+                )}
+              </div>
+              {directoryTruncated ? (
+                <p className="hint">Directory listing was truncated.</p>
+              ) : null}
+              {directoryError !== null ? (
+                <p className="form-error">{directoryError}</p>
+              ) : null}
+            </div>
+            <label>
+              Title（optional）
+              <input
+                value={createTitle}
+                onChange={(event) => setCreateTitle(event.target.value)}
+                placeholder={`New ${AGENTS.find((entry) => entry.kind === agent)?.label ?? agent} conversation`}
+              />
+            </label>
+            {agent === 'agy' ? (
+              <div className="agy-cli-create-note">
+                <strong>AGY CLI</strong>
+                <span>
+                  會直接啟動原生 TUI；prompt、方向鍵、Enter、Esc 與 Ctrl+C 都透過遠端 PTY 傳送。
+                </span>
+              </div>
+            ) : null}
+            <label>
+              Launch mode
+              <select
+                value={launchMode}
+                onChange={(event) => setLaunchMode(event.target.value)}
+              >
+                {(installation?.launchModes ?? []).map((mode) => (
+                  <option key={mode.id} value={mode.id}>
+                    {mode.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="hint">
+              {installation?.launchModes.find((mode) => mode.id === launchMode)
+                ?.description ?? 'Uses the selected agent’s guarded launch policy.'}
+            </p>
+            {installation?.launchModes.find((mode) => mode.id === launchMode)
+              ?.risk === 'dangerous' ? (
+              <p className="form-error">
+                此模式允許 Agent 不經逐次確認直接執行工具，僅應用於可信任的工作目錄。
+              </p>
+            ) : null}
+            <p className="hint">
+              {agent === 'agy'
+                ? '建立後會立刻在這個路徑開 tmux，並顯示 AGY 自己的起始互動畫面。'
+                : '建立後會立刻在這個路徑開 tmux，並啟動所選 Agent 的 structured session。'}
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => setCreateOpen(false)}>Cancel</button>
+              <button
+                className="primary"
+                disabled={
+                  busy ||
+                  directoryLoading ||
+                  directoryError !== null ||
+                  !installation?.launchModes.some(
+                    (mode) => mode.id === launchMode,
+                  ) ||
+                  createCwd.trim() === ''
+                }
+                onClick={() => void createSession()}
+              >
+                {busy ? 'Starting…' : 'Create & start'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {renameSession !== null ? (
+        <div className="modal-overlay" role="presentation">
+          <div className="modal modal-narrow" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h2>Rename conversation</h2>
+              <button className="modal-close" onClick={() => setRenameSession(null)}>
+                ×
+              </button>
+            </div>
+            <label>
+              Title
+              <input
+                value={renameTitle}
+                onChange={(event) => setRenameTitle(event.target.value)}
+                autoFocus
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void rename();
+                }}
+              />
+            </label>
+            <div className="modal-actions">
+              <button onClick={() => setRenameSession(null)}>Cancel</button>
+              <button
+                className="primary"
+                disabled={busy || renameTitle.trim() === ''}
+                onClick={() => void rename()}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteSession !== null ? (
+        <div className="modal-overlay" role="presentation">
+          <div className="modal modal-narrow" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h2>Delete conversation?</h2>
+              <button className="modal-close" onClick={() => setDeleteSession(null)}>
+                ×
+              </button>
+            </div>
+            <p>
+              This stops the tmux session and removes CozyPad's local and remote
+              metadata for <strong>{deleteSession.title}</strong>.
+            </p>
+            <p className="hint">
+              Files in <span className="mono">{deleteSession.cwd}</span> are not
+              deleted. This action cannot be undone.
+            </p>
+            <div className="modal-actions">
+              <button disabled={busy} onClick={() => setDeleteSession(null)}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                disabled={busy}
+                onClick={() => void removeSession()}
+              >
+                {busy ? 'Deleting…' : 'Delete session'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {modelPickerSessionId !== null ? (
+        <div className="modal-overlay" role="presentation">
+          <div className="modal modal-narrow" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h2>Choose AGY model</h2>
+              <button
+                className="modal-close"
+                onClick={() => setModelPickerSessionId(null)}
+              >
+                ×
+              </button>
+            </div>
+            <label>
+              Model name
+              <input
+                value={modelName}
+                onChange={(event) => setModelName(event.target.value)}
+                placeholder="Enter an AGY model ID"
+                autoFocus
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') applyModelSelection();
+                }}
+              />
+            </label>
+            <p className="hint">
+              CozyPad passes this value to AGY with <code>--model</code> on later
+              turns. This picker does not start a remote process.
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => applyModelSelection(true)}>
+                Use AGY default
+              </button>
+              <button
+                className="primary"
+                disabled={modelName.trim() === ''}
+                onClick={() => applyModelSelection()}
+              >
+                Use model
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

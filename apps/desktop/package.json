@@ -45,6 +45,7 @@
     "npmRebuild": false
   },
   "dependencies": {
+    "@cozypad/adapter-claude": "workspace:*",
     "@cozypad/contracts": "workspace:*",
     "@cozypad/remote-services": "workspace:*",
     "@cozypad/telemetry": "workspace:*",

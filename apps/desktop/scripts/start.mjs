@@ -21,7 +21,7 @@ if (!existsSync(viteBin)) {
 }
 execSync(`"${node}" "${viteBin}" build`, { stdio: 'inherit', cwd: appRoot });
 
-const child = spawn(String(electronPath), ['.'], {
+const child = spawn(String(electronPath), ['.', ...process.argv.slice(2)], {
   cwd: pkgRoot,
   stdio: 'inherit',
   env: { ...process.env, COZYPAD_DEV_URL: '', COZYPAD_MOCK: process.env.COZYPAD_MOCK ?? '0' },

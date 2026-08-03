@@ -17,6 +17,7 @@ export const mockAgentSessions: AgentSessionSummary[] = [
     cwd: '~/projects/seg-train',
     status: 'waiting_approval',
     unread: 2,
+    slashCommands: ['clear', 'compact', 'context', 'usage'],
     updatedAt: '2026-07-29T14:21:00+08:00',
   },
   {
@@ -28,6 +29,7 @@ export const mockAgentSessions: AgentSessionSummary[] = [
     cwd: '~/projects/seg-train',
     status: 'running',
     unread: 0,
+    slashCommands: ['clear', 'compact', 'context', 'usage'],
     updatedAt: '2026-07-29T13:02:00+08:00',
   },
   {
@@ -39,6 +41,7 @@ export const mockAgentSessions: AgentSessionSummary[] = [
     cwd: '~/paper-2026',
     status: 'exited',
     unread: 0,
+    slashCommands: ['clear', 'compact', 'context', 'usage'],
     updatedAt: '2026-07-28T22:40:00+08:00',
   },
   {
@@ -50,6 +53,7 @@ export const mockAgentSessions: AgentSessionSummary[] = [
     cwd: '~/projects/seg-train',
     status: 'ready',
     unread: 0,
+    slashCommands: ['model', 'permissions', 'status'],
     updatedAt: '2026-07-29T11:48:00+08:00',
   },
 ];
@@ -225,7 +229,7 @@ export const mockAgentTimelines: Record<string, ChatItem[]> = {
 export const mockAgentInstallState: Record<AgentKind, 'installed' | 'not_detected'> = {
   claude: 'installed',
   codex: 'installed',
-  agy: 'not_detected',
+  agy: 'installed',
 };
 
 export const mockSlashCommands: Record<AgentKind, SlashCommand[]> = {

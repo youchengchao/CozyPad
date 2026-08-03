@@ -24,6 +24,7 @@ export const NormalizedAgentEventSchema = z.discriminatedUnion('kind', [
   event('session_initialized', {
     model: z.string().optional(),
     cwd: z.string().optional(),
+    slashCommands: z.array(z.string().min(1)).optional(),
   }),
   event('user_message', { text: z.string() }),
   event('assistant_message_started', {}),
@@ -49,6 +50,23 @@ export const NormalizedAgentEventSchema = z.discriminatedUnion('kind', [
   event('approval_resolved', {
     approvalId: z.string().min(1),
     resolution: z.enum(['allowed', 'denied']),
+  }),
+  event('question_requested', {
+    questionId: z.string().min(1),
+    prompt: z.string().min(1),
+    options: z
+      .array(
+        z.object({
+          label: z.string().min(1),
+          description: z.string().optional(),
+        }),
+      )
+      .min(2)
+      .max(6),
+  }),
+  event('question_resolved', {
+    questionId: z.string().min(1),
+    selectedIndex: z.number().int().min(0),
   }),
   event('file_diff', {
     path: z.string().min(1),

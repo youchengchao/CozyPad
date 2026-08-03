@@ -186,6 +186,10 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
             handle?.sendRaw(sequence);
             handle?.focus();
           }}
+          onScrollPages={(pageCount) => {
+            const handle = active !== null ? handles.current.get(active) : undefined;
+            handle?.scrollPages(pageCount);
+          }}
           onToggleModifier={(mod) => {
             const handle = active !== null ? handles.current.get(active) : undefined;
             handle?.setModifier(mod, !modifiers[mod]);

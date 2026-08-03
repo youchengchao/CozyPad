@@ -1,4 +1,11 @@
 import type {
+  AgentCommunicationErrorEvent,
+  AgentAttachment,
+  AgentSessionChangedEvent,
+  AgentSessionDeletedEvent,
+  AgentSessionSummary,
+  AgentTimelineChangedEvent,
+  ChatItem,
   ConnectionProfile,
   ConnectionState,
   ConnectionStateChanged,
@@ -14,6 +21,9 @@ import {
   MockPtyEngine,
   MockRemoteFs,
   MockTelemetryGenerator,
+  mockAgentInstallState,
+  mockAgentSessions,
+  mockAgentTimelines,
 } from '@cozypad/test-fixtures';
 
 const MOCK_PROFILE: ConnectionProfile = {
@@ -54,6 +64,18 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   const outputListeners = new Set<(event: TerminalOutputEvent) => void>();
   const closedListeners = new Set<(event: TerminalClosedEvent) => void>();
   const telemetryListeners = new Set<(snapshot: TelemetrySnapshot) => void>();
+  const agentSessionListeners = new Set<
+    (event: AgentSessionChangedEvent) => void
+  >();
+  const agentSessionDeletedListeners = new Set<
+    (event: AgentSessionDeletedEvent) => void
+  >();
+  const agentTimelineListeners = new Set<
+    (event: AgentTimelineChangedEvent) => void
+  >();
+  const agentErrorListeners = new Set<
+    (event: AgentCommunicationErrorEvent) => void
+  >();
   const terminals = new Map<string, MockPtyEngine>();
   const remoteFs = new MockRemoteFs();
   const telemetry = new MockTelemetryGenerator();
@@ -65,6 +87,17 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   let nextProfileId = 1;
   let remoteSettings: RemoteSettings = { tmuxMouseMode: true, tmuxSocket: 'default' };
   let fallbackClipboard = '';
+  let agentSessions: AgentSessionSummary[] = mockAgentSessions.map((session) => ({
+    ...session,
+  }));
+  const agentTimelines: Record<string, ChatItem[]> = Object.fromEntries(
+    Object.entries(mockAgentTimelines).map(([sessionId, items]) => [
+      sessionId,
+      items.map((item) => ({ ...item })),
+    ]),
+  );
+  const agentAttachments = new Map<string, AgentAttachment>();
+  const agentTerminals = new Map<string, string>();
 
   const emitState = (
     profileId: string,
@@ -82,6 +115,53 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
   const closeAllTerminals = (): void => {
     for (const engine of terminals.values()) engine.close();
     terminals.clear();
+  };
+
+  const emitAgentSession = (session: AgentSessionSummary): void => {
+    agentSessionListeners.forEach((listener) => listener({ session }));
+  };
+
+  const emitAgentTimeline = (sessionId: string): void => {
+    agentTimelineListeners.forEach((listener) =>
+      listener({ sessionId, items: [...(agentTimelines[sessionId] ?? [])] }),
+    );
+  };
+
+  const openMockTerminal = (
+    request: { cols: number; rows: number },
+    surface: 'shell' | 'agy',
+  ): { terminalId: string } => {
+    if (connectedProfileId === null) throw new Error('mock bridge: not connected');
+    const terminalId = `mock-term-${nextTerminalId++}`;
+    const engine = new MockPtyEngine(
+      {
+        onData: (data) => {
+          const event: TerminalOutputEvent = {
+            terminalId,
+            dataBase64: bytesToBase64(data),
+          };
+          outputListeners.forEach((listener) => listener(event));
+        },
+        onClose: (info) => {
+          terminals.delete(terminalId);
+          for (const [sessionId, mappedTerminalId] of agentTerminals) {
+            if (mappedTerminalId === terminalId) agentTerminals.delete(sessionId);
+          }
+          const event: TerminalClosedEvent = {
+            terminalId,
+            exitCode: info.exitCode,
+          };
+          closedListeners.forEach((listener) => listener(event));
+        },
+      },
+      { cols: request.cols, rows: request.rows },
+    );
+    terminals.set(terminalId, engine);
+    setTimeout(() => {
+      if (surface === 'agy') engine.startAgy();
+      else engine.start();
+    }, 30);
+    return { terminalId };
   };
 
   return {
@@ -156,31 +236,7 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
     },
 
     async openTerminal(request) {
-      if (connectedProfileId === null) throw new Error('mock bridge: not connected');
-      const terminalId = `mock-term-${nextTerminalId++}`;
-      const engine = new MockPtyEngine(
-        {
-          onData: (data) => {
-            const event: TerminalOutputEvent = {
-              terminalId,
-              dataBase64: bytesToBase64(data),
-            };
-            outputListeners.forEach((listener) => listener(event));
-          },
-          onClose: (info) => {
-            terminals.delete(terminalId);
-            const event: TerminalClosedEvent = {
-              terminalId,
-              exitCode: info.exitCode,
-            };
-            closedListeners.forEach((listener) => listener(event));
-          },
-        },
-        { cols: request.cols, rows: request.rows },
-      );
-      terminals.set(terminalId, engine);
-      setTimeout(() => engine.start(), 30);
-      return { terminalId };
+      return openMockTerminal(request, 'shell');
     },
 
     writeTerminal(input) {
@@ -265,6 +321,237 @@ export function createMockBridge(): PlatformBridge & MockBridgeExtras {
     },
     onTmuxInstallLog() {
       return () => undefined;
+    },
+
+    detectAgent: ({ agentKind }) =>
+      Promise.resolve({
+        agentKind,
+        installed: mockAgentInstallState[agentKind] === 'installed',
+        executablePath:
+          mockAgentInstallState[agentKind] === 'installed'
+            ? `/usr/local/bin/${agentKind}`
+            : undefined,
+        version: mockAgentInstallState[agentKind] === 'installed' ? 'mock' : undefined,
+        supportsStructuredOutput:
+          agentKind !== 'agy' && mockAgentInstallState[agentKind] === 'installed',
+        supportsResume: mockAgentInstallState[agentKind] === 'installed',
+        supportsInteractiveApproval:
+          mockAgentInstallState[agentKind] === 'installed',
+        launchModes:
+          mockAgentInstallState[agentKind] === 'installed'
+            ? [
+                {
+                  id: 'default',
+                  label: 'Default',
+                  description: `Use ${agentKind}'s default guarded mode.`,
+                  risk: 'normal' as const,
+                },
+              ]
+            : [],
+        ...(mockAgentInstallState[agentKind] === 'not_detected'
+          ? { detail: `${agentKind} is not installed in mock mode` }
+          : {}),
+      }),
+
+    listAgentSessions: () =>
+      Promise.resolve(
+        agentSessions.map((session) => ({
+          session: { ...session },
+          items: [...(agentTimelines[session.id] ?? [])],
+        })),
+      ),
+
+    createAgentSession: async ({
+      agentKind,
+      cwd,
+      title,
+      interactionMode = 'chat',
+    }) => {
+      const now = new Date().toISOString();
+      const id = `mock-${agentKind}-${Date.now()}`;
+      const session: AgentSessionSummary = {
+        id,
+        agentKind,
+        title: title ?? `New ${agentKind} conversation`,
+        host: 'cozy@mock.local',
+        project: cwd.replace(/[\\/]+$/u, '').split(/[\\/]/u).at(-1) ?? cwd,
+        cwd,
+        interactionMode: agentKind === 'agy' ? 'terminal' : interactionMode,
+        status: 'ready',
+        unread: 0,
+        slashCommands: ['clear', 'compact', 'context', 'usage'],
+        updatedAt: now,
+      };
+      agentSessions = [session, ...agentSessions];
+      agentTimelines[id] = [];
+      emitAgentSession(session);
+      emitAgentTimeline(id);
+      return { session, items: [] };
+    },
+
+    readAgyTranscript: () => Promise.resolve({ turns: [] }),
+
+    reviveAgentSession: ({ sessionId }) => {
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined) throw new Error(`unknown mock session: ${sessionId}`);
+      if (session.status === 'exited' || session.status === 'error') {
+        session.status = 'ready';
+        session.updatedAt = new Date().toISOString();
+        emitAgentSession(session);
+      }
+      return Promise.resolve({
+        session,
+        items: agentTimelines[sessionId] ?? [],
+      });
+    },
+
+    openAgentTerminal: async ({ sessionId, cols, rows }) => {
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (
+        session === undefined ||
+        session.agentKind !== 'agy' ||
+        session.interactionMode !== 'terminal'
+      ) {
+        throw new Error('mock bridge: this session is not a native AGY terminal');
+      }
+      const opened = openMockTerminal({ cols, rows }, 'agy');
+      agentTerminals.set(sessionId, opened.terminalId);
+      return opened;
+    },
+
+    renameAgentSession: ({ sessionId, title }) => {
+      agentSessions = agentSessions.map((session) =>
+        session.id === sessionId
+          ? { ...session, title, updatedAt: new Date().toISOString() }
+          : session,
+      );
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (session !== undefined) emitAgentSession(session);
+      return Promise.resolve();
+    },
+
+    deleteAgentSession: ({ sessionId }) => {
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined) throw new Error(`unknown mock session: ${sessionId}`);
+      const terminalId = agentTerminals.get(sessionId);
+      if (terminalId !== undefined) terminals.get(terminalId)?.close();
+      agentTerminals.delete(sessionId);
+      agentSessions = agentSessions.filter((candidate) => candidate.id !== sessionId);
+      delete agentTimelines[sessionId];
+      for (const [attachmentId, attachment] of agentAttachments) {
+        if (attachment.sessionId === sessionId) agentAttachments.delete(attachmentId);
+      }
+      agentSessionDeletedListeners.forEach((listener) =>
+        listener({ sessionId, agentKind: session.agentKind }),
+      );
+      return Promise.resolve();
+    },
+
+    uploadAgentAttachment: async ({ sessionId, name, mediaType, dataBase64 }) => {
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined) throw new Error(`unknown mock session: ${sessionId}`);
+      if (session.interactionMode === 'terminal') {
+        throw new Error('This AGY session uses the native CLI; send input in its terminal');
+      }
+      const id = crypto.randomUUID();
+      const attachment: AgentAttachment = {
+        id,
+        sessionId,
+        name,
+        mediaType,
+        sizeBytes: base64ToBytes(dataBase64).byteLength,
+        remotePath: `${session.cwd}/.cozypad/session-tmp/${sessionId}/attachments/${id}-${name}`,
+      };
+      agentAttachments.set(id, attachment);
+      return attachment;
+    },
+
+    async sendAgentMessage({ sessionId, text, attachmentIds }) {
+      const now = new Date().toISOString();
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined) throw new Error(`unknown mock session: ${sessionId}`);
+      const attachments = (attachmentIds ?? []).map((id) => agentAttachments.get(id)).filter(
+        (attachment): attachment is AgentAttachment => attachment !== undefined,
+      );
+      const displayText =
+        text === ''
+          ? `Attached: ${attachments.map((attachment) => attachment.name).join(', ')}`
+          : text;
+      agentTimelines[sessionId] = [
+        ...(agentTimelines[sessionId] ?? []),
+        {
+          id: `mock-user-${Date.now()}`,
+          kind: 'message',
+          role: 'user',
+          text: displayText,
+          timestamp: now,
+        },
+        {
+          id: `mock-assistant-${Date.now()}`,
+          kind: 'message',
+          role: 'assistant',
+          text: '（mock）訊息已經走 PlatformBridge；桌面 SSH 模式會送進 tmux 內的真實 Agent。',
+          timestamp: now,
+        },
+      ];
+      Object.assign(session, { status: 'ready', updatedAt: now });
+      emitAgentSession(session);
+      emitAgentTimeline(sessionId);
+    },
+
+    interruptAgentSession: ({ sessionId }) => {
+      const session = agentSessions.find((candidate) => candidate.id === sessionId);
+      if (session !== undefined) {
+        const terminalId = agentTerminals.get(sessionId);
+        if (terminalId !== undefined) {
+          terminals
+            .get(terminalId)
+            ?.write(new Uint8Array([session.agentKind === 'agy' ? 0x1b : 0x03]));
+        }
+        Object.assign(session, {
+          status: 'ready',
+          updatedAt: new Date().toISOString(),
+        });
+        emitAgentSession(session);
+      }
+      return Promise.resolve();
+    },
+
+    resolveAgentApproval: ({ sessionId, itemId, resolution }) => {
+      agentTimelines[sessionId] = (agentTimelines[sessionId] ?? []).map((item) =>
+        item.id === itemId && item.kind === 'approval'
+          ? { ...item, resolution }
+          : item,
+      );
+      emitAgentTimeline(sessionId);
+      return Promise.resolve();
+    },
+
+    answerAgentQuestion: ({ sessionId, itemId, optionIndex }) => {
+      agentTimelines[sessionId] = (agentTimelines[sessionId] ?? []).map((item) =>
+        item.id === itemId && item.kind === 'question'
+          ? { ...item, selectedIndex: optionIndex }
+          : item,
+      );
+      emitAgentTimeline(sessionId);
+      return Promise.resolve();
+    },
+
+    onAgentSessionChanged(listener) {
+      agentSessionListeners.add(listener);
+      return () => agentSessionListeners.delete(listener);
+    },
+    onAgentSessionDeleted(listener) {
+      agentSessionDeletedListeners.add(listener);
+      return () => agentSessionDeletedListeners.delete(listener);
+    },
+    onAgentTimelineChanged(listener) {
+      agentTimelineListeners.add(listener);
+      return () => agentTimelineListeners.delete(listener);
+    },
+    onAgentCommunicationError(listener) {
+      agentErrorListeners.add(listener);
+      return () => agentErrorListeners.delete(listener);
     },
 
     getRemoteSettings: () => Promise.resolve({ ...remoteSettings }),

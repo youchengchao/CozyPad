@@ -85,7 +85,9 @@ export class TmuxRuntime {
   }
 
   private tmux(): string {
-    return this.socket === 'default' ? 'tmux' : `tmux -L ${quoteShellArg(this.socket)}`;
+    return this.socket === 'default'
+      ? 'tmux'
+      : `tmux -L ${quoteShellArg(this.socket)} -f /dev/null`;
   }
 
   async listSessions(): Promise<TmuxSessionInfo[]> {
@@ -118,10 +120,12 @@ ${this.tmux()} list-sessions -F '#{session_id}\t#{session_name}\t#{session_creat
     argv: string[];
   }): Promise<{ sessionId: string; paneId: string; createdEpoch: number }> {
     const session = normalizeSessionName(options.name);
-    const shellCommand =
-      options.argv.length === 0
-        ? 'exec bash'
-        : options.argv.map((arg) => quoteShellArg(arg)).join(' ');
+    // Start tmux with a process that cannot disappear during the server/client
+    // handshake. The real agent is installed into the pane only after tmux has
+    // returned stable session and pane ids. This avoids tmux 3.2a collapsing an
+    // immediately-exiting first command into the opaque "server exited
+    // unexpectedly" error.
+    const placeholderCommand = 'while :; do sleep 3600; done';
     const command = `if ! command -v tmux >/dev/null 2>&1; then
   echo "__ERROR__\ttmux is not installed"
   exit 0
@@ -140,7 +144,14 @@ if ${this.tmux()} has-session -t "$session" 2>/dev/null; then
   echo "__ERROR__\tSession already exists: $session"
   exit 0
 fi
-${this.tmux()} new-session -d -s "$session" -c "$cwd" -P -F '__TMUX__\t#{session_id}\t#{pane_id}\t#{session_created}' ${quoteShellArg(shellCommand)}
+tmux_output="$(${this.tmux()} new-session -d -s "$session" -c "$cwd" -P -F '__TMUX__\t#{session_id}\t#{pane_id}\t#{session_created}' ${quoteShellArg(placeholderCommand)} 2>&1)"
+tmux_status=$?
+if [ "$tmux_status" -ne 0 ]; then
+  tmux_error="$(printf '%s' "$tmux_output" | tr '\\r\\n\\t' '   ')"
+  printf '__ERROR__\ttmux new-session failed (exit %s): %s\\n' "$tmux_status" "\${tmux_error:-no output}"
+  exit 0
+fi
+printf '%s\\n' "$tmux_output"
 `;
     const output = await this.exec(command, 10000);
     throwOnError(output, 'tmux new-session failed');
@@ -148,11 +159,18 @@ ${this.tmux()} new-session -d -s "$session" -c "$cwd" -P -F '__TMUX__\t#{session
       if (line.startsWith('__TMUX__\t')) {
         const parts = line.split('\t');
         if (parts.length >= 4) {
-          return {
+          const created = {
             sessionId: parts[1]!,
             paneId: parts[2]!,
             createdEpoch: Number.parseInt(parts[3]!, 10) || 0,
           };
+          try {
+            await this.respawnPane(created.paneId, options.argv);
+          } catch (error) {
+            await this.killSession(created.sessionId).catch(() => undefined);
+            throw error;
+          }
+          return created;
         }
       }
     }
@@ -163,7 +181,7 @@ ${this.tmux()} new-session -d -s "$session" -c "$cwd" -P -F '__TMUX__\t#{session
 
   /** 以 literal 模式送字（-l），避免 tmux 把輸入解讀成 key names（SPEC_V3 §13）。 */
   async sendText(target: string, text: string, pressEnter = true): Promise<void> {
-    const command = `if ! ${this.tmux()} has-session -t ${quoteShellArg(target)} 2>/dev/null; then
+    const command = `if ! ${this.tmux()} display-message -p -t ${quoteShellArg(target)} '#{pane_id}' >/dev/null 2>&1; then
   echo "__ERROR__\tSession not found: ${target}"
   exit 0
 fi
@@ -174,10 +192,55 @@ printf "__OK__\\n"
     throwOnError(await this.exec(command, 5000), 'tmux send failed');
   }
 
+  /**
+   * Replace a pane's placeholder with the real process. `remain-on-exit`
+   * preserves the tmux identity and captured diagnostics even when the process
+   * rejects its CLI arguments or authentication immediately.
+   */
+  async respawnPane(target: string, argv: string[]): Promise<void> {
+    const shellCommand =
+      argv.length === 0
+        ? 'exec bash'
+        : argv.map((argument) => quoteShellArg(argument)).join(' ');
+    const command = `if ! ${this.tmux()} display-message -p -t ${quoteShellArg(target)} '#{pane_id}' >/dev/null 2>&1; then
+  echo "__ERROR__\tSession not found: ${target}"
+  exit 0
+fi
+${this.tmux()} set-option -p -t ${quoteShellArg(target)} remain-on-exit on
+${this.tmux()} respawn-pane -k -t ${quoteShellArg(target)} ${quoteShellArg(shellCommand)}
+printf "__OK__\n"
+`;
+    throwOnError(await this.exec(command, 8000), 'tmux respawn failed');
+  }
+
+  /** 中止目前 pane 的 foreground command；只送固定 C-c，不接受任意 key name。 */
+  async interrupt(target: string): Promise<void> {
+    const command = `if ! ${this.tmux()} display-message -p -t ${quoteShellArg(target)} '#{pane_id}' >/dev/null 2>&1; then
+  echo "__ERROR__\tSession not found: ${target}"
+  exit 0
+fi
+${this.tmux()} send-keys -t ${quoteShellArg(target)} C-c
+printf "__OK__\\n"
+`;
+    throwOnError(await this.exec(command, 5000), 'tmux interrupt failed');
+  }
+
+  /** Send AGY's native cancel gesture without terminating its interactive CLI. */
+  async escape(target: string): Promise<void> {
+    const command = `if ! ${this.tmux()} display-message -p -t ${quoteShellArg(target)} '#{pane_id}' >/dev/null 2>&1; then
+  echo "__ERROR__\tSession not found: ${target}"
+  exit 0
+fi
+${this.tmux()} send-keys -t ${quoteShellArg(target)} Escape
+printf "__OK__\\n"
+`;
+    throwOnError(await this.exec(command, 5000), 'tmux escape failed');
+  }
+
   /** Terminal fallback／診斷用；不得作為 chat 主資料源（SPEC_V3 §6）。 */
   async capturePane(target: string, lines = 160): Promise<string> {
     const clamped = Math.min(500, Math.max(20, Math.trunc(lines)));
-    const command = `if ! ${this.tmux()} has-session -t ${quoteShellArg(target)} 2>/dev/null; then
+    const command = `if ! ${this.tmux()} display-message -p -t ${quoteShellArg(target)} '#{pane_id}' >/dev/null 2>&1; then
   echo "__ERROR__\tSession not found: ${target}"
   exit 0
 fi

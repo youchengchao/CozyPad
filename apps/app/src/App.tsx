@@ -48,11 +48,14 @@ export function App() {
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [state, setState] = useState<ConnectionState>('disconnected');
+  /** Which host is actually in use, as opposed to which one is highlighted. */
+  const [connectedId, setConnectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
   const [credentialPrompt, setCredentialPrompt] = useState<ConnectionProfile | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
   const [mockData, setMockData] = useState(false);
+  const [startupWarnings, setStartupWarnings] = useState<string[]>([]);
   const [tmuxStatus, setTmuxStatus] = useState<TmuxStatus | null>(null);
   const [tmuxPromptDismissed, setTmuxPromptDismissed] = useState(false);
   const [reconnect, setReconnect] = useState<{
@@ -60,6 +63,7 @@ export function App() {
     secondsLeft: number;
   } | null>(null);
 
+  const autoConnected = useRef(false);
   const manualDisconnect = useRef(true);
   const wasConnected = useRef(false);
   const attempts = useRef(0);
@@ -92,8 +96,12 @@ export function App() {
 
   useEffect(() => bridge.onHostKeyPrompt(setHostKeyPrompt), [bridge]);
 
+
   useEffect(() => {
-    void bridge.getAppInfo().then((info) => setMockData(info.mockData));
+    void bridge.getAppInfo().then((info) => {
+      setMockData(info.mockData);
+      setStartupWarnings(info.startupWarnings ?? []);
+    });
   }, [bridge]);
 
   useEffect(
@@ -111,6 +119,10 @@ export function App() {
       connectInFlight.current = true;
       manualDisconnect.current = false;
       setError(null);
+      // tmux 狀態屬於單一主機。留著上一台的狀態，換到本機（不需要 tmux、
+      // 也不會再送新狀態）時會拿舊主機的「未安裝」重新彈出安裝對話框。
+      setTmuxStatus(null);
+      setTmuxPromptDismissed(false);
       void bridge
         .connect({ profileId })
         .then(() => {
@@ -169,8 +181,14 @@ export function App() {
         connectInFlight.current = false;
         wasConnected.current = true;
         attempts.current = 0;
+        setConnectedId(event.profileId);
         clearTimers();
         setReconnect(null);
+      }
+      if (event.state === 'disconnected') {
+        setConnectedId((current) =>
+          current === event.profileId ? null : current,
+        );
       }
       if (event.state === 'error') {
         connectInFlight.current = false;
@@ -188,18 +206,44 @@ export function App() {
     });
   }, [bridge, clearTimers]);
 
+  useEffect(() => {
+    // This machine is the default: it needs no credentials and no network, so
+    // making the user pick and connect to their own computer before doing
+    // anything is a step with no decision in it. Reaching a remote host stays
+    // deliberate.
+    if (autoConnected.current || state !== 'disconnected') return;
+    const local = profiles.find((profile) => profile.isLocal === true);
+    if (local === undefined) return;
+    autoConnected.current = true;
+    // Deliberately does not touch the selection: this is a convenient default,
+    // not a decision taken away from the user.
+    doConnect(local.id);
+  }, [profiles, state, doConnect]);
+
   const selectedProfile = profiles.find((profile) => profile.id === selectedId) ?? null;
+  const connectedProfile =
+    profiles.find((profile) => profile.id === connectedId) ?? selectedProfile;
 
   const handleConnect = () => {
     if (!selectedProfile) return;
     attempts.current = 0;
+    // The local machine has nothing to authenticate against — asking for a
+    // password there would be asking the user to unlock their own computer.
     const hasCredential =
-      (selectedProfile.authMethod ?? 'password') === 'privateKey'
+      selectedProfile.isLocal === true ||
+      ((selectedProfile.authMethod ?? 'password') === 'privateKey'
         ? selectedProfile.hasPrivateKey === true
-        : selectedProfile.hasPassword === true;
+        : selectedProfile.hasPassword === true);
     if (!hasCredential && bridge.kind !== 'mock') {
       setCredentialPrompt(selectedProfile);
       return;
+    }
+    // Switching hosts: drop the current one first so the old connection is not
+    // left running behind the new one.
+    if (connectedId !== null && connectedId !== selectedProfile.id) {
+      clearTimers();
+      setReconnect(null);
+      void bridge.disconnect({ profileId: connectedId });
     }
     doConnect(selectedProfile.id);
   };
@@ -263,18 +307,39 @@ export function App() {
           ⚙
         </button>
         <span className={`status status-${state}`}>{state}</span>
-        <span className={`mode-tag${mockData ? ' mode-mock' : ' mode-ssh'}`}>
-          {mockData ? 'MOCK 資料' : 'SSH'}
+        <span
+          className={`mode-tag${
+            mockData
+              ? ' mode-mock'
+              : connectedProfile?.isLocal === true
+                ? ' mode-local'
+                : ' mode-ssh'
+          }`}
+        >
+          {mockData
+            ? 'MOCK DATA'
+            : connectedProfile?.isLocal === true
+              ? 'LOCAL'
+              : 'SSH'}
         </span>
         <span className="spacer" />
-        {state === 'connected' ? (
+        {/*
+          Being connected to one host must never hide the way to reach another.
+          Picking a different host from the list turns this into the action that
+          switches to it; Disconnect only applies to the host in use.
+        */}
+        {state === 'connected' && selectedId === connectedId ? (
           <button onClick={handleDisconnect}>Disconnect</button>
         ) : (
           <button
             onClick={handleConnect}
             disabled={!selectedProfile || state === 'connecting'}
           >
-            {state === 'connecting' ? 'Connecting…' : 'Connect'}
+            {state === 'connecting'
+              ? 'Connecting…'
+              : state === 'connected'
+                ? '切換到這台'
+                : 'Connect'}
           </button>
         )}
       </header>
@@ -303,6 +368,22 @@ export function App() {
           </button>
         </div>
       ) : null}
+      {startupWarnings.map((warning) => (
+        <div className="startup-warning-banner" role="alert" key={warning}>
+          <strong>本機設定載入異常</strong>
+          <span>{warning}</span>
+          <button
+            className="ghost"
+            onClick={() =>
+              setStartupWarnings((current) =>
+                current.filter((entry) => entry !== warning),
+              )
+            }
+          >
+            知道了
+          </button>
+        </div>
+      ))}
       {error !== null && !reconnect ? <div className="error-banner">{error}</div> : null}
       <div className="shell">
         <nav className="nav-rail">
@@ -320,7 +401,10 @@ export function App() {
         </nav>
         <main className="workspace">
           <section className="workspace-page" hidden={workspace !== 'agents'}>
-            <AgentsWorkspace mockData={mockData} />
+            <AgentsWorkspace
+              connected={state === 'connected'}
+              profileId={selectedId}
+            />
           </section>
           <section className="workspace-page" hidden={workspace !== 'research'}>
             <ResearchWorkspace />

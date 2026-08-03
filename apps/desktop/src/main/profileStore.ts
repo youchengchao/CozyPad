@@ -332,6 +332,44 @@ export class ProfileStore implements ProfileStorePort {
   }
 }
 
+/**
+ * Presents "this computer" alongside the saved SSH hosts. It is a real
+ * connection choice, not a mode, so it belongs in the same list — but it has
+ * no credentials to store and must not be editable or removable.
+ */
+export class ProfileStoreWithLocal implements ProfileStorePort {
+  constructor(
+    private readonly inner: ProfileStorePort,
+    private readonly local: ConnectionProfile,
+  ) {}
+
+  list(): ConnectionProfile[] {
+    return [this.local, ...this.inner.list()];
+  }
+
+  get(profileId: string): ConnectionProfile | undefined {
+    return profileId === this.local.id ? this.local : this.inner.get(profileId);
+  }
+
+  save(draft: ConnectionProfileDraft): Promise<ConnectionProfile> {
+    if (draft.id === this.local.id) {
+      return Promise.reject(new Error('This computer is not an editable connection'));
+    }
+    return this.inner.save(draft);
+  }
+
+  remove(profileId: string): Promise<void> {
+    if (profileId === this.local.id) {
+      return Promise.reject(new Error('This computer cannot be removed'));
+    }
+    return this.inner.remove(profileId);
+  }
+
+  getCredential(profileId: string): ProfileCredential | null {
+    return profileId === this.local.id ? null : this.inner.getCredential(profileId);
+  }
+}
+
 /** mock 模式（COZYPAD_MOCK=1）用的純記憶體實作。 */
 export class MemoryProfileStore implements ProfileStorePort {
   private profiles: ConnectionProfile[];
