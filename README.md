@@ -12,6 +12,7 @@ app、斷線、換裝置，工作都不會中斷。
 （實際大小依版本與簽章而異）。
 
 > 完整規格見 [SPEC.md](SPEC.md)；本 README 只講怎麼跑起來。
+> Web service: https://github.com/IlikeBB/CozyPad_Web.git
 
 ## 現在能用的功能
 
