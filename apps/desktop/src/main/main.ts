@@ -1,8 +1,14 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { BrowserWindow, app, dialog, safeStorage, session } from 'electron';
+import {
+  BrowserWindow,
+  app,
+  dialog,
+  nativeTheme,
+  safeStorage,
+  session,
+} from 'electron';
 import { IpcChannels } from '@cozypad/contracts';
-import { MockRemoteFs, MockTelemetryGenerator } from '@cozypad/test-fixtures';
 import { TmuxRuntime } from '@cozypad/tmux-runtime';
 import {
   MemoryRemoteSettings,
@@ -22,7 +28,6 @@ import { MemoryProfileStore, ProfileStore, ProfileStoreWithLocal } from './profi
 import type { ProfileCrypto, ProfileStorePort } from './profileStore';
 import { ShellTelemetry } from '@cozypad/remote-services';
 import type { TelemetrySource } from '@cozypad/remote-services';
-import { MOCK_PROFILE, MockTransport } from './transport/mockTransport';
 import { Ssh2Transport } from './transport/ssh2Transport';
 import {
   LOCAL_PROFILE,
@@ -31,7 +36,10 @@ import {
 } from './transport/localTransport';
 import { LocalAgentRuntime } from './localAgentRuntime';
 import { RoutingAgentRuntime } from './routingAgentRuntime';
-import { readLatestAgyTranscript } from './agyTranscript';
+import {
+  latestAgyConversationId,
+  readAgyTranscript,
+} from './agyTranscript';
 import { RoutingTransport } from './transport/routingTransport';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -50,7 +58,6 @@ const AGY_SMOKE_CWD = process.env.COZYPAD_AGY_SMOKE_CWD ?? '~';
 const AGY_HISTORY_ONLY = process.env.COZYPAD_AGY_SMOKE_HISTORY_ONLY === '1';
 const AGY_INTERACTION_CASE =
   process.env.COZYPAD_AGY_SMOKE_INTERACTION_CASE ?? '';
-const USE_MOCK = process.env.COZYPAD_MOCK === '1' || SMOKE_TEST;
 
 // Windows' GPU Viz process can reject capturePage immediately after repeated
 // full-screen smoke launches. Software compositing makes the visual regression
@@ -85,7 +92,6 @@ const electronProfileCrypto: ProfileCrypto = {
 const startupWarnings: string[] = [];
 
 async function createProfileStore(): Promise<ProfileStorePort> {
-  if (USE_MOCK) return new MemoryProfileStore([MOCK_PROFILE]);
   const store = new ProfileStore(
     path.join(app.getPath('userData'), 'profiles.json'),
     electronProfileCrypto,
@@ -134,19 +140,6 @@ async function createServices(
   profileStore: ProfileStorePort,
   win: BrowserWindow,
 ): Promise<MainServices> {
-  if (USE_MOCK) {
-    return {
-      transport: new MockTransport(),
-      files: new MockRemoteFs(),
-      telemetry: new MockTelemetryGenerator(),
-      hostKeys: null,
-      remoteSettings: new MemoryRemoteSettings(),
-      tmuxProvisioner: new MockTmuxProvisioner(),
-      tmuxWatcher: null,
-      agentCommunication: null,
-    };
-  }
-
   const knownHosts = new KnownHostsStore(
     path.join(app.getPath('userData'), 'known_hosts.json'),
     electronProfileCrypto,
@@ -214,7 +207,9 @@ async function createServices(
     },
     isLocalHost: (profileId) => isLocalProfile(profileId),
     onHostChanged: (profileId) => tmux.useLocal(isLocalProfile(profileId)),
-    readLocalAgyTranscript: () => readLatestAgyTranscript(),
+    getLatestLocalAgyConversationId: (window) => latestAgyConversationId(window),
+    readLocalAgyTranscript: (conversationId) =>
+      readAgyTranscript(conversationId),
   });
   await agentCommunication.load();
   return {
@@ -232,12 +227,14 @@ async function createServices(
 }
 
 function createWindow(): BrowserWindow {
+  nativeTheme.themeSource = 'dark';
   const win = new BrowserWindow({
+    show: false,
     width: 1200,
     height: 800,
     // Not "SSH mode" any more: this computer is the default connection.
-    title: USE_MOCK ? 'CozyPad — MOCK 模式（假主機）' : 'CozyPad',
-    backgroundColor: '#101014',
+    title: 'CozyPad',
+    backgroundColor: '#050506',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       sandbox: true,
@@ -259,6 +256,11 @@ function createWindow(): BrowserWindow {
   } else {
     void win.loadFile(path.join(__dirname, '../../app/dist/index.html'));
   }
+
+  win.once('ready-to-show', () => {
+    win.show();
+  });
+
   return win;
 }
 
@@ -289,23 +291,22 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
         const bridge = window.cozypad;
         const chunks = [];
         bridge.onTerminalOutput((event) => chunks.push(event.dataBase64));
-        await bridge.connect({ profileId: 'mock-electron' });
+        await bridge.connect({ profileId: 'local-machine' });
         const { terminalId } = await bridge.openTerminal({
-          profileId: 'mock-electron', cols: 80, rows: 24,
+          profileId: 'local-machine', cols: 80, rows: 24,
         });
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        bridge.writeTerminal({ terminalId, dataBase64: btoa('ls\\r') });
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        bridge.writeTerminal({ terminalId, dataBase64: btoa('echo cozypad-smoke-ok\\r') });
+        await new Promise((resolve) => setTimeout(resolve, 500));
         const text = chunks.map((chunk) => atob(chunk)).join('');
         return JSON.stringify({
-          banner: text.includes('CozyPad mock shell'),
-          ls: text.includes('cozypad.study.yaml'),
+          ok: text.includes('cozypad-smoke-ok'),
         });
       })()`,
     );
-    const verdict = JSON.parse(String(roundTrip)) as { banner: boolean; ls: boolean };
-    if (!verdict.banner) throw new Error('terminal banner never arrived over IPC');
-    if (!verdict.ls) throw new Error('terminal input round trip failed');
+
+    const verdict = JSON.parse(String(roundTrip)) as { ok: boolean };
+    if (!verdict.ok) throw new Error('terminal input round trip failed');
     console.log(
       '[smoke] OK: renderer loaded, bridge exposed, terminal IPC round trip verified',
     );
@@ -1515,7 +1516,7 @@ process.on('unhandledRejection', (reason) => {
 app.whenReady().then(async () => {
   if (!gotLock) return;
   console.log(
-    `[cozypad] transport mode: ${USE_MOCK ? 'MOCK' : 'SSH'} (COZYPAD_MOCK=${process.env.COZYPAD_MOCK ?? '(unset)'})`,
+    `[cozypad] transport mode: SSH`,
   );
   if (!DEV_URL) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -1538,9 +1539,8 @@ app.whenReady().then(async () => {
       {
         ...services,
         profileStore,
-        mockData: USE_MOCK,
         startupWarnings,
-        isLocalProfile: (profileId) => !USE_MOCK && isLocalProfile(profileId),
+        isLocalProfile,
       },
       win,
     );

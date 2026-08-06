@@ -34,3 +34,11 @@ node_modules/
 apps/**/dist/
 apps/desktop/release*/
 *.tsbuildinfo
+
+# Local package/cache and analysis artifacts
+.pnpm-store/
+graphify-out/
+lib/graphify-out/
+.scratch/
+*_diff.txt
+.claude/

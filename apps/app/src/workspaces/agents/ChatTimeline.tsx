@@ -2,12 +2,16 @@ import { useEffect, useRef } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatItem } from '@cozypad/contracts';
+import { MessageAttachments } from './MessageAttachments';
 
 interface ChatTimelineProps {
   sessionId: string;
   items: ChatItem[];
+  interactive?: boolean;
   onResolveApproval(itemId: string, resolution: 'allowed' | 'denied'): void;
   onAnswerQuestion(itemId: string, optionIndex: number): void;
+  /** Refuses a whole question request; used by unrepresentable questions. */
+  onDeclineQuestion?(itemId: string): void;
 }
 
 function DiffBody({ diff }: { diff: string }) {
@@ -35,8 +39,10 @@ function DiffBody({ diff }: { diff: string }) {
 export function ChatTimeline({
   sessionId,
   items,
+  interactive = true,
   onResolveApproval,
   onAnswerQuestion,
+  onDeclineQuestion,
 }: ChatTimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const positions = useRef(new Map<string, number>());
@@ -62,20 +68,27 @@ export function ChatTimeline({
       {items.map((item) => {
         switch (item.kind) {
           case 'message':
+            const messageAttachments = item.attachments ?? [];
             return (
               <div
                 key={item.id}
                 className={`msg msg-${item.role}${item.streaming ? ' msg-streaming' : ''}`}
               >
-                <div className="msg-body">
+                <div
+                  className={`msg-body${messageAttachments.length > 0 ? ' msg-body-with-attachments' : ''}`}
+                >
                   {item.role === 'assistant' ? (
                     <div className="markdown">
                       <Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown>
                     </div>
-                  ) : (
-                    item.text
+                  ) : item.text === '' ? null : (
+                    <div className="msg-text">{item.text}</div>
                   )}
+                  <MessageAttachments attachments={messageAttachments} />
                   {item.streaming ? <span className="caret" /> : null}
+                  {item.interrupted === true ? (
+                    <span className="msg-interrupted">已中斷</span>
+                  ) : null}
                 </div>
               </div>
             );
@@ -86,7 +99,9 @@ export function ChatTimeline({
                   <span className={`tool-status tool-status-${item.status}`} />
                   <span className="tool-name">{item.name}</span>
                   <span className="tool-summary mono">{item.summary}</span>
-                  {item.durationMs !== undefined ? (
+                  {item.status === 'unknown' ? (
+                    <span className="tool-duration">結果未知</span>
+                  ) : item.durationMs !== undefined ? (
                     <span className="tool-duration">{item.durationMs}ms</span>
                   ) : null}
                 </summary>
@@ -114,17 +129,21 @@ export function ChatTimeline({
                   <span className="approval-risk">{item.riskSummary}</span>
                 </div>
                 <code className="approval-command">{item.command}</code>
-                <div className="approval-meta mono">cwd: {item.cwd}</div>
+                <div className="approval-meta mono">
+                  {item.machine === undefined ? '' : `${item.machine} · `}cwd: {item.cwd}
+                </div>
                 {item.resolution === 'pending' ? (
                   <div className="approval-actions">
                     <button
                       className="btn-allow"
+                      disabled={!interactive}
                       onClick={() => onResolveApproval(item.id, 'allowed')}
                     >
                       Allow once
                     </button>
                     <button
                       className="btn-deny"
+                      disabled={!interactive}
                       onClick={() => onResolveApproval(item.id, 'denied')}
                     >
                       Deny
@@ -132,14 +151,71 @@ export function ChatTimeline({
                   </div>
                 ) : (
                   <span className={`chip chip-${item.resolution}`}>
-                    {item.resolution === 'allowed' ? 'Allowed' : 'Denied'}
+                    {item.resolution === 'allowed'
+                      ? 'Allowed'
+                      : item.resolution === 'denied'
+                        ? 'Denied'
+                        : 'Expired'}
                   </span>
                 )}
               </div>
             );
-          case 'question':
+          case 'question': {
+            const batch =
+              item.batchId === undefined
+                ? []
+                : items.filter(
+                    (candidate): candidate is Extract<ChatItem, { kind: 'question' }> =>
+                      candidate.kind === 'question' &&
+                      candidate.batchId === item.batchId,
+                  );
+            const unanswered = batch.filter(
+              (candidate) =>
+                candidate.selectedIndex === null && candidate.declined !== true,
+            ).length;
+            const batchNote =
+              batch.length > 1 ? (
+                <div className="question-batch-note">
+                  本次詢問共 {batch.length} 題，尚有 {unanswered} 題未作答
+                </div>
+              ) : null;
+            const closedChip =
+              item.declined === true ? (
+                <span className="chip chip-denied">Declined</span>
+              ) : item.expired === true && item.selectedIndex === null ? (
+                <span className="chip chip-expired">Expired</span>
+              ) : null;
+            if (item.unrepresentable === true) {
+              // SPEC 3.4.6: a question the card cannot express still shows
+              // its raw content and can be refused — one refusal answers the
+              // whole request, so the agent is never left waiting on nothing.
+              return (
+                <div
+                  key={item.id}
+                  className="card question-card question-unrepresentable"
+                >
+                  {batchNote}
+                  <div className="question-prompt">
+                    CozyPad 尚無法呈現這種題型，原始內容如下：
+                  </div>
+                  <pre className="question-raw mono">{item.prompt}</pre>
+                  {closedChip ?? (
+                    <div className="question-actions">
+                      <button
+                        className="btn-deny"
+                        disabled={!interactive || onDeclineQuestion === undefined}
+                        onClick={() => onDeclineQuestion?.(item.id)}
+                      >
+                        拒絕整個詢問
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            }
             return (
               <div key={item.id} className="card question-card">
+                {batchNote}
                 <div className="question-prompt">{item.prompt}</div>
                 <div className="question-options">
                   {item.options.map((option, index) => {
@@ -149,7 +225,12 @@ export function ChatTimeline({
                       <button
                         key={option.label}
                         className={`question-option${chosen ? ' question-option-chosen' : ''}`}
-                        disabled={answered}
+                        disabled={
+                          answered ||
+                          !interactive ||
+                          item.expired === true ||
+                          item.declined === true
+                        }
                         onClick={() => onAnswerQuestion(item.id, index)}
                       >
                         <span className="question-label">{option.label}</span>
@@ -161,13 +242,24 @@ export function ChatTimeline({
                     );
                   })}
                 </div>
+                {closedChip}
               </div>
             );
+          }
           case 'usage':
             return (
               <div key={item.id} className="usage-row">
                 usage — in {item.inputTokens.toLocaleString()} / out{' '}
                 {item.outputTokens.toLocaleString()} tokens
+              </div>
+            );
+          case 'notice':
+            // A CozyPad marker (e.g. the new-native-conversation boundary),
+            // deliberately styled as a divider so it never reads as agent
+            // output (SPEC 277).
+            return (
+              <div key={item.id} className="timeline-notice" role="note">
+                <span>{item.text}</span>
               </div>
             );
         }

@@ -2,12 +2,32 @@ import type { NormalizedAgentEvent } from '@cozypad/contracts';
 
 export const CODEX_RAW_EVENT_VERSION = 'codex-app-server-v2';
 
+/**
+ * Every JSON-RPC method that blocks a Codex turn until CozyPad replies.
+ * The service registers these as pending controls and this adapter must emit
+ * a card for each one: a method registered but never rendered leaves the turn
+ * waiting forever on a reply no card can send, which is why the list lives in
+ * one place. Names come from `codex app-server generate-ts` (v2).
+ */
+export const CODEX_CONTROL_METHODS = [
+  'item/commandExecution/requestApproval',
+  'item/fileChange/requestApproval',
+  'item/permissions/requestApproval',
+  'item/tool/requestUserInput',
+] as const;
+
 export interface CodexParseContext {
   localSessionId: string;
   agentConversationId?: string;
   nextSequence(): number;
   nextEventId(): string;
   now(): string;
+  /**
+   * Paths from each fileChange item/started, kept for the approval request
+   * that follows: FileChangeRequestApprovalParams carries only an opaque
+   * itemId, so without this the card cannot say which files are touched.
+   */
+  fileChangePaths?: Map<string, string[]>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -32,6 +52,7 @@ function itemEvents(
   lifecycle: 'started' | 'completed',
   item: Record<string, unknown>,
   envelope: () => Omit<NormalizedAgentEvent, 'kind'>,
+  context: CodexParseContext,
 ): NormalizedAgentEvent[] {
   const itemId = stringValue(item.id) ?? 'unknown';
   const itemType = item.type;
@@ -75,6 +96,9 @@ function itemEvents(
             isRecord(change) && typeof change.path === 'string' ? [change.path] : [],
           )
         : [];
+      if (paths.length > 0) {
+        (context.fileChangePaths ??= new Map()).set(itemId, paths);
+      }
       return [
         {
           ...envelope(),
@@ -176,7 +200,29 @@ function questionEvents(
 ): NormalizedAgentEvent[] {
   const questions = Array.isArray(params.questions) ? params.questions : [];
   return questions.flatMap((question, index) => {
-    if (!isRecord(question) || typeof question.question !== 'string') return [];
+    const base = {
+      ...envelope(),
+      kind: 'question_requested' as const,
+      questionId: `${String(rawId)}:${index}`,
+    };
+    // Codex is blocked on this request whether or not the card can render
+    // it, so a question CozyPad cannot represent still becomes a card —
+    // marked unrepresentable, showing the raw content, offering decline
+    // (SPEC 3.4.6). Dropping it left the turn waiting on nothing.
+    if (!isRecord(question) || typeof question.question !== 'string') {
+      return [
+        {
+          ...base,
+          prompt: display(question) || 'Unreadable question payload',
+          options: [],
+          unrepresentable: true,
+        },
+      ];
+    }
+    const prompt =
+      typeof question.header === 'string' && question.header !== ''
+        ? `${question.header}: ${question.question}`
+        : question.question;
     const options = Array.isArray(question.options)
       ? question.options.flatMap((option) => {
           if (!isRecord(option) || typeof option.label !== 'string') return [];
@@ -190,19 +236,22 @@ function questionEvents(
           ];
         })
       : [];
-    if (options.length < 2 || options.length > 6) return [];
-    return [
-      {
-        ...envelope(),
-        kind: 'question_requested' as const,
-        questionId: `${String(rawId)}:${index}`,
-        prompt:
-          typeof question.header === 'string' && question.header !== ''
-            ? `${question.header}: ${question.question}`
-            : question.question,
-        options,
-      },
-    ];
+    if (options.length < 2 || options.length > 6) {
+      // Free-form input (options null) or an option count the card cannot
+      // hold. Keep any raw options visible alongside the question text.
+      return [
+        {
+          ...base,
+          prompt:
+            question.options == null
+              ? prompt
+              : `${prompt}\n${display(question.options)}`,
+          options: [],
+          unrepresentable: true,
+        },
+      ];
+    }
+    return [{ ...base, prompt, options }];
   });
 }
 
@@ -278,7 +327,12 @@ export function parseCodexAppServerLine(
   }
   if (method === 'item/started' || method === 'item/completed') {
     if (!isRecord(params.item)) return [];
-    return itemEvents(method === 'item/started' ? 'started' : 'completed', params.item, envelope);
+    return itemEvents(
+      method === 'item/started' ? 'started' : 'completed',
+      params.item,
+      envelope,
+      context,
+    );
   }
   if (
     method === 'item/agentMessage/delta' &&
@@ -302,15 +356,33 @@ export function parseCodexAppServerLine(
   }
   if (
     (method === 'item/commandExecution/requestApproval' ||
-      method === 'item/fileChange/requestApproval') &&
+      method === 'item/fileChange/requestApproval' ||
+      method === 'item/permissions/requestApproval') &&
     (typeof raw.id === 'string' || typeof raw.id === 'number')
   ) {
     const network = isRecord(params.networkApprovalContext)
       ? params.networkApprovalContext
       : undefined;
-    const command = network === undefined
-      ? display(params.command ?? params.itemId ?? method)
-      : `Network access: ${display(network.protocol)}://${display(network.host)}`;
+    // A permissions request carries a profile, not a command. Rendering the
+    // requested profile verbatim is deliberate: the fields are additive per
+    // Codex version, and showing the raw request is the only claim that stays
+    // true across all of them.
+    const fileChangePaths =
+      method === 'item/fileChange/requestApproval' &&
+      typeof params.itemId === 'string'
+        ? context.fileChangePaths?.get(params.itemId)
+        : undefined;
+    const command =
+      network !== undefined
+        ? `Network access: ${display(network.protocol)}://${display(network.host)}`
+        : method === 'item/permissions/requestApproval'
+          ? display(params.permissions ?? params) || method
+          : fileChangePaths !== undefined && fileChangePaths.length > 0
+            ? fileChangePaths.join('\n')
+            : method === 'item/fileChange/requestApproval' &&
+                stringValue(params.grantRoot) !== undefined
+              ? `Write access under ${stringValue(params.grantRoot)}`
+              : display(params.command ?? params.itemId ?? method);
     return [
       {
         ...envelope(),
@@ -321,7 +393,9 @@ export function parseCodexAppServerLine(
           stringValue(params.reason) ??
           (method === 'item/fileChange/requestApproval'
             ? 'Codex requests permission to modify files'
-            : 'Codex requests permission to execute this command'),
+            : method === 'item/permissions/requestApproval'
+              ? 'Codex requests additional sandbox permissions'
+              : 'Codex requests permission to execute this command'),
       },
     ];
   }
@@ -330,6 +404,29 @@ export function parseCodexAppServerLine(
     (typeof raw.id === 'string' || typeof raw.id === 'number')
   ) {
     return questionEvents(raw.id, params, envelope);
+  }
+  if (
+    method === 'thread/tokenUsage/updated' &&
+    isRecord(params.tokenUsage) &&
+    isRecord(params.tokenUsage.last)
+  ) {
+    // SPEC 1225: usage is displayed whenever the agent reports it. `last`
+    // is the current turn's breakdown (generate-ts v2 ThreadTokenUsage).
+    const last = params.tokenUsage.last;
+    if (
+      typeof last.inputTokens !== 'number' ||
+      typeof last.outputTokens !== 'number'
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...envelope(),
+        kind: 'usage',
+        inputTokens: last.inputTokens,
+        outputTokens: last.outputTokens,
+      },
+    ];
   }
   if (method === 'warning' && typeof params.message === 'string') {
     return [{ ...envelope(), kind: 'activity', label: params.message }];

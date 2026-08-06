@@ -42,17 +42,19 @@ export const IpcChannels = {
   agentTerminalOpen: 'cozypad:agent:terminal:open',
   agentSessionRename: 'cozypad:agent:session:rename',
   agentSessionDelete: 'cozypad:agent:session:delete',
-  agentAttachmentUpload: 'cozypad:agent:attachment:upload',
+  agentAttachmentsUpload: 'cozypad:agent:attachments:upload',
   agentSessionSend: 'cozypad:agent:session:send',
   agentSessionInterrupt: 'cozypad:agent:session:interrupt',
   agentApprovalResolve: 'cozypad:agent:approval:resolve',
   agentQuestionAnswer: 'cozypad:agent:question:answer',
+  agentQuestionDecline: 'cozypad:agent:question:decline',
   agentSessionChanged: 'cozypad:agent:session:changed',
   agentSessionDeleted: 'cozypad:agent:session:deleted',
   agentTimelineChanged: 'cozypad:agent:timeline:changed',
   agentCommunicationError: 'cozypad:agent:error',
   clipboardRead: 'cozypad:clipboard:read',
   clipboardWrite: 'cozypad:clipboard:write',
+  clipboardWriteImage: 'cozypad:clipboard:write-image',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

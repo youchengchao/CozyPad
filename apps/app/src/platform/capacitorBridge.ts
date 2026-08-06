@@ -309,7 +309,7 @@ export function createCapacitorBridge(
   return {
     kind: 'capacitor',
 
-    getAppInfo: (): Promise<AppInfo> => Promise.resolve({ mockData: false }),
+    getAppInfo: (): Promise<AppInfo> => Promise.resolve({}),
 
     async listProfiles() {
       await load();
@@ -552,7 +552,7 @@ export function createCapacitorBridge(
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     deleteAgentSession: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    uploadAgentAttachment: () =>
+    uploadAgentAttachments: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     sendAgentMessage: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
@@ -561,6 +561,8 @@ export function createCapacitorBridge(
     resolveAgentApproval: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     answerAgentQuestion: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    declineAgentQuestion: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     onAgentSessionChanged: () => () => undefined,
     onAgentSessionDeleted: () => () => undefined,

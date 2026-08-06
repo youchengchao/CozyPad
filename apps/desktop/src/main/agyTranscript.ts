@@ -106,7 +106,16 @@ function textOfField(payload: Buffer, wanted: number): string | null {
   return parts.length === 0 ? null : parts.join('\n\n');
 }
 
-async function latestConversationDb(): Promise<string | null> {
+export interface AgyConversationWindow {
+  /** Reject databases last written before this Unix time (ms). */
+  notBefore?: number;
+  /** Reject databases last written after this Unix time (ms). */
+  notAfter?: number;
+}
+
+async function latestConversationDb(
+  window?: AgyConversationWindow,
+): Promise<string | null> {
   let names: string[];
   try {
     names = await fs.readdir(CONVERSATIONS_DIR());
@@ -119,6 +128,15 @@ async function latestConversationDb(): Promise<string | null> {
     const file = path.join(CONVERSATIONS_DIR(), name);
     try {
       const stat = await fs.stat(file);
+      // The directory is global to the machine: without a time window the
+      // "latest" database is simply whoever used AGY most recently, which
+      // bound one CozyPad session to another session's conversation.
+      if (window?.notBefore !== undefined && stat.mtimeMs < window.notBefore) {
+        continue;
+      }
+      if (window?.notAfter !== undefined && stat.mtimeMs > window.notAfter) {
+        continue;
+      }
       if (newest === null || stat.mtimeMs > newest.mtime) {
         newest = { file, mtime: stat.mtimeMs };
       }
@@ -127,6 +145,14 @@ async function latestConversationDb(): Promise<string | null> {
     }
   }
   return newest?.file ?? null;
+}
+
+/** The id AGY accepts through `--conversation`, without exposing a file path. */
+export async function latestAgyConversationId(
+  window?: AgyConversationWindow,
+): Promise<string | undefined> {
+  const file = await latestConversationDb(window);
+  return file === null ? undefined : path.basename(file, '.db');
 }
 
 /** Rebuild the visible transcript from a conversation's raw step rows. */
@@ -160,8 +186,15 @@ export function decodeAgySteps(
  * oldest turn first. Returns [] whenever anything is missing or unreadable —
  * a restored transcript is a nicety, never worth failing a session over.
  */
-export async function readLatestAgyTranscript(): Promise<AgyRecoveredTurn[]> {
-  const file = await latestConversationDb();
+export async function readAgyTranscript(
+  conversationId?: string,
+): Promise<AgyRecoveredTurn[]> {
+  const file =
+    conversationId === undefined
+      ? await latestConversationDb()
+      : /^[0-9a-f-]{36}$/iu.test(conversationId)
+        ? path.join(CONVERSATIONS_DIR(), `${conversationId}.db`)
+        : null;
   if (file === null) return [];
   try {
     // Imported lazily: node:sqlite is present in Electron's Node, but a mock
@@ -179,4 +212,8 @@ export async function readLatestAgyTranscript(): Promise<AgyRecoveredTurn[]> {
   } catch {
     return [];
   }
+}
+
+export function readLatestAgyTranscript(): Promise<AgyRecoveredTurn[]> {
+  return readAgyTranscript();
 }

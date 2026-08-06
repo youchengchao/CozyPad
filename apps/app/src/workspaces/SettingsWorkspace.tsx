@@ -5,7 +5,6 @@ import { getBridge } from '../platform/bridge';
 
 interface SettingsWorkspaceProps {
   bridgeKind: string;
-  mockData: boolean;
   connected: boolean;
 }
 
@@ -35,7 +34,6 @@ function Toggle({
 
 export function SettingsWorkspace({
   bridgeKind,
-  mockData,
   connected,
 }: SettingsWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
@@ -172,12 +170,6 @@ export function SettingsWorkspace({
             <span className="hint settings-sub">Cascadia Mono / Consolas / Noto Sans Mono CJK</span>
           </span>
           <span className="hint">Phase 6 開放調整</span>
-        </div>
-        <div className="settings-row">
-          <span>資料模式</span>
-          <span className={`mode-tag${mockData ? ' mode-mock' : ' mode-ssh'}`}>
-            {mockData ? 'MOCK 資料' : 'SSH'}
-          </span>
         </div>
       </div>
 

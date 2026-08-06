@@ -123,4 +123,78 @@ describe('Codex app-server adapter', () => {
     });
     expect(unprefixed).toEqual([]);
   });
+
+  it('maps thread token usage updates to usage events', () => {
+    const events = parseCodexAppServerLine(
+      JSON.stringify({
+        method: 'thread/tokenUsage/updated',
+        params: {
+          threadId: 'thr_1',
+          turnId: 'turn_1',
+          tokenUsage: {
+            total: { totalTokens: 2000, inputTokens: 1500, outputTokens: 500 },
+            last: { totalTokens: 700, inputTokens: 500, outputTokens: 200 },
+            modelContextWindow: null,
+          },
+        },
+      }),
+      context(),
+    );
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'usage',
+        inputTokens: 500,
+        outputTokens: 200,
+      }),
+    ]);
+  });
+
+  it('marks free-form questions unrepresentable instead of dropping them', () => {
+    const events = parseCodexAppServerLine(
+      JSON.stringify({
+        id: 'input-7',
+        method: 'item/tool/requestUserInput',
+        params: {
+          questions: [
+            { id: 'q-free', header: 'Notes', question: 'Anything else?', options: null, isOther: true },
+          ],
+        },
+      }),
+      context(),
+    );
+
+    expect(events[0]).toMatchObject({
+      kind: 'question_requested',
+      questionId: 'input-7:0',
+      prompt: 'Notes: Anything else?',
+      options: [],
+      unrepresentable: true,
+    });
+  });
+
+  it('renders a permissions approval instead of black-holing the request', () => {
+    const events = parseCodexAppServerLine(
+      JSON.stringify({
+        id: 77,
+        method: 'item/permissions/requestApproval',
+        params: {
+          threadId: 'thr_1',
+          turnId: 'turn_1',
+          itemId: 'perm_1',
+          cwd: '/srv/project',
+          reason: 'Needs network access',
+          permissions: { network: { enabled: true }, fileSystem: null },
+        },
+      }),
+      context(),
+    );
+
+    expect(events[0]).toMatchObject({
+      kind: 'approval_requested',
+      approvalId: '77',
+      command: '{"network":{"enabled":true},"fileSystem":null}',
+      riskSummary: 'Needs network access',
+    });
+  });
 });

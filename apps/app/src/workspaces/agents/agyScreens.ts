@@ -98,7 +98,9 @@ export interface AgyContextReportScreen extends AgyScreenCommon {
   title: string;
   /** `Gemini 3.6 Flash (High) · 0/1.0M tokens` */
   summary: string;
-  usedPercent: number;
+  /** Absent when the screen carried no total. Never defaulted to 0: an
+   *  unknown context budget must not read as an empty one. */
+  usedPercent?: number;
   segments: AgyContextSegment[];
   related: string[];
 }
@@ -169,9 +171,18 @@ const STATUS_FOOTER =
   /(?:^|\s{2,})((?:gemini|claude|gpt|grok|llama)[\w.\s()+-]*?)\s*·\s*(\w+)\s*$/iu;
 /** `Gemini 3.6 Flash (High) · 0/1.0M tokens` on the context screen. */
 const CONTEXT_SUMMARY = /^(.+?)\s+·\s+(\S+)\s+tokens\s*$/u;
-/** `Weekly Limit` followed by `98% remaining · Refreshes in 51h 54m`. */
-const LIMIT_HEADING = /^([\w\s-]*?limit)\s*$/iu;
+/**
+ * `Weekly Limit` or `Weekly Limit Remaining` — AGY 1.1.10 appends "Remaining"
+ * to the heading — followed by `98% remaining · Refreshes in 51h 54m`.
+ */
+const LIMIT_HEADING = /^([\w\s-]*?limit)(?:\s+remaining)?\s*$/iu;
 const LIMIT_REMAINING = /^(\d+(?:\.\d+)?)%\s+remaining(?:\s*·\s*(.+))?$/iu;
+/**
+ * `[████████] 99.33%` — the gauge above the note. A limit that is untouched
+ * reads `Quota available` instead of `N% remaining`, so the gauge is the only
+ * place its number appears.
+ */
+const LIMIT_BAR = /^\[[^\]]*\]\s*(\d+(?:\.\d+)?)%\s*$/u;
 
 /**
  * Read whatever status the current screen happens to carry. Returns only the
@@ -199,12 +210,15 @@ export function readAgyStatus(lines: readonly string[]): AgyStatus {
       status.contextSummary = `${summary[2]!} tokens`;
     }
     const free = context.segments.find((segment) => /free/iu.test(segment.label));
-    status.contextUsedPercent =
+    const used =
       free === undefined ? context.usedPercent : Math.round((100 - free.percent) * 10) / 10;
+    // Leave the field absent when the screen did not report a total, so the
+    // header can say "unknown" instead of claiming an empty context.
+    if (used !== undefined) status.contextUsedPercent = used;
   }
 
   if (context?.kind === 'quotaReport') {
-    status.limits = context.groups.flatMap((group) => {
+    const groupLimits = context.groups.flatMap((group) => {
       const groupLabel = group.name
         .toLowerCase()
         .replace(/\s+models?$/u, '')
@@ -226,6 +240,10 @@ export function readAgyStatus(lines: readonly string[]): AgyStatus {
         };
       });
     });
+    // An empty list is a claim ("no limits exist"); leaving the field absent
+    // says "we could not read them", which keeps the header's unavailable
+    // hint honest when the report parses but its gauges do not.
+    if (groupLimits.length > 0) status.limits = groupLimits;
     return status;
   }
 
@@ -233,16 +251,35 @@ export function readAgyStatus(lines: readonly string[]): AgyStatus {
   for (let index = 0; index < lines.length; index += 1) {
     const heading = LIMIT_HEADING.exec(condense(lines[index] ?? ''));
     if (heading === null) continue;
+    let percent: number | null = null;
+    let note: string | undefined;
     for (let ahead = index + 1; ahead < Math.min(index + 4, lines.length); ahead += 1) {
-      const remaining = LIMIT_REMAINING.exec(condense(lines[ahead] ?? ''));
-      if (remaining === null) continue;
-      limits.push({
-        label: condense(heading[1]!),
-        remainingPercent: Number.parseFloat(remaining[1]!),
-        ...(remaining[2] === undefined ? {} : { note: condense(remaining[2]) }),
-      });
-      break;
+      const line = condense(lines[ahead] ?? '');
+      if (line === '') continue;
+      const remaining = LIMIT_REMAINING.exec(line);
+      if (remaining !== null) {
+        percent = Number.parseFloat(remaining[1]!);
+        if (remaining[2] !== undefined) note = condense(remaining[2]);
+        break;
+      }
+      const bar = LIMIT_BAR.exec(line);
+      if (bar !== null) {
+        percent = Number.parseFloat(bar[1]!);
+        continue;
+      }
+      // Anything else on the line right after the gauge is the human note
+      // ("Quota available"), which is all an untouched limit reports.
+      if (percent !== null) {
+        note = line;
+        break;
+      }
     }
+    if (percent === null) continue;
+    limits.push({
+      label: condense(heading[1]!),
+      remainingPercent: percent,
+      ...(note === undefined ? {} : { note }),
+    });
   }
   if (limits.length > 0) status.limits = limits;
 
@@ -505,7 +542,7 @@ function parseContextReport(lines: readonly string[]): AgyContextReportScreen | 
     kind: 'contextReport',
     title: 'Context Usage',
     summary,
-    usedPercent: Number.isNaN(usedPercent) ? 0 : usedPercent,
+    ...(Number.isNaN(usedPercent) ? {} : { usedPercent }),
     segments,
     related,
     keys: parseAgyKeyHints(lines),
@@ -581,8 +618,12 @@ function parseQuotaReport(lines: readonly string[]): AgyQuotaReportScreen | null
       groups.push({ name: line, limits: [] });
       continue;
     }
-    if (/limit$/iu.test(line)) {
-      pendingLabel = line;
+    // AGY 1.1.10 titles each gauge `Weekly Limit Remaining`; older builds
+    // said `Weekly Limit`. Keep the stored label suffix-free so group labels
+    // stay stable across versions.
+    const limitHeading = line.match(/^(.+?\blimit)(?:\s+remaining)?$/iu);
+    if (limitHeading !== null) {
+      pendingLabel = limitHeading[1]!;
       continue;
     }
     const bar = line.match(QUOTA_BAR);

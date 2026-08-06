@@ -1,12 +1,11 @@
 import type { PlatformBridge } from '@cozypad/contracts';
 import { createCapacitorBridge, getCapacitorPlugins } from './capacitorBridge';
-import { createMockBridge } from './mockBridge';
 
 let cached: PlatformBridge | null = null;
 
 /**
  * 依執行環境選擇平台實作：
- * Electron preload 注入的 bridge → 手機原生 SSH plugin → 瀏覽器 mock。
+ * Electron preload 注入的 bridge → 手機原生 SSH plugin。
  */
 export function getBridge(): PlatformBridge {
   if (cached !== null) return cached;
@@ -26,6 +25,7 @@ export function getBridge(): PlatformBridge {
     return cached;
   }
 
-  cached = createMockBridge();
-  return cached;
+  throw new Error(
+    'No platform bridge available: run CozyPad through Electron or the mobile shell.',
+  );
 }

@@ -1,11 +1,13 @@
-import { clipboard, ipcMain } from 'electron';
+import { clipboard, ipcMain, nativeImage } from 'electron';
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import {
   AgentDetectionRequestSchema,
+  AgentAttachmentUploadSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
   AgentTerminalOpenRequestSchema,
   AnswerAgentQuestionRequestSchema,
+  DeclineAgentQuestionRequestSchema,
   ConnectRequestSchema,
   ConnectionProfileDraftSchema,
   CreateAgentSessionRequestSchema,
@@ -22,7 +24,7 @@ import {
   RenameAgentSessionRequestSchema,
   ResolveAgentApprovalRequestSchema,
   SendAgentMessageRequestSchema,
-  UploadAgentAttachmentRequestSchema,
+  UploadAgentAttachmentsRequestSchema,
   TerminalCloseRequestSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
@@ -50,7 +52,6 @@ export interface IpcServices {
   tmuxProvisioner: TmuxProvisionerPort;
   tmuxWatcher: TmuxSessionWatcher | null;
   agentCommunication: AgentCommunicationPort | null;
-  mockData: boolean;
   /** 啟動時降級處理過的問題，交給 UI 顯示（見 main.ts startupWarnings）。 */
   startupWarnings?: string[];
   /** 本機連線不經 tmux：agent 直接以子行程執行，也就沒有東西要偵測或安裝。 */
@@ -69,10 +70,18 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     tmuxProvisioner,
     tmuxWatcher,
     agentCommunication,
-    mockData,
     startupWarnings = [],
     isLocalProfile,
   } = services;
+  let clipboardRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+  let clipboardBeforeImage:
+    | {
+        text: string;
+        html: string;
+        rtf: string;
+        image: ReturnType<typeof clipboard.readImage>;
+      }
+    | null = null;
 
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
@@ -204,7 +213,7 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
 
   ipcMain.handle(IpcChannels.appInfo, (event) => {
     assertSender(event);
-    return { mockData, startupWarnings: [...startupWarnings] };
+    return { startupWarnings: [...startupWarnings] };
   });
 
   ipcMain.handle(IpcChannels.listProfiles, (event) => {
@@ -333,6 +342,35 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     clipboard.writeText(raw);
   });
 
+  ipcMain.handle(IpcChannels.clipboardWriteImage, (event, raw: unknown) => {
+    assertSender(event);
+    const attachment = AgentAttachmentUploadSchema.parse(raw);
+    if (!attachment.mediaType.toLowerCase().startsWith('image/')) {
+      throw new Error('clipboard image payload must use an image media type');
+    }
+    const image = nativeImage.createFromBuffer(
+      Buffer.from(base64ToBytes(attachment.dataBase64)),
+    );
+    if (image.isEmpty()) {
+      throw new Error(`Unable to decode clipboard image: ${attachment.name}`);
+    }
+    clipboardBeforeImage ??= {
+      text: clipboard.readText(),
+      html: clipboard.readHTML(),
+      rtf: clipboard.readRTF(),
+      image: clipboard.readImage(),
+    };
+    clipboard.writeImage(image);
+    if (clipboardRestoreTimer !== null) clearTimeout(clipboardRestoreTimer);
+    clipboardRestoreTimer = setTimeout(() => {
+      const snapshot = clipboardBeforeImage;
+      clipboardBeforeImage = null;
+      clipboardRestoreTimer = null;
+      if (snapshot === null) return;
+      clipboard.write(snapshot);
+    }, 2_000);
+  });
+
   ipcMain.handle(IpcChannels.tmuxStatus, (event) => {
     assertSender(event);
     return tmuxProvisioner.status();
@@ -428,13 +466,13 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     return agentCommunication.delete(AgentSessionRequestSchema.parse(raw));
   });
 
-  ipcMain.handle(IpcChannels.agentAttachmentUpload, (event, raw: unknown) => {
+  ipcMain.handle(IpcChannels.agentAttachmentsUpload, (event, raw: unknown) => {
     assertSender(event);
     if (agentCommunication === null) {
       throw new Error('Agent communication is unavailable in mock desktop mode');
     }
-    return agentCommunication.uploadAttachment(
-      UploadAgentAttachmentRequestSchema.parse(raw),
+    return agentCommunication.uploadAttachments(
+      UploadAgentAttachmentsRequestSchema.parse(raw),
     );
   });
 
@@ -471,6 +509,16 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     }
     return agentCommunication.answerQuestion(
       AnswerAgentQuestionRequestSchema.parse(raw),
+    );
+  });
+
+  ipcMain.handle(IpcChannels.agentQuestionDecline, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.declineQuestion(
+      DeclineAgentQuestionRequestSchema.parse(raw),
     );
   });
 

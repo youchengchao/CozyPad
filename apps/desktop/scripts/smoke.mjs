@@ -18,7 +18,7 @@ if (!existsSync(path.join(repoRoot, 'apps', 'app', 'dist', 'index.html'))) {
 const child = spawn(String(electronPath), ['.', '--smoke-test'], {
   cwd: pkgRoot,
   stdio: 'inherit',
-  env: { ...process.env, COZYPAD_MOCK: '1', COZYPAD_DEV_URL: '' },
+  env: { ...process.env, COZYPAD_DEV_URL: '' },
 });
 
 const timer = setTimeout(() => {

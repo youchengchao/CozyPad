@@ -6,6 +6,7 @@ import {
   AgentSessionSummarySchema,
   ChatItemSchema,
   MAX_AGENT_ATTACHMENT_BYTES,
+  MAX_AGENT_ATTACHMENTS,
   RemoteAgentSessionRecordSchema,
   bindAgentIdentity,
   quoteShellArg,
@@ -29,13 +30,15 @@ import type {
   AnswerAgentQuestionRequest,
   ChatItem,
   CreateAgentSessionRequest,
+  DeclineAgentQuestionRequest,
+  DeleteAgentSessionResult,
   NormalizedAgentEvent,
   RemoteAgentSessionRecord,
   RemoteHostEnvironment,
   RenameAgentSessionRequest,
   ResolveAgentApprovalRequest,
   SendAgentMessageRequest,
-  UploadAgentAttachmentRequest,
+  UploadAgentAttachmentsRequest,
   TerminalOpened,
 } from '@cozypad/contracts';
 import {
@@ -48,6 +51,7 @@ import type { TmuxRuntime } from '@cozypad/tmux-runtime';
 import type { ProfileStorePort } from './profileStore';
 import type { TransportPort } from './transport/TransportPort';
 import {
+  CODEX_CONTROL_METHODS,
   parseCodexAppServerLine,
   type CodexParseContext,
 } from './adapters/codexAppServer';
@@ -89,6 +93,13 @@ interface StoredAgentSession {
    * transcript as its own history.
    */
   revived?: boolean;
+  /**
+   * How the last Resume relates to the native conversation (SPEC 3.4.5
+   * requires the header to say): continued the bound one, assumed a guessed
+   * one, or started new. Revoked to 'new' if the agent then binds a
+   * different conversation id.
+   */
+  resumeContinuity?: 'continued' | 'new' | 'assumed';
 }
 
 interface PersistedAgentStore {
@@ -135,12 +146,15 @@ export interface AgentCommunicationPort {
   readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript>;
   openTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
   rename(request: RenameAgentSessionRequest): Promise<void>;
-  delete(request: AgentSessionRequest): Promise<void>;
-  uploadAttachment(request: UploadAgentAttachmentRequest): Promise<AgentAttachment>;
+  delete(request: AgentSessionRequest): Promise<DeleteAgentSessionResult>;
+  uploadAttachments(
+    request: UploadAgentAttachmentsRequest,
+  ): Promise<AgentAttachment[]>;
   send(request: SendAgentMessageRequest): Promise<void>;
   interrupt(request: AgentSessionRequest): Promise<void>;
   resolveApproval(request: ResolveAgentApprovalRequest): Promise<void>;
   answerQuestion(request: AnswerAgentQuestionRequest): Promise<void>;
+  declineQuestion(request: DeclineAgentQuestionRequest): Promise<void>;
 }
 
 export interface AgentCommunicationServiceOptions {
@@ -159,11 +173,16 @@ export interface AgentCommunicationServiceOptions {
   isLocalHost?(profileId: string): boolean;
   /** Told which host is active, for calls that carry no session id. */
   onHostChanged?(profileId: string): void;
+  /** Most recently active local AGY conversation, used to bind legacy sessions. */
+  getLatestLocalAgyConversationId?(window?: {
+    notBefore?: number;
+    notAfter?: number;
+  }): Promise<string | undefined>;
   /**
-   * Reads the most recent conversation out of the local AGY store, for
-   * restoring a revived session's transcript. Absent on hosts without one.
+   * Reads one conversation out of the local AGY store, for restoring a
+   * revived session's transcript. Absent on hosts without one.
    */
-  readLocalAgyTranscript?(): Promise<AgyRecoveredTurn[]>;
+  readLocalAgyTranscript?(conversationId?: string): Promise<AgyRecoveredTurn[]>;
 }
 
 const EMPTY_EVENTS: AgentCommunicationEvents = {
@@ -483,19 +502,23 @@ function launchModesFor(
   return modes;
 }
 
+// Values are the kebab-case variants from `codex app-server generate-ts`
+// (v2 AskForApproval / SandboxMode, verified live against codex 0.146.0).
+// The camelCase spellings were rejected with -32600 at thread/start, which
+// made every Codex session fail before it could bind a thread.
 function codexPolicyForMode(mode: string): {
-  approvalPolicy: 'unlessTrusted' | 'onRequest' | 'never';
-  sandbox: 'readOnly' | 'workspaceWrite' | 'dangerFullAccess';
+  approvalPolicy: 'untrusted' | 'on-request' | 'never';
+  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
 } {
   switch (mode) {
     case 'read-only':
-      return { approvalPolicy: 'onRequest', sandbox: 'readOnly' };
+      return { approvalPolicy: 'on-request', sandbox: 'read-only' };
     case 'workspace-never':
-      return { approvalPolicy: 'never', sandbox: 'workspaceWrite' };
+      return { approvalPolicy: 'never', sandbox: 'workspace-write' };
     case 'yolo':
-      return { approvalPolicy: 'never', sandbox: 'dangerFullAccess' };
+      return { approvalPolicy: 'never', sandbox: 'danger-full-access' };
     default:
-      return { approvalPolicy: 'unlessTrusted', sandbox: 'workspaceWrite' };
+      return { approvalPolicy: 'untrusted', sandbox: 'workspace-write' };
   }
 }
 
@@ -522,6 +545,108 @@ function safeAttachmentName(name: string): string {
     .slice(0, 120)
     .replace(/^[.-]+|[.-]+$/gu, '');
   return safe === '' ? 'attachment.bin' : safe;
+}
+
+function attachmentStorageName(id: string, originalName: string): string {
+  const safe = safeAttachmentName(originalName);
+  const availableBytes = 100 - id.length - 1;
+  if (Buffer.byteLength(safe, 'utf8') <= availableBytes) return `${id}-${safe}`;
+  const extension = path.posix.extname(safe).slice(0, 16);
+  const stemLength = Math.max(1, availableBytes - extension.length);
+  const stem = safe.slice(0, stemLength).replace(/[.-]+$/gu, '') || 'attachment';
+  return `${id}-${stem}${extension}`;
+}
+
+function writeTarOctal(
+  header: Buffer,
+  offset: number,
+  length: number,
+  value: number,
+): void {
+  const octal = Math.max(0, value).toString(8).padStart(length - 1, '0');
+  header.write(octal.slice(-(length - 1)), offset, length - 1, 'ascii');
+  header[offset + length - 1] = 0;
+}
+
+/** Build the small ustar archive sent through the transport's single file write. */
+export function createAttachmentArchive(
+  entries: Array<{ name: string; data: Buffer }>,
+): Buffer {
+  const blocks: Buffer[] = [];
+  const timestamp = Math.floor(Date.now() / 1000);
+  for (const entry of entries) {
+    if (Buffer.byteLength(entry.name, 'utf8') > 100) {
+      throw new Error('Attachment archive name exceeds the tar header limit');
+    }
+    const header = Buffer.alloc(512);
+    header.write(entry.name, 0, 100, 'utf8');
+    writeTarOctal(header, 100, 8, 0o600);
+    writeTarOctal(header, 108, 8, 0);
+    writeTarOctal(header, 116, 8, 0);
+    writeTarOctal(header, 124, 12, entry.data.byteLength);
+    writeTarOctal(header, 136, 12, timestamp);
+    header.fill(0x20, 148, 156);
+    header[156] = '0'.charCodeAt(0);
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    header.write('cozypad', 265, 7, 'ascii');
+    header.write('cozypad', 297, 7, 'ascii');
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(checksum.toString(8).padStart(6, '0').slice(-6), 148, 6, 'ascii');
+    header[154] = 0;
+    header[155] = 0x20;
+    blocks.push(header, entry.data);
+    const padding = (512 - (entry.data.byteLength % 512)) % 512;
+    if (padding > 0) blocks.push(Buffer.alloc(padding));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return Buffer.concat(blocks);
+}
+
+export function buildAttachmentUnpackScript(
+  directory: string,
+  archivePath: string,
+  landedPaths: string[],
+): string {
+  return `attachment_dir=${quoteShellArg(directory)}
+archive=${quoteShellArg(archivePath)}
+case "$archive" in
+  "$attachment_dir"/*) ;;
+  *) echo "__ERROR__\tUnsafe attachment archive path"; exit 0 ;;
+esac
+if ! command -v tar >/dev/null 2>&1; then
+  rm -f -- "$archive"
+  echo "__ERROR__\tThe selected machine needs tar to unpack attachment batches"
+  exit 0
+fi
+# GNU tar treats the colon in a Windows drive path as remote-host syntax
+# (D:/file.tar -> host D). Git Bash supplies cygpath, so translate only for the
+# shell tools; CozyPad and the agent continue to receive the drive-style path.
+archive_for_tar="$archive"
+attachment_dir_for_tar="$attachment_dir"
+case "$archive" in
+  [A-Za-z]:/*)
+    if ! command -v cygpath >/dev/null 2>&1; then
+      rm -f -- "$archive"
+      echo "__ERROR__\tUnable to unpack a Windows attachment batch because cygpath is unavailable"
+      exit 0
+    fi
+    archive_for_tar="$(cygpath -u "$archive")"
+    attachment_dir_for_tar="$(cygpath -u "$attachment_dir")"
+    ;;
+esac
+tar_output=''
+if ! tar_output="$(tar -xf "$archive_for_tar" -C "$attachment_dir_for_tar" 2>&1)"; then
+  rm -f -- "$archive"
+  tar_detail="$(printf '%s' "$tar_output" | tr '\r\n\t' '   ' | cut -c 1-400)"
+  printf '__ERROR__\tUnable to unpack the attachment batch%s%s\n' \
+    "\${tar_detail:+: }" "$tar_detail"
+  exit 0
+fi
+rm -f -- "$archive"
+chmod 600 -- ${landedPaths.map(quoteShellArg).join(' ')} 2>/dev/null || true
+printf '__COZYPAD_ATTACHMENT_BATCH__=ok\n'
+`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -701,18 +826,10 @@ function parseCodexControlRequest(line: string): PendingControlRequest | null {
   ) {
     return null;
   }
-  // Method names come from the app-server's own generated schema
-  // (`codex app-server generate-ts`), not from prose docs. `requestUserInput`
-  // is namespaced under `item/` like the approvals — without the prefix the
-  // question was never recognised and the turn waited for an answer forever.
-  if (
-    ![
-      'item/commandExecution/requestApproval',
-      'item/fileChange/requestApproval',
-      'item/permissions/requestApproval',
-      'item/tool/requestUserInput',
-    ].includes(value.method)
-  ) {
+  // The whitelist is shared with the adapter that renders the cards, so a
+  // method can never be registered as a pending control without also having
+  // a card that answers it.
+  if (!(CODEX_CONTROL_METHODS as readonly string[]).includes(value.method)) {
     return null;
   }
   return {
@@ -751,7 +868,12 @@ export class AgentCommunicationService implements AgentCommunicationPort {
   private sessions = new Map<string, StoredAgentSession>();
   private activeProfileId: string | null = null;
   private persistQueue = Promise.resolve();
-  private readonly following = new Set<string>();
+  /**
+   * The launch generation currently being followed for each CozyPad session.
+   * A session id survives Resume, while its runtime does not; keying only by
+   * session id lets a late old follower overwrite the replacement runtime.
+   */
+  private readonly following = new Map<string, string>();
   private readonly completing = new Set<string>();
   private readonly installations = new Map<string, AgentInstallation>();
   private readonly remoteEnvironments = new Map<
@@ -840,7 +962,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
         this.emitSession(stored);
       }
     }
-    void this.persist();
+    void this.persist().catch(() => undefined);
   }
 
   private clearDiscovery(profileId: string): void {
@@ -988,6 +1110,12 @@ export class AgentCommunicationService implements AgentCommunicationPort {
             ((request.agentKind === 'claude' && helpOutput.includes('--resume')) ||
               (request.agentKind === 'agy' &&
                 helpOutput.includes('--conversation'))),
+          // Codex can always be resumed in the SPEC 268 sense — the process
+          // relaunches — but its thread dies with the process, so the resume
+          // opens a new native conversation and the UI must say so.
+          ...(request.agentKind === 'codex'
+            ? { resumeStartsNewConversation: true }
+            : {}),
           supportsInteractiveApproval: approvals,
           supportsDangerouslySkipPermissions:
             userScoped &&
@@ -1322,13 +1450,11 @@ exit "$agent_status"`;
         `${agentKind} exited during startup; inspect the remote stderr log`,
       );
     }
-    if (agentKind === 'claude') {
-      stored.record = {
-        ...stored.record,
-        status: 'ready',
-        updatedAt: new Date().toISOString(),
-      };
-    }
+    // Claude stays 'starting' like Codex: SPEC 219-221/1481 — an agent that
+    // publishes a Conversation ID is Starting until the id arrives
+    // (system/init → session_initialized flips it to ready). Marking it
+    // ready here bound the first prompt to an identity that did not exist
+    // yet. Only AGY, which publishes no id, goes straight to ready.
   }
 
   /**
@@ -1342,8 +1468,33 @@ exit "$agent_status"`;
     const stored = this.requireSession(request.sessionId);
     const profileId = stored.record.provisionalIdentity.connectionProfileId;
     this.assertConnected(profileId);
-    if (stored.record.status !== 'exited' && stored.record.status !== 'error') {
+    if (
+      stored.record.status !== 'exited' &&
+      stored.record.status !== 'error' &&
+      stored.record.status !== 'disconnected'
+    ) {
       return this.bundle(stored);
+    }
+    if (
+      stored.record.status === 'error' ||
+      stored.record.status === 'disconnected'
+    ) {
+      const runtimeAlive = await this.options.tmux
+        .hasSession(stored.record.provisionalIdentity.tmuxSessionId)
+        .catch(() => false);
+      if (runtimeAlive) {
+        stored.activeTurn = undefined;
+        stored.activeAgentTurnId = undefined;
+        stored.record = {
+          ...stored.record,
+          status: 'ready',
+          updatedAt: new Date().toISOString(),
+        };
+        await this.persist();
+        this.emitSession(stored);
+        this.followSession(stored);
+        return this.bundle(stored);
+      }
     }
     const agentKind = stored.record.provisionalIdentity.agentKind;
     const installation = await this.detect({ profileId, agentKind });
@@ -1369,19 +1520,59 @@ exit "$agent_status"`;
     await this.prepareRemoteStorage(id);
     // The logs were just truncated; the dead run's stream state goes with them.
     stored.rawLines = 0;
-    stored.pendingControls = {};
-    stored.questionAnswers = {};
+    // The new process is a new execution generation; whatever the old one
+    // was still asking or running can never finish now.
+    this.finalizeInFlightItems(stored);
+    this.expirePendingInteractions(stored);
     stored.activeTurn = undefined;
     stored.activeAgentTurnId = undefined;
+    const boundConversationId = stored.record.identity?.agentConversationId;
+    // A guessed conversation must at least have been written around this
+    // session's own last activity; the conversations directory is global,
+    // so the unfiltered "latest" is simply whoever used AGY most recently.
+    const lastActivityMs = Date.parse(stored.record.updatedAt);
     const resumeConversationId =
-      agentKind === 'claude' && installation.supportsResume
-        ? stored.record.identity?.agentConversationId
-        : undefined;
-    // AGY's conversation id is never learned from its TUI, but the CLI itself
-    // remembers: `--continue` reopens the most recent conversation, which for
-    // a revived session is the one this record was following.
-    const resumeLatest = agentKind === 'agy' && installation.supportsResume;
-    if (resumeLatest) stored.revived = true;
+      installation.supportsResume && agentKind === 'claude'
+        ? boundConversationId
+        : installation.supportsResume && agentKind === 'agy'
+          ? boundConversationId ??
+            (this.options.isLocalHost?.(profileId) === true
+              ? await this.options.getLatestLocalAgyConversationId?.(
+                  Number.isFinite(lastActivityMs)
+                    ? {
+                        notBefore: lastActivityMs - 30 * 60_000,
+                        notAfter: lastActivityMs + 30 * 60_000,
+                      }
+                    : undefined,
+                )
+              : undefined)
+          : undefined;
+    // Legacy and remote AGY sessions may not have exposed an identity yet.
+    // Their CLI fallback remains `--continue`; once a local id is discovered,
+    // the record is bound below and every later Resume uses `--conversation`.
+    const resumeLatest =
+      agentKind === 'agy' &&
+      installation.supportsResume &&
+      resumeConversationId === undefined;
+    if (agentKind === 'agy' && installation.supportsResume) stored.revived = true;
+    // SPEC 274-278: 'continued' only when the same bound conversation is
+    // reopened; a disk-guessed id or `--continue` is honest-labelled
+    // 'assumed', and everything else starts a new native conversation.
+    stored.resumeContinuity =
+      boundConversationId !== undefined &&
+      resumeConversationId === boundConversationId
+        ? 'continued'
+        : resumeConversationId !== undefined || resumeLatest
+          ? 'assumed'
+          : 'new';
+    if (stored.resumeContinuity === 'assumed') {
+      stored.timeline.push({
+        id: `notice-${randomUUID()}`,
+        kind: 'notice',
+        text: '已嘗試接回最近的原生對話，但無法確認是否為同一段；分隔線之前的內容 AGY 不一定記得。',
+        timestamp: new Date().toISOString(),
+      });
+    }
     const launchScript = this.buildLaunchScript({
       agentKind,
       interactionMode: stored.interactionMode,
@@ -1415,6 +1606,17 @@ exit "$agent_status"`;
       tmuxCreatedEpoch: runtime.createdEpoch,
       updatedAt: new Date().toISOString(),
     };
+    if (agentKind === 'agy' && resumeConversationId !== undefined) {
+      const fingerprint = this.options.getHostFingerprint(profileId);
+      if (fingerprint !== undefined) {
+        stored.record = bindAgentIdentity(stored.record, {
+          agentConversationId: resumeConversationId,
+          remoteHostFingerprint: fingerprint,
+          tmuxPaneId: runtime.paneId,
+          now: stored.record.updatedAt,
+        });
+      }
+    }
     await this.writeRemoteMetadata(stored).catch(() => undefined);
     await this.persist();
     this.emitSession(stored);
@@ -1452,17 +1654,27 @@ exit "$agent_status"`;
   async readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript> {
     const stored = this.requireSession(request.sessionId);
     const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    const isLocal = this.options.isLocalHost?.(profileId) === true;
+    const hasBoundId =
+      stored.record.identity?.agentConversationId !== undefined &&
+      stored.record.identity.agentConversationId !== null;
+    const isActiveRevived =
+      stored.revived === true && this.activeProfileId === profileId;
+
     if (
       stored.record.provisionalIdentity.agentKind !== 'agy' ||
-      stored.revived !== true ||
-      this.activeProfileId !== profileId ||
-      this.options.isLocalHost?.(profileId) !== true ||
+      !isLocal ||
+      (!hasBoundId && !isActiveRevived) ||
       this.options.readLocalAgyTranscript === undefined
     ) {
       return { turns: [] };
     }
     try {
-      return { turns: await this.options.readLocalAgyTranscript() };
+      return {
+        turns: await this.options.readLocalAgyTranscript(
+          stored.record.identity?.agentConversationId ?? undefined,
+        ),
+      };
     } catch {
       return { turns: [] };
     }
@@ -1480,7 +1692,7 @@ exit "$agent_status"`;
     await this.writeRemoteMetadata(stored).catch(() => undefined);
   }
 
-  async delete(request: AgentSessionRequest): Promise<void> {
+  async delete(request: AgentSessionRequest): Promise<DeleteAgentSessionResult> {
     const stored = this.requireSession(request.sessionId);
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(stored.record.id)) {
       throw new Error('Refusing to delete a session with an unsafe identifier');
@@ -1500,29 +1712,79 @@ exit "$agent_status"`;
       agentKind: stored.record.provisionalIdentity.agentKind,
     });
 
-    // Deleting must always clear the local record. Sessions outlive a
-    // connection, so refusing while the host is unreachable leaves entries the
-    // user can never get rid of. Remote cleanup is attempted whenever it can
-    // be, and reported when it cannot.
+    // Deleting must always clear the local record — sessions outlive a
+    // connection, so refusing while the host is unreachable leaves entries
+    // the user can never get rid of. Every other scope reports its own
+    // outcome (SPEC 1509-1513): a partial failure must never present as
+    // complete, and skipped remote scopes list what remains on the host.
+    const tmuxSessionId = stored.record.provisionalIdentity.tmuxSessionId;
+    const remoteEventsPath = `~/.cozypad/sessions/${stored.record.id}`;
+    const remoteAttachmentsPath = `${stored.record.cwd}/.cozypad/session-tmp/${stored.record.id}`;
+    const scopes: DeleteAgentSessionResult['scopes'] = [
+      { scope: 'localIndex', outcome: 'done' },
+      // No agent exposes native-conversation deletion; SPEC 1502 wants the
+      // scope shown as unavailable rather than silently absent.
+      {
+        scope: 'nativeConversation',
+        outcome: 'unsupported',
+        detail: 'The agent keeps its native conversation in its own store',
+      },
+    ];
     if (this.activeProfileId === profileId) {
       try {
-        await this.options.tmux.killSession(
-          stored.record.provisionalIdentity.tmuxSessionId,
-        );
-        await this.removeRemoteSessionStorage(stored);
+        await this.options.tmux.killSession(tmuxSessionId);
+        scopes.push({ scope: 'process', outcome: 'done' });
       } catch (error) {
-        this.events.onError({
-          sessionId: stored.record.id,
-          message: `Removed locally, but the remote session could not be cleaned up: ${this.errorMessage(error)}`,
+        scopes.push({
+          scope: 'process',
+          outcome: 'failed',
+          detail: this.errorMessage(error),
+          residualPath: `tmux session ${tmuxSessionId}`,
         });
       }
-      return;
+      try {
+        await this.removeRemoteSessionStorage(stored);
+        scopes.push({ scope: 'remoteEvents', outcome: 'done' });
+        scopes.push({ scope: 'remoteAttachments', outcome: 'done' });
+      } catch (error) {
+        const detail = this.errorMessage(error);
+        scopes.push({
+          scope: 'remoteEvents',
+          outcome: 'failed',
+          detail,
+          residualPath: remoteEventsPath,
+        });
+        scopes.push({
+          scope: 'remoteAttachments',
+          outcome: 'failed',
+          detail,
+          residualPath: remoteAttachmentsPath,
+        });
+      }
+      return { scopes };
     }
-    this.events.onError({
-      sessionId: stored.record.id,
-      message:
-        'Removed locally. Its tmux session is still on the host — reconnect with that profile to clean it up.',
-    });
+    const reconnect = 'Reconnect this machine to clean it up';
+    scopes.push(
+      {
+        scope: 'process',
+        outcome: 'skipped',
+        detail: reconnect,
+        residualPath: `tmux session ${tmuxSessionId}`,
+      },
+      {
+        scope: 'remoteEvents',
+        outcome: 'skipped',
+        detail: reconnect,
+        residualPath: remoteEventsPath,
+      },
+      {
+        scope: 'remoteAttachments',
+        outcome: 'skipped',
+        detail: reconnect,
+        residualPath: remoteAttachmentsPath,
+      },
+    );
+    return { scopes };
   }
 
   async openTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened> {
@@ -1574,35 +1836,93 @@ exit "$agent_status"`;
     return { terminalId };
   }
 
-  async uploadAttachment(
-    request: UploadAgentAttachmentRequest,
-  ): Promise<AgentAttachment> {
+  async uploadAttachments(
+    request: UploadAgentAttachmentsRequest,
+  ): Promise<AgentAttachment[]> {
     const stored = this.requireSession(request.sessionId);
     this.assertSessionConnected(stored);
-    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(request.dataBase64)) {
-      throw new Error('Attachment payload is not valid base64');
-    }
-    const bytes = Buffer.from(request.dataBase64, 'base64');
-    if (bytes.byteLength > MAX_AGENT_ATTACHMENT_BYTES) {
+    if (
+      request.attachments.length === 0 ||
+      request.attachments.length > MAX_AGENT_ATTACHMENTS
+    ) {
       throw new Error(
-        `Attachment is too large (${bytes.byteLength} bytes, limit ${MAX_AGENT_ATTACHMENT_BYTES} bytes)`,
+        `An attachment batch needs between 1 and ${MAX_AGENT_ATTACHMENTS} files`,
       );
     }
-    const id = randomUUID();
-    const directory = await this.prepareAttachmentDirectory(stored);
-    const remotePath = `${directory}/${id}-${safeAttachmentName(request.name)}`;
-    await this.options.transport.writeFile(remotePath, bytes);
-    const attachment = AgentAttachmentSchema.parse({
-      id,
-      sessionId: stored.record.id,
-      name: request.name,
-      mediaType: request.mediaType,
-      sizeBytes: bytes.byteLength,
-      remotePath,
+    const staged = request.attachments.map((requestAttachment) => {
+      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(requestAttachment.dataBase64)) {
+        throw new Error(`Attachment payload is not valid base64: ${requestAttachment.name}`);
+      }
+      const bytes = Buffer.from(requestAttachment.dataBase64, 'base64');
+      if (bytes.byteLength > MAX_AGENT_ATTACHMENT_BYTES) {
+        throw new Error(
+          `${requestAttachment.name} is too large (${bytes.byteLength} bytes, limit ${MAX_AGENT_ATTACHMENT_BYTES} bytes)`,
+        );
+      }
+      const id = randomUUID();
+      return {
+        id,
+        request: requestAttachment,
+        bytes,
+        storageName: attachmentStorageName(id, requestAttachment.name),
+      };
     });
-    stored.attachments[id] = attachment;
+    const directory = await this.prepareAttachmentDirectory(stored);
+    const archivePath = `${directory}/.cozypad-attachment-batch-${randomUUID()}.tar`;
+    const archive = createAttachmentArchive(
+      staged.map((attachment) => ({
+        name: attachment.storageName,
+        data: attachment.bytes,
+      })),
+    );
+    await this.options.transport.writeFile(archivePath, archive);
+    try {
+      const output = await this.options.transport.exec(
+        buildAttachmentUnpackScript(
+          directory,
+          archivePath,
+          staged.map(
+            (attachment) => `${directory}/${attachment.storageName}`,
+          ),
+        ),
+        30_000,
+      );
+      const errorLine = output
+        .split(/\r?\n/u)
+        .find((line) => line.startsWith('__ERROR__'));
+      if (errorLine !== undefined) {
+        throw new Error(
+          errorLine.split('\t').slice(1).join('\t') || 'Attachment batch unpack failed',
+        );
+      }
+      if (markerValue(output, '__COZYPAD_ATTACHMENT_BATCH__') !== 'ok') {
+        throw new Error('Selected machine did not confirm the attachment batch');
+      }
+    } catch (error) {
+      const cleanupPaths = [
+        archivePath,
+        ...staged.map((attachment) => `${directory}/${attachment.storageName}`),
+      ];
+      await this.options.transport
+        .exec(`rm -f -- ${cleanupPaths.map(quoteShellArg).join(' ')} 2>/dev/null || true\n`, 10_000)
+        .catch(() => undefined);
+      throw error;
+    }
+    const attachments = staged.map(({ id, request: requestAttachment, bytes, storageName }) =>
+      AgentAttachmentSchema.parse({
+        id,
+        sessionId: stored.record.id,
+        name: requestAttachment.name,
+        mediaType: requestAttachment.mediaType,
+        sizeBytes: bytes.byteLength,
+        remotePath: `${directory}/${storageName}`,
+      }),
+    );
+    attachments.forEach((attachment) => {
+      stored.attachments[attachment.id] = attachment;
+    });
     await this.persist();
-    return attachment;
+    return attachments;
   }
 
   async send(request: SendAgentMessageRequest): Promise<void> {
@@ -1629,20 +1949,25 @@ exit "$agent_status"`;
       attachments.length === 0
         ? ''
         : [
-            'The user attached these files. They were uploaded into this session workspace; use the Read tool on the exact remote paths when you need their contents:',
+            'The user attached these files. Each @path is part of this prompt: inspect the file at that exact session-local path before responding when its contents are relevant.',
             ...attachments.map(
               (attachment) =>
-                `- ${attachment.name} (${attachment.mediaType}, ${attachment.sizeBytes} bytes): ${attachment.remotePath}`,
+                `- @${attachment.remotePath} (original name: ${attachment.name}; ${attachment.mediaType}; ${attachment.sizeBytes} bytes)`,
             ),
           ].join('\n');
     const messageText = [request.text.trim(), attachmentText]
       .filter((part) => part !== '')
       .join('\n\n');
-    const timelineText =
-      request.text.trim() === ''
-        ? `Attached: ${attachments.map((attachment) => attachment.name).join(', ')}`
-        : request.text;
+    const timelineText = request.text.trim();
+    const attachmentTimelineItems = attachments.map((attachment) => ({
+      id: attachment.id,
+      name: attachment.name,
+      mediaType: attachment.mediaType,
+      sizeBytes: attachment.sizeBytes,
+      remotePath: attachment.remotePath,
+    }));
     const now = new Date().toISOString();
+    const previousTitle = stored.record.title;
     const codexLocalCommand =
       stored.record.provisionalIdentity.agentKind === 'codex' &&
       attachments.length === 0
@@ -1712,15 +2037,23 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       id: String(stored.turnCounter).padStart(6, '0'),
       changedPaths: [],
     };
+    const userItemId = `user-${randomUUID()}`;
     stored.timeline.push({
-      id: `user-${randomUUID()}`,
+      id: userItemId,
       kind: 'message',
       role: 'user',
       text: timelineText,
+      ...(attachmentTimelineItems.length === 0
+        ? {}
+        : { attachments: attachmentTimelineItems }),
       timestamp: now,
     });
     if (/^New (?:Claude|Codex|AGY) conversation$/u.test(stored.record.title)) {
-      stored.record.title = timelineText.slice(0, 64);
+      stored.record.title = (
+        timelineText === ''
+          ? attachments.map((attachment) => attachment.name).join(', ')
+          : timelineText
+      ).slice(0, 64);
     }
     stored.record = { ...stored.record, status: 'running', updatedAt: now };
     await this.persist();
@@ -1779,9 +2112,20 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       }
     } catch (error) {
       stored.activeTurn = undefined;
+      // The renderer keeps the draft and its local attachment buffer when
+      // sending rejects. Remove the optimistic timeline copy as well so a
+      // retry cannot create a duplicate user turn.
+      stored.timeline = stored.timeline.filter((item) => item.id !== userItemId);
+      stored.record.title = previousTitle;
+      const runtimeAlive = await this.options.tmux
+        .hasSession(stored.record.provisionalIdentity.tmuxSessionId)
+        .catch(() => true);
       stored.record = {
         ...stored.record,
-        status: 'error',
+        // A rejected frame is a turn-level delivery failure. Only a tmux
+        // liveness check that proves the runtime is gone may poison the whole
+        // session; otherwise it remains ready for an immediate retry.
+        status: runtimeAlive ? 'ready' : 'error',
         updatedAt: new Date().toISOString(),
       };
       this.appendError(stored, error);
@@ -1832,12 +2176,34 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     const pending = stored.pendingControls[requestId];
     if (pending === undefined) throw new Error('Approval control request has expired');
     if (pending.protocol === 'codex') {
-      await this.writeFrame(stored, {
-        id: pending.rpcId ?? requestId,
-        result: {
-          decision: request.resolution === 'allowed' ? 'accept' : 'decline',
-        },
-      });
+      // Response shapes come from `codex app-server generate-ts` (v2): the
+      // approval methods reply {decision}, but permissions replies with a
+      // GrantedPermissionProfile — allow echoes the requested profile for
+      // this turn, deny grants nothing. Sending {decision} there would be
+      // schema-invalid and leave the turn waiting despite the click.
+      if (pending.method === 'item/permissions/requestApproval') {
+        const requested = isRecord(pending.input.permissions)
+          ? pending.input.permissions
+          : {};
+        const granted: Record<string, unknown> = {};
+        if (request.resolution === 'allowed') {
+          if (isRecord(requested.network)) granted.network = requested.network;
+          if (isRecord(requested.fileSystem)) {
+            granted.fileSystem = requested.fileSystem;
+          }
+        }
+        await this.writeFrame(stored, {
+          id: pending.rpcId ?? requestId,
+          result: { permissions: granted, scope: 'turn' },
+        });
+      } else {
+        await this.writeFrame(stored, {
+          id: pending.rpcId ?? requestId,
+          result: {
+            decision: request.resolution === 'allowed' ? 'accept' : 'decline',
+          },
+        });
+      }
     } else {
       const response =
         request.resolution === 'allowed'
@@ -1864,7 +2230,12 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       (candidate): candidate is Extract<ChatItem, { kind: 'question' }> =>
         candidate.id === request.itemId && candidate.kind === 'question',
     );
-    if (item === undefined || item.selectedIndex !== null) {
+    if (
+      item === undefined ||
+      item.selectedIndex !== null ||
+      item.expired === true ||
+      item.declined === true
+    ) {
       throw new Error('Pending agent question not found');
     }
     const option = item.options[request.optionIndex];
@@ -1901,7 +2272,13 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
         candidate.kind === 'question' &&
         candidate.id.startsWith(`question-${requestId}:`),
     );
-    if (relatedItems.every((candidate) => candidate.selectedIndex !== null)) {
+    // The agent's request is the denominator, not the surviving cards: when a
+    // question could not be rendered, `every` over the cards alone became
+    // true early and a *partial* answer set was sent as the final result.
+    if (
+      relatedItems.length === questions.length &&
+      relatedItems.every((candidate) => candidate.selectedIndex !== null)
+    ) {
       if (pending.protocol === 'codex') {
         await this.writeFrame(stored, {
           id: pending.rpcId ?? requestId,
@@ -1933,10 +2310,110 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     this.emitTimeline(stored);
   }
 
+  /**
+   * Refuse a whole question request (SPEC 3.4.6): the fallback for questions
+   * CozyPad cannot represent. One reply answers the entire JSON-RPC request /
+   * control request, so every sibling card of the batch closes with it.
+   */
+  async declineQuestion(request: DeclineAgentQuestionRequest): Promise<void> {
+    const stored = this.requireSession(request.sessionId);
+    this.assertSessionConnected(stored);
+    const item = stored.timeline.find(
+      (candidate): candidate is Extract<ChatItem, { kind: 'question' }> =>
+        candidate.id === request.itemId && candidate.kind === 'question',
+    );
+    if (
+      item === undefined ||
+      item.selectedIndex !== null ||
+      item.expired === true ||
+      item.declined === true
+    ) {
+      throw new Error('Pending agent question not found');
+    }
+    const rawQuestionId = request.itemId.replace(/^question-/u, '');
+    const separator = rawQuestionId.lastIndexOf(':');
+    if (separator < 1) throw new Error('Question control request is invalid');
+    const requestId = rawQuestionId.slice(0, separator);
+    const pending = stored.pendingControls[requestId];
+    if (
+      pending === undefined ||
+      !['AskUserQuestion', 'RequestUserInput'].includes(pending.toolName)
+    ) {
+      throw new Error('Question control request has expired');
+    }
+    if (pending.protocol === 'codex') {
+      await this.writeFrame(stored, {
+        id: pending.rpcId ?? requestId,
+        error: { code: -32800, message: 'Declined by the CozyPad user' },
+      });
+    } else {
+      await this.writeControlResponse(stored, requestId, {
+        behavior: 'deny',
+        message: 'Declined by the CozyPad user',
+      });
+    }
+    delete stored.pendingControls[requestId];
+    delete stored.questionAnswers[requestId];
+    for (const candidate of stored.timeline) {
+      if (
+        candidate.kind === 'question' &&
+        candidate.id.startsWith(`question-${requestId}:`) &&
+        candidate.selectedIndex === null
+      ) {
+        candidate.declined = true;
+      }
+    }
+    stored.record = {
+      ...stored.record,
+      status: 'running',
+      updatedAt: new Date().toISOString(),
+    };
+    await this.persist();
+    this.emitSession(stored);
+    this.emitTimeline(stored);
+  }
+
+  /**
+   * SPEC 3.4.12: when the execution generation that asked is gone, a pending
+   * Approval/Question becomes Expired — content kept, options disabled —
+   * instead of a zombie card whose buttons can only throw. Runs when the
+   * process exits, errors out, or is relaunched.
+   */
+  /**
+   * SPEC 1321-1325: a generation that ends without End events leaves its
+   * streaming message marked interrupted and its running tools marked
+   * result-unknown — an Exited session must never show items still running.
+   */
+  private finalizeInFlightItems(stored: StoredAgentSession): void {
+    for (const item of stored.timeline) {
+      if (item.kind === 'message' && item.streaming === true) {
+        item.streaming = false;
+        item.interrupted = true;
+      } else if (item.kind === 'tool_call' && item.status === 'running') {
+        item.status = 'unknown';
+      }
+    }
+  }
+
+  private expirePendingInteractions(stored: StoredAgentSession): void {
+    for (const item of stored.timeline) {
+      if (item.kind === 'approval' && item.resolution === 'pending') {
+        item.resolution = 'expired';
+      } else if (item.kind === 'question' && item.selectedIndex === null) {
+        item.expired = true;
+      }
+    }
+    stored.pendingControls = {};
+    stored.questionAnswers = {};
+  }
+
   private followSession(stored: StoredAgentSession): void {
-    if (this.following.has(stored.record.id)) return;
-    this.following.add(stored.record.id);
     const id = stored.record.id;
+    const launchNonce = stored.record.provisionalIdentity.launchNonce;
+    const followedTmuxSessionId =
+      stored.record.provisionalIdentity.tmuxSessionId;
+    if (this.following.get(id) === launchNonce) return;
+    this.following.set(id, launchNonce);
     const dir = remoteSessionDir(id);
     const startLine = stored.rawLines + 1;
     const tmux =
@@ -1989,12 +2466,17 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
       .execStream(
         command,
         (line) => {
+          const current = this.sessions.get(id);
+          if (
+            current === undefined ||
+            current.record.provisionalIdentity.launchNonce !== launchNonce
+          ) {
+            return;
+          }
           if (line === '__COZYPAD_AGENT_EXIT__') {
             exited = true;
             return;
           }
-          const current = this.sessions.get(id);
-          if (current === undefined) return;
           current.rawLines += 1;
           const agentKind = current.record.provisionalIdentity.agentKind;
           if (agentKind === 'agy') return;
@@ -2014,7 +2496,9 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
               ? parseCodexAppServerLine(line, context)
               : parseClaudeStreamLine(line, context, agentKind);
           for (const event of events) this.applyNormalizedEvent(current, event);
-          void this.persist();
+          // Fire-and-forget by design; a failure here surfaces on the next
+          // awaited persist instead of as an unhandled rejection.
+          void this.persist().catch(() => undefined);
         },
         0,
         false,
@@ -2023,15 +2507,18 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
         const current = this.sessions.get(id);
         if (
           current === undefined ||
+          current.record.provisionalIdentity.launchNonce !== launchNonce ||
           this.activeProfileId !==
             current.record.provisionalIdentity.connectionProfileId
         ) {
           return;
         }
         const alive = await this.options.tmux
-          .hasSession(current.record.provisionalIdentity.tmuxSessionId)
+          .hasSession(followedTmuxSessionId)
           .catch(() => false);
         if (alive) return;
+        this.finalizeInFlightItems(current);
+        this.expirePendingInteractions(current);
         current.record = {
           ...current.record,
           status: 'error',
@@ -2043,14 +2530,23 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
         this.emitTimeline(current);
       })
       .finally(async () => {
-        this.following.delete(id);
+        if (this.following.get(id) === launchNonce) {
+          this.following.delete(id);
+        }
         const current = this.sessions.get(id);
-        if (current === undefined) return;
+        if (
+          current === undefined ||
+          current.record.provisionalIdentity.launchNonce !== launchNonce
+        ) {
+          return;
+        }
         if (exited) {
           const stderr = await this.readRemoteStderr(id);
           if (stderr !== '') {
             this.appendError(current, new Error(`Remote agent stderr:\n${stderr}`));
           }
+          this.finalizeInFlightItems(current);
+          this.expirePendingInteractions(current);
           current.record = {
             ...current.record,
             status: 'exited',
@@ -2059,6 +2555,7 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
           current.activeTurn = undefined;
           await this.persist();
           this.emitSession(current);
+          this.emitTimeline(current);
           return;
         }
         if (
@@ -2066,7 +2563,7 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
             current.record.provisionalIdentity.connectionProfileId
         ) {
           const alive = await this.options.tmux
-            .hasSession(current.record.provisionalIdentity.tmuxSessionId)
+            .hasSession(followedTmuxSessionId)
             .catch(() => false);
           if (alive) this.followSession(current);
         }
@@ -2122,6 +2619,21 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
               now: event.timestamp,
             },
           );
+          // The old timeline stays, but it is CozyPad history now, not agent
+          // memory (SPEC 275-278): mark the boundary where the new native
+          // conversation begins, in the agent's own terms.
+          stored.resumeContinuity = 'new';
+          stored.timeline.push({
+            id: `notice-${event.eventId}`,
+            kind: 'notice',
+            text:
+              stored.record.provisionalIdentity.agentKind === 'codex'
+                ? '以下開始新的原生對話：Codex 不記得這條分隔線之前的內容。'
+                : `無法確認是否延續同一原生對話：${agentLabelFor(
+                    stored.record.provisionalIdentity.agentKind,
+                  )} 可能不記得這條分隔線之前的內容。`,
+            timestamp: event.timestamp,
+          });
         }
         void this.writeRemoteMetadata(stored).catch(() => undefined);
         break;
@@ -2224,6 +2736,7 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
           kind: 'approval',
           command: event.command,
           cwd: stored.record.cwd,
+          machine: stored.host,
           riskSummary: event.riskSummary,
           resolution: 'pending',
           timestamp: event.timestamp,
@@ -2237,17 +2750,25 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
         if (item?.kind === 'approval') item.resolution = event.resolution;
         break;
       }
-      case 'question_requested':
+      case 'question_requested': {
+        // `id:index` is the shared question-id shape of both protocols; the
+        // prefix groups one agent request's cards into a batch (SPEC 3.4.6).
+        const separator = event.questionId.lastIndexOf(':');
         stored.timeline.push({
           id: `question-${event.questionId}`,
           kind: 'question',
           prompt: event.prompt,
           options: event.options,
           selectedIndex: null,
+          ...(separator > 0
+            ? { batchId: event.questionId.slice(0, separator) }
+            : {}),
+          ...(event.unrepresentable === true ? { unrepresentable: true } : {}),
           timestamp: event.timestamp,
         });
         stored.record = { ...stored.record, status: 'waiting_approval' };
         break;
+      }
       case 'question_resolved': {
         const item = stored.timeline.find(
           (candidate) => candidate.id === `question-${event.questionId}`,
@@ -2266,7 +2787,17 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
           timestamp: event.timestamp,
         });
         break;
-      case 'usage':
+      case 'usage': {
+        // Codex streams several tokenUsage updates within one turn;
+        // consecutive rows collapse so the timeline keeps a turn's final
+        // figures once instead of a ladder of intermediate counts.
+        const lastItem = stored.timeline.at(-1);
+        if (lastItem?.kind === 'usage') {
+          lastItem.inputTokens = event.inputTokens;
+          lastItem.outputTokens = event.outputTokens;
+          lastItem.timestamp = event.timestamp;
+          break;
+        }
         stored.timeline.push({
           id: `usage-${event.eventId}`,
           kind: 'usage',
@@ -2275,6 +2806,7 @@ printf '__COZYPAD_AGENT_EXIT__\\n'
           timestamp: event.timestamp,
         });
         break;
+      }
       case 'agent_error':
         this.appendError(stored, new Error(event.message), event.timestamp);
         break;
@@ -2683,9 +3215,11 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
   }
 
   private summary(stored: StoredAgentSession): AgentSessionSummary {
+    const agentKind = stored.record.provisionalIdentity.agentKind;
+    const slashCommands = normalizeSlashCommands(stored.slashCommands);
     return AgentSessionSummarySchema.parse({
       id: stored.record.id,
-      agentKind: stored.record.provisionalIdentity.agentKind,
+      agentKind,
       title: stored.record.title,
       host: stored.host,
       project: stored.project,
@@ -2693,7 +3227,24 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
       interactionMode: stored.interactionMode,
       status: stored.record.status,
       unread: 0,
-      slashCommands: normalizeSlashCommands(stored.slashCommands),
+      slashCommands,
+      // SPEC 1445: /status and /diff are completed by CozyPad itself (no
+      // agent turn); the menu must be able to say which side runs a command.
+      ...(agentKind === 'codex' && slashCommands.length > 0
+        ? {
+            slashCommandOwners: Object.fromEntries(
+              slashCommands.map((name) => [
+                name,
+                ['status', 'diff'].includes(name) ? 'cozypad' : 'agent',
+              ]),
+            ),
+          }
+        : {}),
+      conversationBound:
+        stored.record.identity !== null && stored.record.identity !== undefined,
+      ...(stored.resumeContinuity === undefined
+        ? {}
+        : { resumeContinuity: stored.resumeContinuity }),
       updatedAt: stored.record.updatedAt,
     });
   }
@@ -2734,12 +3285,24 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
       sessions: [...this.sessions.values()],
     };
     const raw = JSON.stringify(payload, null, 2);
-    this.persistQueue = this.persistQueue.then(async () => {
-      await fs.mkdir(path.dirname(this.options.storePath), { recursive: true });
-      const temp = `${this.options.storePath}.tmp`;
-      await fs.writeFile(temp, raw, 'utf8');
-      await fs.rename(temp, this.options.storePath);
-    });
+    this.persistQueue = this.persistQueue
+      // One failed write must not poison the chain: `.then` on a rejected
+      // promise never runs, so without this every later persist would fail
+      // forever after a single transient error.
+      .catch(() => undefined)
+      .then(async () => {
+        await fs.mkdir(path.dirname(this.options.storePath), { recursive: true });
+        const temp = `${this.options.storePath}.tmp`;
+        await fs.writeFile(temp, raw, 'utf8');
+        try {
+          await fs.rename(temp, this.options.storePath);
+        } catch {
+          // Windows: a virus scanner or indexer briefly holding either file
+          // makes rename throw EPERM; one retry after a beat resolves it.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          await fs.rename(temp, this.options.storePath);
+        }
+      });
     return this.persistQueue;
   }
 }

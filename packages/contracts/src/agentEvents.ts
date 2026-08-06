@@ -54,6 +54,11 @@ export const NormalizedAgentEventSchema = z.discriminatedUnion('kind', [
   event('question_requested', {
     questionId: z.string().min(1),
     prompt: z.string().min(1),
+    /**
+     * Empty options are only valid together with `unrepresentable`: the card
+     * then shows the raw request and offers decline (SPEC 3.4.6) instead of
+     * being silently dropped while the agent waits for an answer.
+     */
     options: z
       .array(
         z.object({
@@ -61,8 +66,9 @@ export const NormalizedAgentEventSchema = z.discriminatedUnion('kind', [
           description: z.string().optional(),
         }),
       )
-      .min(2)
+      .min(0)
       .max(6),
+    unrepresentable: z.boolean().optional(),
   }),
   event('question_resolved', {
     questionId: z.string().min(1),

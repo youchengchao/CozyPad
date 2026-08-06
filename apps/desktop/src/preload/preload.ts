@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
+  AgentAttachmentUploadSchema,
   AgentCommunicationErrorEventSchema,
-  AgentAttachmentSchema,
+  AgentAttachmentBatchSchema,
   AgentDetectionRequestSchema,
   AgentInstallationSchema,
   AgentSessionBundleSchema,
@@ -13,6 +14,7 @@ import {
   AgentTerminalOpenRequestSchema,
   AgentTimelineChangedEventSchema,
   AnswerAgentQuestionRequestSchema,
+  DeclineAgentQuestionRequestSchema,
   ConnectRequestSchema,
   ConnectionProfileDraftSchema,
   ConnectionStateChangedSchema,
@@ -31,7 +33,7 @@ import {
   RenameAgentSessionRequestSchema,
   ResolveAgentApprovalRequestSchema,
   SendAgentMessageRequestSchema,
-  UploadAgentAttachmentRequestSchema,
+  UploadAgentAttachmentsRequestSchema,
   TelemetrySnapshotSchema,
   TmuxInstallLogSchema,
   TmuxInstallProgressSchema,
@@ -169,6 +171,12 @@ const bridge: PlatformBridge = {
 
   writeClipboard: (text) => ipcRenderer.invoke(IpcChannels.clipboardWrite, text),
 
+  writeClipboardImage: (attachment) =>
+    ipcRenderer.invoke(
+      IpcChannels.clipboardWriteImage,
+      AgentAttachmentUploadSchema.parse(attachment),
+    ),
+
   getTmuxStatus: () => ipcRenderer.invoke(IpcChannels.tmuxStatus),
 
   installTmux: () => ipcRenderer.invoke(IpcChannels.tmuxInstall),
@@ -253,11 +261,11 @@ const bridge: PlatformBridge = {
       AgentSessionRequestSchema.parse(request),
     ),
 
-  uploadAgentAttachment: async (request) =>
-    AgentAttachmentSchema.parse(
+  uploadAgentAttachments: async (request) =>
+    AgentAttachmentBatchSchema.parse(
       await ipcRenderer.invoke(
-        IpcChannels.agentAttachmentUpload,
-        UploadAgentAttachmentRequestSchema.parse(request),
+        IpcChannels.agentAttachmentsUpload,
+        UploadAgentAttachmentsRequestSchema.parse(request),
       ),
     ),
 
@@ -283,6 +291,12 @@ const bridge: PlatformBridge = {
     ipcRenderer.invoke(
       IpcChannels.agentQuestionAnswer,
       AnswerAgentQuestionRequestSchema.parse(request),
+    ),
+
+  declineAgentQuestion: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentQuestionDecline,
+      DeclineAgentQuestionRequestSchema.parse(request),
     ),
 
   onAgentSessionChanged: (listener) =>

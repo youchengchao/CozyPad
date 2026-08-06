@@ -3,6 +3,7 @@ import {
   AgentInteractionModeSchema,
   AgentKindSchema,
   AgentSessionSummarySchema,
+  ChatAttachmentSchema,
   ChatItemSchema,
 } from './chat';
 
@@ -32,6 +33,13 @@ export const AgentInstallationSchema = z.object({
   environment: RemoteHostEnvironmentSchema.optional(),
   supportsStructuredOutput: z.boolean(),
   supportsResume: z.boolean(),
+  /**
+   * Resume relaunches the agent but opens a NEW native conversation (SPEC
+   * 268) — Codex threads die with their process. `supportsResume` keeps its
+   * original meaning (native continuation) so revive() branch logic and
+   * older callers stay untouched.
+   */
+  resumeStartsNewConversation: z.boolean().optional(),
   supportsInteractiveApproval: z.boolean(),
   supportsDangerouslySkipPermissions: z.boolean().optional(),
   launchModes: z.array(AgentLaunchModeSchema).default([]),
@@ -62,6 +70,32 @@ export const CreateAgentSessionRequestSchema = z.object({
 });
 export type CreateAgentSessionRequest = z.infer<typeof CreateAgentSessionRequestSchema>;
 
+/**
+ * SPEC 1496-1513: deleting a session touches several scopes; each reports
+ * its own outcome so a partial failure can never present as complete, and
+ * skipped remote scopes list what remains on the host.
+ */
+export const DeleteScopeResultSchema = z.object({
+  scope: z.enum([
+    'localIndex',
+    'process',
+    'remoteEvents',
+    'remoteAttachments',
+    'nativeConversation',
+  ]),
+  outcome: z.enum(['done', 'skipped', 'unsupported', 'failed']),
+  detail: z.string().optional(),
+  residualPath: z.string().optional(),
+});
+export type DeleteScopeResult = z.infer<typeof DeleteScopeResultSchema>;
+
+export const DeleteAgentSessionResultSchema = z.object({
+  scopes: z.array(DeleteScopeResultSchema),
+});
+export type DeleteAgentSessionResult = z.infer<
+  typeof DeleteAgentSessionResultSchema
+>;
+
 export const RenameAgentSessionRequestSchema = z.object({
   sessionId: z.string().min(1),
   title: z.string().trim().min(1).max(160),
@@ -82,18 +116,20 @@ export type AgentTerminalOpenRequest = z.infer<
 >;
 
 export const MAX_AGENT_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_AGENT_ATTACHMENTS = 10;
 
-export const AgentAttachmentSchema = z.object({
-  id: z.string().uuid(),
+export const AgentAttachmentSchema = ChatAttachmentSchema.extend({
   sessionId: z.string().min(1),
-  name: z.string().trim().min(1).max(255),
-  mediaType: z.string().trim().min(1).max(160),
   sizeBytes: z.number().int().min(0).max(MAX_AGENT_ATTACHMENT_BYTES),
-  remotePath: z.string().min(1),
 });
 export type AgentAttachment = z.infer<typeof AgentAttachmentSchema>;
 
-export const UploadAgentAttachmentRequestSchema = AgentSessionRequestSchema.extend({
+export const AgentAttachmentBatchSchema = z
+  .array(AgentAttachmentSchema)
+  .min(1)
+  .max(MAX_AGENT_ATTACHMENTS);
+
+export const AgentAttachmentUploadSchema = z.object({
   name: z.string().trim().min(1).max(255),
   mediaType: z.string().trim().min(1).max(160).default('application/octet-stream'),
   dataBase64: z
@@ -101,8 +137,16 @@ export const UploadAgentAttachmentRequestSchema = AgentSessionRequestSchema.exte
     .max(Math.ceil(MAX_AGENT_ATTACHMENT_BYTES / 3) * 4 + 4)
     .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u),
 });
-export type UploadAgentAttachmentRequest = z.infer<
-  typeof UploadAgentAttachmentRequestSchema
+export type AgentAttachmentUpload = z.infer<typeof AgentAttachmentUploadSchema>;
+
+export const UploadAgentAttachmentsRequestSchema = AgentSessionRequestSchema.extend({
+  attachments: z
+    .array(AgentAttachmentUploadSchema)
+    .min(1)
+    .max(MAX_AGENT_ATTACHMENTS),
+});
+export type UploadAgentAttachmentsRequest = z.infer<
+  typeof UploadAgentAttachmentsRequestSchema
 >;
 
 /**
@@ -122,7 +166,10 @@ export type AgyTranscript = z.infer<typeof AgyTranscriptSchema>;
 
 export const SendAgentMessageRequestSchema = AgentSessionRequestSchema.extend({
   text: z.string().trim(),
-  attachmentIds: z.array(z.string().uuid()).max(10).default([]),
+  attachmentIds: z
+    .array(z.string().uuid())
+    .max(MAX_AGENT_ATTACHMENTS)
+    .default([]),
 }).superRefine((request, context) => {
   if (request.text === '' && request.attachmentIds.length === 0) {
     context.addIssue({
@@ -148,6 +195,14 @@ export const AnswerAgentQuestionRequestSchema = AgentSessionRequestSchema.extend
 });
 export type AnswerAgentQuestionRequest = z.infer<
   typeof AnswerAgentQuestionRequestSchema
+>;
+
+/** Refuse a whole question request (SPEC 3.4.6 unrepresentable fallback). */
+export const DeclineAgentQuestionRequestSchema = AgentSessionRequestSchema.extend({
+  itemId: z.string().min(1),
+});
+export type DeclineAgentQuestionRequest = z.infer<
+  typeof DeclineAgentQuestionRequestSchema
 >;
 
 export const AgentSessionBundleSchema = z.object({

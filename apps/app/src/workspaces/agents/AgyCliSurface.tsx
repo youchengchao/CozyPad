@@ -12,8 +12,11 @@ import { Terminal } from '@xterm/xterm';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  ChatAttachmentSchema,
+  MAX_AGENT_ATTACHMENTS,
   base64ToBytes,
   textToBase64,
+  type ChatAttachment,
   type AgentSessionStatus,
   type TerminalClosedEvent,
   type TerminalOutputEvent,
@@ -23,8 +26,11 @@ import {
   agyKeySequence,
   agyOptionSelectionSequence,
   agyPromptSequence,
+  agyReconciledPromptSequence,
+  agySurfaceSessionStatus,
   deriveAgyScreenModel,
   extractAgyAssistantText,
+  extractAgyPromptDraft,
   isAgyComposerEditable,
   isStaleAgyReplyCandidate,
   mayScrapeAgyReply,
@@ -34,6 +40,24 @@ import {
   type AgyNavigationKey,
   type AgyScreenModel,
 } from './agyTerminalModel';
+import {
+  ATTACHMENT_STATE_LABEL,
+  caretIsOnHistoryEdge,
+  navigatePromptHistory,
+} from './ChatComposer';
+import {
+  attachmentFileToBase64,
+  bufferAttachmentFiles,
+  clipboardAttachmentFiles,
+  createAgyMediaUploadArchive,
+  formatAttachmentSize,
+  promptWithAttachmentReferences,
+  type ComposerAttachment,
+} from './attachmentBuffer';
+import {
+  isInlineAttachmentImage,
+  MessageAttachments,
+} from './MessageAttachments';
 import {
   readAgyStatus,
   recogniseAgyScreen,
@@ -51,11 +75,26 @@ interface AgyCliSurfaceProps {
   onStatusChange(status: AgentSessionStatus): void;
 }
 
+interface AgyTranscriptPreviewProps {
+  sessionId: string;
+  cwd: string;
+}
+
 interface AgyLocalTurn {
   id: string;
   prompt: string;
   assistantText: string;
   createdAt: number;
+  /** Exact prompt echoed by AGY; may include hidden @attachment instructions. */
+  submittedPrompt?: string;
+  /** Files delivered with this turn, retained for transcript rendering. */
+  attachments?: ChatAttachment[];
+}
+
+interface PendingAgyMediaUpload {
+  archiveBase64: string;
+  requested: boolean;
+  resolveRequested(requested: boolean): void;
 }
 
 type ConnectionState = 'connecting' | 'connected' | 'closed' | 'error';
@@ -72,6 +111,14 @@ type StatusSyncPhase =
 
 const AGY_TURN_CACHE = new Map<string, AgyLocalTurn[]>();
 const AGY_STATUS_CACHE = new Map<string, AgyStatus>();
+/**
+ * The surface unmounts on every session switch, so reading position and
+ * buffered attachments must outlive the component to survive one (SPEC 300,
+ * 3050, 3059). They are runtime state, not history: they die with the app run
+ * and are dropped when the session is deleted.
+ */
+const AGY_SCROLL_CACHE = new Map<string, number>();
+const AGY_ATTACHMENT_CACHE = new Map<string, ComposerAttachment[]>();
 
 function hasCompleteAgyStatus(status: AgyStatus): boolean {
   return status.contextUsedPercent !== undefined && status.limits !== undefined;
@@ -97,7 +144,14 @@ function readPersistedTurns(sessionId: string): AgyLocalTurn[] {
         typeof (turn as AgyLocalTurn).id === 'string' &&
         typeof (turn as AgyLocalTurn).prompt === 'string' &&
         typeof (turn as AgyLocalTurn).assistantText === 'string' &&
-        typeof (turn as AgyLocalTurn).createdAt === 'number',
+        typeof (turn as AgyLocalTurn).createdAt === 'number' &&
+        ((turn as AgyLocalTurn).submittedPrompt === undefined ||
+          typeof (turn as AgyLocalTurn).submittedPrompt === 'string') &&
+        ((turn as AgyLocalTurn).attachments === undefined ||
+          (Array.isArray((turn as AgyLocalTurn).attachments) &&
+            (turn as AgyLocalTurn).attachments!.every(
+              (attachment) => ChatAttachmentSchema.safeParse(attachment).success,
+            ))),
     );
   } catch {
     return [];
@@ -129,11 +183,29 @@ const AGY_ROWS = 40;
 export function clearAgySessionCache(sessionId: string): void {
   AGY_TURN_CACHE.delete(sessionId);
   AGY_STATUS_CACHE.delete(sessionId);
+  AGY_SCROLL_CACHE.delete(sessionId);
+  // Attachments buffered for this session hold object URLs; this is the one
+  // place they are released now that they outlive the surface.
+  AGY_ATTACHMENT_CACHE.get(sessionId)?.forEach((attachment) => {
+    if (attachment.previewUrl !== undefined) {
+      URL.revokeObjectURL(attachment.previewUrl);
+    }
+  });
+  AGY_ATTACHMENT_CACHE.delete(sessionId);
   try {
     window.localStorage.removeItem(turnStorageKey(sessionId));
   } catch {
     // Nothing to clean if storage is unavailable.
   }
+}
+
+/**
+ * A relaunch gets a new terminal/screen, but its conversation history still
+ * belongs to the same CozyPad session. Keep the turns available for the
+ * selected-session preview while dropping runtime-only status.
+ */
+export function clearAgyRuntimeCache(sessionId: string): void {
+  AGY_STATUS_CACHE.delete(sessionId);
 }
 
 function readTerminalScreen(terminal: Terminal): string[] {
@@ -183,7 +255,7 @@ function panelCopy(model: AgyScreenModel): string[] {
   if (model.mode === 'question') return [];
   const optionLines = new Set(model.options.map((option) => option.lineIndex));
   return model.rawLines
-    .filter((line, index) => index !== model.promptLineIndex && !optionLines.has(index))
+    .filter((line, index) => index > model.promptLineIndex && !optionLines.has(index))
     .map((line) => line.trim())
     .filter(
       (line) =>
@@ -194,20 +266,45 @@ function panelCopy(model: AgyScreenModel): string[] {
     .slice(-5);
 }
 
+/** SPEC 1362-1364: a disabled composer names its reason and the next step. */
+function agyComposerUnavailableHint(
+  connection: ConnectionState,
+  sessionStatus: AgentSessionStatus,
+  mode: AgyScreenModel['mode'],
+  statusSyncPhase: StatusSyncPhase,
+): string {
+  if (connection === 'connecting') return '正在連線到 AGY…';
+  if (connection === 'closed' || sessionStatus === 'exited') {
+    return 'AGY session 已結束——按 Resume 重新啟動';
+  }
+  if (connection === 'error') return '連線發生錯誤——按 Resume 重試';
+  if (mode === 'running') return 'AGY 正在執行——等待完成或按 Stop 中止';
+  if (mode === 'approval' || mode === 'question') {
+    return 'AGY 正在等待你的回覆——在上方卡片作答';
+  }
+  if (mode === 'menu' || mode === 'viewer') {
+    return 'AGY 顯示選單中——以上方選項操作，或按 Esc 返回';
+  }
+  if (statusSyncPhase !== 'done' && statusSyncPhase !== 'failed') {
+    return '正在同步用量資訊，完成後即可輸入';
+  }
+  return '目前無法輸入';
+}
+
 function DiffLines({ diff }: { diff: string }) {
+  // Kept line-for-line identical to ChatTimeline's DiffBody: every agent's
+  // diff must render the same way (SPEC 1055), and the Claude path cannot be
+  // re-verified on this machine, so AGY aligns to it rather than the reverse.
   return (
     <pre className="diff-body">
       {diff.split('\n').map((line, index) => {
-        const className =
-          line.startsWith('+++') || line.startsWith('---')
-            ? 'diff-file'
-            : line.startsWith('+')
-              ? 'diff-add'
-              : line.startsWith('-')
-                ? 'diff-del'
-                : line.startsWith('@@')
-                  ? 'diff-hunk'
-                  : '';
+        const className = line.startsWith('+')
+          ? 'diff-add'
+          : line.startsWith('-')
+            ? 'diff-del'
+            : line.startsWith('@@')
+              ? 'diff-hunk'
+              : '';
         return (
           <span className={className} key={index}>
             {line}
@@ -537,10 +634,12 @@ function AgyReply({
   text,
   streaming,
   onToggleToolDetails,
+  showNativeToolControl = true,
 }: {
   text: string;
   streaming: boolean;
   onToggleToolDetails(): void;
+  showNativeToolControl?: boolean;
 }) {
   const blocks = useMemo(() => segmentAgyReply(text), [text]);
   return (
@@ -555,17 +654,21 @@ function AgyReply({
                 <span className="tool-name">{block.name}</span>
                 <span className="tool-summary mono">{block.detail}</span>
               </summary>
-              {block.detail === '' ? null : (
+              {/* The summary row already shows a single-line detail in full;
+                  repeating it as output printed the same text twice. */}
+              {block.detail.includes('\n') ? (
                 <pre className="tool-output">{block.detail}</pre>
-              )}
-              <button
-                type="button"
-                className="agy-tool-native-view"
-                data-testid="agy-tool-native-view"
-                onClick={onToggleToolDetails}
-              >
-                View in AGY
-              </button>
+              ) : null}
+              {showNativeToolControl ? (
+                <button
+                  type="button"
+                  className="agy-tool-native-view"
+                  data-testid="agy-tool-native-view"
+                  onClick={onToggleToolDetails}
+                >
+                  View in AGY
+                </button>
+              ) : null}
             </details>
           );
         }
@@ -610,6 +713,108 @@ function AgyReply({
   );
 }
 
+/**
+ * Read-only AGY history for a selected session. This intentionally never
+ * opens a terminal: selecting an exited session may inspect its conversation
+ * without reviving the process or changing the session status.
+ */
+export function AgyTranscriptPreview({
+  sessionId,
+  cwd,
+}: AgyTranscriptPreviewProps) {
+  const bridge = useMemo(() => getBridge(), []);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollPlacedRef = useRef(false);
+  const [turns, setTurns] = useState<AgyLocalTurn[]>(() => [
+    ...(AGY_TURN_CACHE.get(sessionId) ?? readPersistedTurns(sessionId)),
+  ]);
+
+  useEffect(() => {
+    // Open at the session's saved position, or the newest entry — the same
+    // rule as every other timeline (SPEC 3050). Turns may arrive
+    // asynchronously, so the first non-empty render is the one to place.
+    const el = scrollRef.current;
+    if (el === null || scrollPlacedRef.current || turns.length === 0) return;
+    scrollPlacedRef.current = true;
+    el.scrollTop = AGY_SCROLL_CACHE.get(sessionId) ?? el.scrollHeight;
+  }, [sessionId, turns.length]);
+
+  useEffect(() => {
+    if (turns.length > 0) return;
+    let cancelled = false;
+    void bridge
+      .readAgyTranscript({ sessionId })
+      .then(({ turns: recovered }) => {
+        if (cancelled || recovered.length === 0) return;
+        const seeded = recovered.map((turn, index) => ({
+          id: `recovered-${index}`,
+          prompt: turn.prompt,
+          assistantText: turn.assistantText,
+          createdAt: Date.now() + index,
+        }));
+        AGY_TURN_CACHE.set(sessionId, seeded);
+        persistTurns(sessionId, seeded);
+        setTurns(seeded);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge, sessionId, turns.length]);
+
+  return (
+    <div
+      className="chat-timeline agy-chat-timeline agy-transcript-preview"
+      data-testid="agy-transcript-preview"
+      ref={scrollRef}
+      onScroll={(event) =>
+        AGY_SCROLL_CACHE.set(sessionId, event.currentTarget.scrollTop)
+      }
+    >
+      {turns.length === 0 ? (
+        <section className="agy-chat-welcome" aria-label="AGY conversation preview">
+          <div className="agy-chat-mark" aria-hidden="true">A</div>
+          <h2>尚無已保存的對話內容</h2>
+          <p>這裡只顯示歷史內容；按 Resume 才會連回 AGY。</p>
+          <span className="agy-chat-cwd mono">{cwd}</span>
+        </section>
+      ) : (
+        turns.map((turn, index) => {
+          const visibleAssistantText = isStaleAgyReplyCandidate(
+            turn.assistantText,
+            turns.slice(0, index).map((earlier) => earlier.assistantText),
+            false,
+          )
+            ? ''
+            : turn.assistantText;
+          return (
+            <div className="agy-chat-turn" key={turn.id}>
+              {turn.prompt === '' && (turn.attachments?.length ?? 0) === 0 ? null : (
+                <div className="msg msg-user">
+                  <div
+                    className={`msg-body${(turn.attachments?.length ?? 0) > 0 ? ' msg-body-with-attachments' : ''}`}
+                  >
+                    {turn.prompt === '' ? null : turn.prompt}
+                    <MessageAttachments attachments={turn.attachments ?? []} />
+                  </div>
+                </div>
+              )}
+              {visibleAssistantText === '' ? null : (
+                <AgyReply
+                  text={visibleAssistantText}
+                  streaming={false}
+                  onToggleToolDetails={() => undefined}
+                  showNativeToolControl={false}
+                />
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 export function AgyCliSurface({
   sessionId,
   cwd,
@@ -622,16 +827,25 @@ export function AgyCliSurface({
   const bridge = useMemo(() => getBridge(), []);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const scrollRestoredRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const terminalIdRef = useRef<string | null>(null);
   const writeRawRef = useRef<(data: string) => void>(() => undefined);
   const remoteDraftRef = useRef('');
   const inputFingerprintRef = useRef('');
+  const draftTouchedRef = useRef(false);
   const activeTurnIdRef = useRef<string | null>(null);
   const composingRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const stopFingerprintRef = useRef('');
   const stopVerificationRef = useRef<StopVerification>('idle');
+  const attachmentUploadRef = useRef(false);
+  const pendingMediaUploadRef = useRef<PendingAgyMediaUpload | null>(null);
+  /** Upload bytes by remote id, kept for a retry paste (SPEC 315). */
+  const encodedBytesRef = useRef(new Map<string, string>());
+  /** Media already pasted into AGY; a retry must not paste them twice. */
+  const pastedMediaIdsRef = useRef(new Set<string>());
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [screen, setScreen] = useState<AgyScreenModel>(() =>
@@ -642,7 +856,14 @@ export function AgyCliSurface({
     ...(AGY_TURN_CACHE.get(sessionId) ?? readPersistedTurns(sessionId)),
   ]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const historyDraftRef = useRef('');
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(
+    () => AGY_ATTACHMENT_CACHE.get(sessionId) ?? [],
+  );
+  const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [status, setStatus] = useState<AgyStatus>(
     () => AGY_STATUS_CACHE.get(sessionId) ?? {},
   );
@@ -665,6 +886,14 @@ export function AgyCliSurface({
   };
 
   useEffect(() => {
+    attachmentsRef.current = attachments;
+    // Buffered files survive leaving the session (SPEC 300/3059) — switching
+    // away unmounts this surface, and dropping the tray here lost them
+    // silently. clearAgySessionCache revokes their object URLs on delete.
+    AGY_ATTACHMENT_CACHE.set(sessionId, attachments);
+  }, [attachments, sessionId]);
+
+  useEffect(() => {
     const terminal = new Terminal({
       cols: AGY_COLS,
       rows: AGY_ROWS,
@@ -675,6 +904,7 @@ export function AgyCliSurface({
     let writePending = false;
     let refreshAgain = false;
     let lastOutputSequence = -1;
+    let uploadControlTail = '';
     const earlyOutput: TerminalOutputEvent[] = [];
     const earlyClosed: TerminalClosedEvent[] = [];
 
@@ -686,8 +916,20 @@ export function AgyCliSurface({
       const next = deriveAgyScreenModel(readTerminalScreen(terminal));
       setScreen(next);
       setConnection('connected');
+      if (!draftTouchedRef.current) {
+        const recoveredDraft = extractAgyPromptDraft(next);
+        if (recoveredDraft !== '') {
+          remoteDraftRef.current = recoveredDraft;
+          setDraft((current) => (current === '' ? recoveredDraft : current));
+        }
+      }
       setTurns((current) => {
         if (current.length === 0) return current;
+        // An approval or question frame is the CLI's own control, not reply
+        // text. Freeze the transcript for its duration: the answer streamed
+        // so far stays visible next to the card instead of being replaced by
+        // scraped panel furniture (SPEC 2608).
+        if (next.mode === 'approval' || next.mode === 'question') return current;
         const latest = current.at(-1)!;
         // Terminal redraws are global to the CLI session. Only the ordinary
         // prompt that initiated the active turn may consume them; otherwise a
@@ -696,12 +938,13 @@ export function AgyCliSurface({
         // A recovered turn's text came from AGY's store in full; the screen
         // only shows its tail and would overwrite better with worse.
         if (latest.id.startsWith('recovered-')) return current;
-        if (!mayScrapeAgyReply(latest.prompt, next.rawLines, latest.assistantText)) {
+        const submittedPrompt = latest.submittedPrompt ?? latest.prompt;
+        if (!mayScrapeAgyReply(submittedPrompt, next.rawLines, latest.assistantText)) {
           return current;
         }
         const assistantText = extractAgyAssistantText(
           next,
-          latest.prompt,
+          submittedPrompt,
           latest.assistantText,
         );
         if (
@@ -723,8 +966,23 @@ export function AgyCliSurface({
     };
 
     const parseOutput = (event: TerminalOutputEvent) => {
+      const bytes = base64ToBytes(event.dataBase64);
+      uploadControlTail = `${uploadControlTail}${new TextDecoder().decode(bytes)}`.slice(
+        -512,
+      );
+      const pendingUpload = pendingMediaUploadRef.current;
+      if (
+        pendingUpload !== null &&
+        !pendingUpload.requested &&
+        uploadControlTail.includes('RequestUpload=format=tgz')
+      ) {
+        pendingUpload.requested = true;
+        writeRawRef.current(`ok\n${pendingUpload.archiveBase64}\n`);
+        pendingUpload.resolveRequested(true);
+        uploadControlTail = '';
+      }
       writePending = true;
-      terminal.write(base64ToBytes(event.dataBase64), () => {
+      terminal.write(bytes, () => {
         writePending = false;
         refreshScreen();
         if (refreshAgain) {
@@ -818,6 +1076,8 @@ export function AgyCliSurface({
 
     return () => {
       disposed = true;
+      pendingMediaUploadRef.current?.resolveRequested(false);
+      pendingMediaUploadRef.current = null;
       unsubscribeOutput();
       unsubscribeClosed();
       writeRawRef.current = () => undefined;
@@ -829,9 +1089,22 @@ export function AgyCliSurface({
   }, [bridge, sessionId]);
 
   useEffect(() => {
+    // Restore the session's reading position once, then auto-follow only
+    // while the user is already near the bottom (SPEC 1329-1331). The screen
+    // fingerprint changes on every spinner frame, so an unconditional scroll
+    // here pulled the user back down several times a second.
     const timeline = timelineRef.current;
-    if (timeline !== null) timeline.scrollTop = timeline.scrollHeight;
-  }, [screen.fingerprint, turns]);
+    if (timeline === null) return;
+    if (!scrollRestoredRef.current) {
+      scrollRestoredRef.current = true;
+      timeline.scrollTop =
+        AGY_SCROLL_CACHE.get(sessionId) ?? timeline.scrollHeight;
+      return;
+    }
+    const nearBottom =
+      timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 160;
+    if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
+  }, [screen.fingerprint, turns, sessionId]);
 
   useEffect(() => {
     // A revived session's history lives in AGY's own store; local caches died
@@ -897,11 +1170,13 @@ export function AgyCliSurface({
     .map((option, index) => ({ option, index }))
     .filter((entry) => entry.option.command !== undefined);
   const slashAutocomplete =
-    draft.trimStart().startsWith('/') && slashOptions.length > 0;
+    draft.trimStart().startsWith('/') && slashOptions.length > 0 && !slashDismissed;
   const activeSlash = slashOptions[Math.min(slashIndex, slashOptions.length - 1)];
 
   useEffect(() => {
     setSlashIndex(0);
+    // A dismissal lasts for the current command only, as in ChatComposer.
+    if (!draft.trimStart().startsWith('/')) setSlashDismissed(false);
   }, [draft]);
 
   useEffect(() => {
@@ -919,23 +1194,12 @@ export function AgyCliSurface({
 
   useEffect(() => {
     onStatusChange(
-      connection === 'closed' || sessionStatus === 'exited'
-        ? 'exited'
-        : connection === 'error'
-          ? 'error'
-          : screen.mode === 'running'
-            ? 'running'
-            : screen.mode === 'approval' || screen.mode === 'question'
-              ? 'waiting_approval'
-              : screen.mode === 'booting'
-                ? 'starting'
-                : screen.mode === 'error'
-                  ? 'error'
-                  : 'ready',
+      agySurfaceSessionStatus(connection, sessionStatus, screen.mode),
     );
   }, [screen.mode, connection, sessionStatus, onStatusChange]);
 
   const applyDraft = (next: string, composing: boolean) => {
+    draftTouchedRef.current = true;
     let previousRemote = remoteDraftRef.current;
     // Writes to a pseudo-console are not acknowledged. If AGY repainted since
     // the previous write, its visible input row is the best acknowledgement
@@ -945,9 +1209,16 @@ export function AgyCliSurface({
       inputFingerprintRef.current !== screen.fingerprint &&
       screen.promptLineIndex >= 0
     ) {
-      const observed = (screen.rawLines[screen.promptLineIndex] ?? '')
+      let observed = (screen.rawLines[screen.promptLineIndex] ?? '')
         .replace(/^\s*(?:>|❯|›|→)\s*/u, '')
         .trimEnd();
+      // Terminal rows are space-padded to the right edge. `trimEnd()` removes
+      // that padding, but it also destroys any trailing spaces the user actually
+      // typed. If `observed` matches what we sent minus the spaces, trust the
+      // spaces we sent are still there so we can actually send Backspaces to delete them.
+      if (remoteDraftRef.current.trimEnd() === observed) {
+        observed = remoteDraftRef.current;
+      }
       if (next.startsWith(observed) || observed.startsWith(next)) {
         previousRemote = observed;
         remoteDraftRef.current = observed;
@@ -971,9 +1242,302 @@ export function AgyCliSurface({
 
   const replaceRemoteDraft = (next: string) => applyDraft(next, false);
 
-  const sendPrompt = () => {
+  const attachFiles = (files: File[]) => {
+    if (files.length === 0 || uploadingAttachments) return;
+    const buffered = bufferAttachmentFiles(files, attachments.length);
+    if (buffered.attachments.length > 0) {
+      setAttachments((current) => [...current, ...buffered.attachments]);
+    }
+    const rejected = [
+      buffered.oversizedCount > 0
+        ? `${buffered.oversizedCount} attachment(s) exceeded the 20 MB limit`
+        : '',
+      buffered.limitCount > 0
+        ? `${buffered.limitCount} attachment(s) exceeded the ${MAX_AGENT_ATTACHMENTS}-file limit`
+        : '',
+    ].filter(Boolean);
+    if (rejected.length > 0) {
+      onNotify(`${rejected.join('; ')}. The remaining files are buffered locally.`);
+    }
+  };
+
+  const removeAttachment = (attachmentId: string) => {
+    encodedBytesRef.current.delete(attachmentId);
+    pastedMediaIdsRef.current.delete(attachmentId);
+    setAttachments((current) => {
+      const removed = current.find((attachment) => attachment.id === attachmentId);
+      if (removed?.previewUrl !== undefined) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((attachment) => attachment.id !== attachmentId);
+    });
+  };
+
+  const retryAttachment = async (attachmentId: string) => {
+    const target = attachments.find((a) => a.id === attachmentId);
+    if (!target) return;
+    setAttachments((current) =>
+      current.map((a) =>
+        a.id === attachmentId ? { ...a, state: 'packaging' as const } : a
+      )
+    );
+    try {
+      let remote = target;
+      if (target.file !== undefined) {
+        const dataBase64 = await attachmentFileToBase64(target.file);
+        setAttachments((current) =>
+          current.map((a) =>
+            a.id === attachmentId ? { ...a, state: 'transferring' as const } : a
+          )
+        );
+        const uploaded = await bridge.uploadAgentAttachments({
+          sessionId,
+          attachments: [
+            { name: target.name, mediaType: target.mediaType, dataBase64 }
+          ]
+        });
+        const firstUploaded = uploaded[0];
+        if (!firstUploaded) throw new Error('Upload returned no result');
+        encodedBytesRef.current.set(firstUploaded.id, dataBase64);
+        remote = {
+          id: firstUploaded.id,
+          name: firstUploaded.name,
+          mediaType: firstUploaded.mediaType,
+          sizeBytes: firstUploaded.sizeBytes,
+          state: 'ready' as const,
+          remotePath: firstUploaded.remotePath,
+          ...(target.previewUrl === undefined ? {} : { previewUrl: target.previewUrl }),
+        };
+        setAttachments((current) =>
+          current.map((a) => (a.id === attachmentId ? remote : a))
+        );
+      }
+      if (isInlineAttachmentImage(remote.mediaType) && !pastedMediaIdsRef.current.has(remote.id)) {
+        setAttachments((current) =>
+          current.map((a) =>
+            a.id === remote.id ? { ...a, state: 'verifying' as const } : a
+          )
+        );
+        await pasteNativeAgyMedia([remote], encodedBytesRef.current);
+        setAttachments((current) =>
+          current.map((a) =>
+            a.id === remote.id ? { ...a, state: 'ready' as const } : a
+          )
+        );
+      }
+    } catch (error) {
+      setAttachments((current) =>
+        current.map((a) =>
+          a.id === attachmentId
+            ? { ...a, state: 'error' as const, errorMessage: error instanceof Error ? error.message : String(error) }
+            : a
+        )
+      );
+      onNotify(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+
+  const pasteNativeAgyMedia = async (
+    mediaAttachments: ComposerAttachment[],
+    encodedByAttachmentId: Map<string, string>,
+  ): Promise<void> => {
+    if (mediaAttachments.length === 0) return;
+    const archiveBase64 = await createAgyMediaUploadArchive(
+      // A retry batch no longer holds Files; the cached upload bytes fill in.
+      mediaAttachments.map((attachment) => ({
+        mediaType: attachment.mediaType,
+        file: attachment.file,
+        dataBase64: encodedByAttachmentId.get(attachment.id),
+      })),
+    );
+    let resolveRequested!: (requested: boolean) => void;
+    const requested = new Promise<boolean>((resolve) => {
+      resolveRequested = resolve;
+    });
+    pendingMediaUploadRef.current = {
+      archiveBase64,
+      requested: false,
+      resolveRequested,
+    };
+
+    try {
+      const first = mediaAttachments[0]!;
+      const firstDataBase64 = encodedByAttachmentId.get(first.id);
+      if (firstDataBase64 === undefined) {
+        throw new Error(`Missing buffered image bytes for ${first.name}`);
+      }
+      if (bridge.writeClipboardImage !== undefined) {
+        await bridge.writeClipboardImage({
+          name: first.name,
+          mediaType: first.mediaType,
+          dataBase64: firstDataBase64,
+        });
+      }
+      sendRaw('\u0016');
+      const remoteUpload = await Promise.race([
+        requested,
+        new Promise<boolean>((resolve) =>
+          window.setTimeout(() => resolve(false), 700),
+        ),
+      ]);
+
+      if (!remoteUpload) {
+        if (bridge.writeClipboardImage === undefined) {
+          throw new Error('This AGY host did not accept the terminal media upload');
+        }
+        // Track each image as it lands so a retry after a mid-loop failure
+        // pastes only the remainder instead of duplicating the first ones.
+        pastedMediaIdsRef.current.add(first.id);
+        for (const attachment of mediaAttachments.slice(1)) {
+          const dataBase64 = encodedByAttachmentId.get(attachment.id);
+          if (dataBase64 === undefined) continue;
+          await bridge.writeClipboardImage({
+            name: attachment.name,
+            mediaType: attachment.mediaType,
+            dataBase64,
+          });
+          sendRaw('\u0016');
+          await new Promise((resolve) => window.setTimeout(resolve, 180));
+          pastedMediaIdsRef.current.add(attachment.id);
+        }
+      } else {
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+        // The archive path delivers the whole batch in one request.
+        for (const attachment of mediaAttachments) {
+          pastedMediaIdsRef.current.add(attachment.id);
+        }
+      }
+    } finally {
+      pendingMediaUploadRef.current = null;
+    }
+  };
+
+  const sendPrompt = async () => {
     const prompt = draft.trim();
-    if (prompt === '' || connection !== 'connected') return;
+    if (
+      (prompt === '' && attachments.length === 0) ||
+      connection !== 'connected' ||
+      attachmentUploadRef.current
+    ) {
+      return;
+    }
+    if (prompt.startsWith('/') && attachments.length > 0) {
+      onNotify('Attachments can be sent with a normal AGY prompt, not a slash command.');
+      return;
+    }
+    let submittedPrompt = prompt;
+    let deliveredAttachments: ChatAttachment[] = [];
+    const pendingAttachments = attachments;
+    let mediaToPaste: ComposerAttachment[] = [];
+    if (pendingAttachments.length > 0) {
+      attachmentUploadRef.current = true;
+      setUploadingAttachments(true);
+      try {
+        // SPEC 315: only still-buffered files are encoded and uploaded. Items
+        // that landed in a previous attempt (upload succeeded, paste failed)
+        // are reused verbatim — re-uploading duplicated files on the host and
+        // re-pasted images into the prompt.
+        const buffered = pendingAttachments.filter(
+          (attachment): attachment is ComposerAttachment & { file: File } =>
+            attachment.file !== undefined,
+        );
+        setAttachments((current) =>
+          current.map((attachment) =>
+            attachment.file === undefined
+              ? attachment
+              : { ...attachment, state: 'transferring' as const },
+          ),
+        );
+        const encodedAttachments = await Promise.all(
+          buffered.map(async (attachment) => ({
+            attachment,
+            dataBase64: await attachmentFileToBase64(attachment.file),
+          })),
+        );
+        const uploaded =
+          buffered.length === 0
+            ? []
+            : await bridge.uploadAgentAttachments({
+                sessionId,
+                attachments: encodedAttachments.map(
+                  ({ attachment, dataBase64 }) => ({
+                    name: attachment.name,
+                    mediaType: attachment.mediaType,
+                    dataBase64,
+                  }),
+                ),
+              });
+        if (uploaded.length !== buffered.length) {
+          throw new Error('The attachment batch returned an incomplete result');
+        }
+        const remoteByLocalId = new Map(
+          buffered.map((attachment, index) => [attachment.id, uploaded[index]!]),
+        );
+        uploaded.forEach((remote, index) => {
+          encodedBytesRef.current.set(
+            remote.id,
+            encodedAttachments[index]!.dataBase64,
+          );
+        });
+        // The tray becomes the delivered batch (remote ids, no Files) before
+        // the fragile paste step, mirroring the unified path's swap — a retry
+        // re-enters with this form and skips the upload entirely.
+        const delivered = pendingAttachments.map((attachment) => {
+          const remote = remoteByLocalId.get(attachment.id);
+          if (remote === undefined) return attachment;
+          return {
+            id: remote.id,
+            name: remote.name,
+            mediaType: remote.mediaType,
+            sizeBytes: remote.sizeBytes,
+            state: 'ready' as const,
+            remotePath: remote.remotePath,
+            ...(attachment.previewUrl === undefined
+              ? {}
+              : { previewUrl: attachment.previewUrl }),
+          };
+        });
+        setAttachments(delivered);
+        deliveredAttachments = delivered.map(
+          ({ id, name, mediaType, sizeBytes, remotePath }) => ({
+            id,
+            name,
+            mediaType,
+            sizeBytes,
+            remotePath: remotePath!,
+          }),
+        );
+        submittedPrompt = promptWithAttachmentReferences(
+          prompt,
+          deliveredAttachments.filter(
+            (attachment) => !isInlineAttachmentImage(attachment.mediaType),
+          ),
+        );
+        mediaToPaste = delivered.filter(
+          (attachment) =>
+            isInlineAttachmentImage(attachment.mediaType) &&
+            !pastedMediaIdsRef.current.has(attachment.id),
+        );
+        await pasteNativeAgyMedia(mediaToPaste, encodedBytesRef.current);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const mediaToPasteIds = new Set(mediaToPaste.map((a) => a.id));
+        setAttachments((current) =>
+          current.map((attachment) => {
+            const isPending = pendingAttachments.some((p) => p.id === attachment.id);
+            if (!isPending) return attachment;
+            if (attachment.file !== undefined || mediaToPasteIds.has(attachment.id)) {
+              return { ...attachment, state: 'error' as const, errorMessage };
+            }
+            return attachment;
+          })
+        );
+        onNotify(errorMessage);
+        return;
+      } finally {
+        attachmentUploadRef.current = false;
+        setUploadingAttachments(false);
+      }
+    }
     if (prompt.startsWith('/')) {
       // Slash commands control AGY's modal terminal surface. Freeze the last
       // conversational turn before the CLI repaints, and never add a temporary
@@ -985,15 +1549,36 @@ export function AgyCliSurface({
         prompt,
         assistantText: '',
         createdAt: Date.now(),
+        ...(submittedPrompt === prompt ? {} : { submittedPrompt }),
+        ...(deliveredAttachments.length === 0
+          ? {}
+          : { attachments: deliveredAttachments }),
       };
       activeTurnIdRef.current = turn.id;
       updateTurns((current) => [...current, turn]);
     }
+    const mirroredPrompt = remoteDraftRef.current;
     remoteDraftRef.current = '';
     inputFingerprintRef.current = '';
     setDraft('');
     setHistoryIndex(null);
-    sendRaw(agyKeySequence('enter'));
+    if (pendingAttachments.length > 0) {
+      // The visible prompt is already mirrored into AGY. Append only the
+      // non-media path suffix, then submit; pasting the whole prompt here used
+      // to duplicate the user's text before every attachment turn.
+      sendRaw(agyReconciledPromptSequence(mirroredPrompt, submittedPrompt));
+      pendingAttachments.forEach((attachment) => {
+        if (attachment.previewUrl !== undefined) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
+      setAttachments([]);
+      // The batch is delivered; the retry caches go with it.
+      encodedBytesRef.current.clear();
+      pastedMediaIdsRef.current.clear();
+    } else {
+      sendRaw(agyKeySequence('enter'));
+    }
   };
 
   const chooseOption = (index: number) => {
@@ -1150,13 +1735,21 @@ export function AgyCliSurface({
         chooseOption(activeSlash.index);
         return;
       }
-      sendPrompt();
+      void sendPrompt();
       return;
     }
     if (event.key === 'Escape') {
       event.preventDefault();
-      if (slashAutocomplete) sendRaw(agyKeySequence('escape'));
-      replaceRemoteDraft('');
+      // Esc closes the suggestion list and nothing else — the same key on the
+      // Claude composer. Clearing the draft here destroyed long prompts with
+      // no undo. The CLI clears its own input row on Escape; the next edit
+      // re-syncs it from the observed prompt line in applyDraft. Without a
+      // menu the key stays local: forwarding it would empty the remote row
+      // while the draft stays visible, so a bare Enter would submit nothing.
+      if (slashAutocomplete) {
+        setSlashDismissed(true);
+        sendRaw(agyKeySequence('escape'));
+      }
       return;
     }
     if (
@@ -1166,8 +1759,40 @@ export function AgyCliSurface({
       sendRaw(agyKeySequence(navigationKey));
       return;
     }
+    if (
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+      // SPEC 1350: history only at the caret's boundary — inside a recalled
+      // multi-line prompt the arrows must not swap the entry being edited.
+      caretIsOnHistoryEdge(
+        event.currentTarget,
+        event.key === 'ArrowUp' ? 'previous' : 'next',
+      ) &&
+      screen.mode !== 'approval' &&
+      screen.mode !== 'menu' &&
+      screen.mode !== 'viewer'
+    ) {
+      const prompts = turns
+        .map((turn) => turn.prompt)
+        .filter((prompt) => prompt !== '');
+      if (event.key === 'ArrowUp' && historyIndex === null) {
+        historyDraftRef.current = draft;
+      }
+      const result = navigatePromptHistory(
+        prompts,
+        historyIndex,
+        historyDraftRef.current,
+        event.key === 'ArrowUp' ? 'previous' : 'next',
+      );
+      if (result !== null) {
+        event.preventDefault();
+        replaceRemoteDraft(result.value);
+        setHistoryIndex(result.index);
+        return;
+      }
+    }
     // A panel (approval, model picker) is drawn and owned by the CLI, so its
-    // selection can only move there.
+    // selection can only move there. Ordinary arrows also stay with the CLI
+    // once the user has started editing a fresh draft.
     if (
       (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
       (draft !== '' ||
@@ -1179,30 +1804,18 @@ export function AgyCliSurface({
       sendRaw(agyKeySequence(event.key === 'ArrowUp' ? 'up' : 'down'));
       return;
     }
-    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && draft === '') {
-      const prompts = turns.map((turn) => turn.prompt);
-      if (prompts.length === 0) return;
-      event.preventDefault();
-      const nextIndex =
-        event.key === 'ArrowUp'
-          ? historyIndex === null
-            ? prompts.length - 1
-            : Math.max(0, historyIndex - 1)
-          : historyIndex === null || historyIndex + 1 >= prompts.length
-            ? null
-            : historyIndex + 1;
-      replaceRemoteDraft(nextIndex === null ? '' : prompts[nextIndex]!);
-      setHistoryIndex(nextIndex);
-    }
   };
 
-  const canCompose =
-    isAgyComposerEditable(connection, sessionStatus, screen.mode, draft) &&
-    (statusSyncPhase === 'done' || statusSyncPhase === 'failed');
   const overlay = useMemo(
     () => recogniseAgyScreen(screen.rawLines),
     [screen.fingerprint],
   );
+  // While an overlay is up the CLI is modal, so the composer is unavailable
+  // regardless of the draft; it stays in the layout, disabled (SPEC 1057).
+  const canCompose =
+    overlay === null &&
+    isAgyComposerEditable(connection, sessionStatus, screen.mode, draft) &&
+    (statusSyncPhase === 'done' || statusSyncPhase === 'failed');
 
   useEffect(() => {
     // Merge rather than replace: model and effort ride on every screen, but
@@ -1278,6 +1891,18 @@ export function AgyCliSurface({
   }, [statusSyncPhase]);
 
   useEffect(() => {
+    // The startup sync opened this report itself; a busy CLI (observed while
+    // AGY was mid eligibility-check) can swallow the closing Escape, and the
+    // sync then times out to 'failed' with its overlay still covering the
+    // conversation. Close what we opened instead of leaving it to the user.
+    if (statusSyncPhase !== 'failed') return;
+    if (overlay?.kind !== 'contextReport' && overlay?.kind !== 'quotaReport') {
+      return;
+    }
+    sendRaw(agyKeySequence('escape'));
+  }, [statusSyncPhase, overlay?.kind ?? null]);
+
+  useEffect(() => {
     // Keyboard control must not depend on clicking first. While an overlay is
     // up the composer is disabled, so nothing would hold focus and the arrow
     // keys would go nowhere; hand focus to the overlay and give it back when
@@ -1346,7 +1971,6 @@ export function AgyCliSurface({
   // controls, so the generic fallback panel would only duplicate it.
   const showPanel =
     overlay === null &&
-    draft === '' &&
     !showWelcome &&
     (hasKeyedChoices ||
       screen.mode === 'approval' ||
@@ -1395,12 +2019,27 @@ export function AgyCliSurface({
             <span aria-hidden="true" />
             Syncing usage…
           </span>
-        ) : status.contextUsedPercent === undefined && status.limits === undefined ? (
-          <span className="agy-statusline-hint">Usage unavailable</span>
+        ) : status.contextUsedPercent === undefined || status.limits === undefined ? (
+          // Either figure missing is worth saying. Requiring both to be absent
+          // meant a known context silently covered for unknown quota, and the
+          // gap read as "there is nothing here" rather than "we could not tell".
+          <span className="agy-statusline-hint">
+            {status.limits === undefined && status.contextUsedPercent === undefined
+              ? 'Usage unavailable'
+              : status.limits === undefined
+                ? 'Quota unavailable'
+                : 'Context unavailable'}
+          </span>
         ) : null}
         </div>
       </div>
-      <div className="chat-timeline agy-chat-timeline" ref={timelineRef}>
+      <div
+        className="chat-timeline agy-chat-timeline"
+        ref={timelineRef}
+        onScroll={(event) =>
+          AGY_SCROLL_CACHE.set(sessionId, event.currentTarget.scrollTop)
+        }
+      >
         {connectionError !== null ? (
           <div className="agy-chat-error" role="alert">
             <strong>Could not connect to AGY</strong>
@@ -1446,22 +2085,23 @@ export function AgyCliSurface({
 
         {turns.map((turn, index) => {
           const current = index === turns.length - 1;
-          const interactiveTurn =
-            current && (screen.mode === 'approval' || screen.mode === 'question');
-          const visibleAssistantText =
-            interactiveTurn ||
-            isStaleAgyReplyCandidate(
-              turn.assistantText,
-              turns.slice(0, index).map((earlier) => earlier.assistantText),
-              current && running,
-            )
-              ? ''
-              : turn.assistantText;
+          const visibleAssistantText = isStaleAgyReplyCandidate(
+            turn.assistantText,
+            turns.slice(0, index).map((earlier) => earlier.assistantText),
+            current && running,
+          )
+            ? ''
+            : turn.assistantText;
           return (
             <div className="agy-chat-turn" key={turn.id}>
-              {turn.prompt === '' ? null : (
+              {turn.prompt === '' && (turn.attachments?.length ?? 0) === 0 ? null : (
                 <div className="msg msg-user">
-                  <div className="msg-body">{turn.prompt}</div>
+                  <div
+                    className={`msg-body${(turn.attachments?.length ?? 0) > 0 ? ' msg-body-with-attachments' : ''}`}
+                  >
+                    {turn.prompt === '' ? null : turn.prompt}
+                    <MessageAttachments attachments={turn.attachments ?? []} />
+                  </div>
                 </div>
               )}
               {visibleAssistantText !== '' ? (
@@ -1480,7 +2120,7 @@ export function AgyCliSurface({
           );
         })}
 
-        {overlay !== null && draft === '' ? (
+        {overlay !== null ? (
           <div
             ref={overlayRef}
             tabIndex={-1}
@@ -1572,11 +2212,11 @@ export function AgyCliSurface({
       ) : null}
 
       {/*
-        While an overlay is up the CLI is modal — it shows no prompt of its
-        own, and anything typed goes to the overlay. Leaving a composer on
-        screen invites the user to write a message that has nowhere to go.
+        The composer never leaves the layout (SPEC 1057): while an overlay is
+        up it is disabled and the hint below names the reason, so the layout
+        does not jump and focus has somewhere to return to.
       */}
-      <div className="composer-wrap agy-composer-wrap" hidden={overlay !== null}>
+      <div className="composer-wrap agy-composer-wrap">
         {slashAutocomplete ? (
           <div className="slash-menu agy-slash-menu" role="listbox" aria-label="AGY slash commands">
             <div className="slash-menu-title">
@@ -1612,13 +2252,64 @@ export function AgyCliSurface({
             </div>
           </div>
         ) : null}
-        <div className="composer agy-composer">
+        <div
+          className={`composer agy-composer${attachments.length > 0 ? ' composer-with-attachments' : ''}`}
+        >
+          {attachments.length > 0 ? (
+            <div className="composer-attachments">
+              {attachments.map((attachment) => (
+                <div className="composer-attachment" key={attachment.id}>
+                  {attachment.previewUrl === undefined ? (
+                    <span className="composer-file-icon">FILE</span>
+                  ) : (
+                    <img src={attachment.previewUrl} alt="" />
+                  )}
+                  <span>
+                    <strong>{attachment.name}</strong>
+                    <small
+                      className={
+                        attachment.state === 'error' ? 'attachment-state-error' : ''
+                      }
+                      title={attachment.errorMessage}
+                    >
+                      {ATTACHMENT_STATE_LABEL[attachment.state]} ·{' '}
+                      {attachment.mediaType} ·{' '}
+                      {formatAttachmentSize(attachment.sizeBytes)}
+                    </small>
+                  </span>
+                  {attachment.state === 'error' ? (
+                    <button
+                      type="button"
+                      className="attachment-retry"
+                      title={`Retry ${attachment.name}`}
+                      onClick={() => retryAttachment(attachment.id)}
+                    >
+                      重試
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    title="Remove attachment"
+                    aria-label={`Remove ${attachment.name}`}
+                    disabled={
+                      attachment.state === 'packaging' ||
+                      attachment.state === 'transferring' ||
+                      attachment.state === 'verifying'
+                    }
+                    onClick={() => removeAttachment(attachment.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <textarea
             ref={textareaRef}
             data-testid="agy-composer-input"
             value={draft}
             rows={Math.min(6, Math.max(1, draft.split('\n').length))}
-            disabled={!canCompose}
+            disabled={!canCompose || uploadingAttachments}
             placeholder={
               running
                 ? 'AGY is working…'
@@ -1636,9 +2327,43 @@ export function AgyCliSurface({
             onChange={(event) =>
               applyDraft(event.currentTarget.value, composingRef.current)
             }
+            onPaste={(event) => {
+              const files = clipboardAttachmentFiles(
+                event.clipboardData.items,
+                event.clipboardData.files,
+              );
+              if (files.length === 0) return;
+              if (event.clipboardData.getData('text') === '') event.preventDefault();
+              attachFiles(files);
+            }}
             onKeyDown={handleComposerKeyDown}
           />
           <div className="composer-actions">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = '';
+                if (files.length > 0) attachFiles(files);
+              }}
+            />
+            <button
+              type="button"
+              className="composer-attach"
+              title="Attach image or file"
+              aria-label="Attach image or file"
+              disabled={
+                !canCompose ||
+                uploadingAttachments ||
+                attachments.length >= MAX_AGENT_ATTACHMENTS
+              }
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {uploadingAttachments ? 'Packaging…' : '＋ Attach'}
+            </button>
             {running || stopVerification === 'requested' || stopVerification === 'unconfirmed' ? (
               <button
                 type="button"
@@ -1655,14 +2380,29 @@ export function AgyCliSurface({
               type="button"
               className="composer-send"
               data-testid="agy-send"
-              disabled={!canCompose || draft.trim() === ''}
-              onClick={sendPrompt}
+              disabled={
+                !canCompose ||
+                uploadingAttachments ||
+                (draft.trim() === '' && attachments.length === 0)
+              }
+              onClick={() => void sendPrompt()}
             >
               Send
             </button>
           </div>
         </div>
-        <div className="agy-composer-hint">Enter to send · Shift+Enter for a new line</div>
+        <div className="agy-composer-hint">
+          {overlay !== null
+            ? '選單開啟中，先完成或取消上方的選單才能輸入'
+            : canCompose
+              ? 'Enter to send · Shift+Enter for a new line'
+              : agyComposerUnavailableHint(
+                  connection,
+                  sessionStatus,
+                  screen.mode,
+                  statusSyncPhase,
+                )}
+        </div>
       </div>
     </div>
   );

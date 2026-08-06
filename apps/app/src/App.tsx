@@ -54,7 +54,6 @@ export function App() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [credentialPrompt, setCredentialPrompt] = useState<ConnectionProfile | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
-  const [mockData, setMockData] = useState(false);
   const [startupWarnings, setStartupWarnings] = useState<string[]>([]);
   const [tmuxStatus, setTmuxStatus] = useState<TmuxStatus | null>(null);
   const [tmuxPromptDismissed, setTmuxPromptDismissed] = useState(false);
@@ -63,7 +62,6 @@ export function App() {
     secondsLeft: number;
   } | null>(null);
 
-  const autoConnected = useRef(false);
   const manualDisconnect = useRef(true);
   const wasConnected = useRef(false);
   const attempts = useRef(0);
@@ -99,7 +97,6 @@ export function App() {
 
   useEffect(() => {
     void bridge.getAppInfo().then((info) => {
-      setMockData(info.mockData);
       setStartupWarnings(info.startupWarnings ?? []);
     });
   }, [bridge]);
@@ -206,20 +203,6 @@ export function App() {
     });
   }, [bridge, clearTimers]);
 
-  useEffect(() => {
-    // This machine is the default: it needs no credentials and no network, so
-    // making the user pick and connect to their own computer before doing
-    // anything is a step with no decision in it. Reaching a remote host stays
-    // deliberate.
-    if (autoConnected.current || state !== 'disconnected') return;
-    const local = profiles.find((profile) => profile.isLocal === true);
-    if (local === undefined) return;
-    autoConnected.current = true;
-    // Deliberately does not touch the selection: this is a convenient default,
-    // not a decision taken away from the user.
-    doConnect(local.id);
-  }, [profiles, state, doConnect]);
-
   const selectedProfile = profiles.find((profile) => profile.id === selectedId) ?? null;
   const connectedProfile =
     profiles.find((profile) => profile.id === connectedId) ?? selectedProfile;
@@ -234,7 +217,7 @@ export function App() {
       ((selectedProfile.authMethod ?? 'password') === 'privateKey'
         ? selectedProfile.hasPrivateKey === true
         : selectedProfile.hasPassword === true);
-    if (!hasCredential && bridge.kind !== 'mock') {
+    if (!hasCredential) {
       setCredentialPrompt(selectedProfile);
       return;
     }
@@ -309,18 +292,10 @@ export function App() {
         <span className={`status status-${state}`}>{state}</span>
         <span
           className={`mode-tag${
-            mockData
-              ? ' mode-mock'
-              : connectedProfile?.isLocal === true
-                ? ' mode-local'
-                : ' mode-ssh'
+            connectedProfile?.isLocal === true ? ' mode-local' : ' mode-ssh'
           }`}
         >
-          {mockData
-            ? 'MOCK DATA'
-            : connectedProfile?.isLocal === true
-              ? 'LOCAL'
-              : 'SSH'}
+          {connectedProfile?.isLocal === true ? 'LOCAL' : 'SSH'}
         </span>
         <span className="spacer" />
         {/*
@@ -427,7 +402,6 @@ export function App() {
           <section className="workspace-page" hidden={workspace !== 'settings'}>
             <SettingsWorkspace
               bridgeKind={bridge.kind}
-              mockData={mockData}
               connected={state === 'connected'}
             />
           </section>

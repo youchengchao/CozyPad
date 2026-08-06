@@ -31,6 +31,7 @@ import type { TelemetrySnapshot } from './telemetry';
 import type {
   AgentCommunicationErrorEvent,
   AgentAttachment,
+  AgentAttachmentUpload,
   AgentDetectionRequest,
   AgentInstallation,
   AgentSessionBundle,
@@ -43,10 +44,12 @@ import type {
   AgentTimelineChangedEvent,
   AnswerAgentQuestionRequest,
   CreateAgentSessionRequest,
+  DeclineAgentQuestionRequest,
+  DeleteAgentSessionResult,
   RenameAgentSessionRequest,
   ResolveAgentApprovalRequest,
   SendAgentMessageRequest,
-  UploadAgentAttachmentRequest,
+  UploadAgentAttachmentsRequest,
 } from './agentCommunication';
 import type {
   TerminalCloseRequest,
@@ -60,11 +63,9 @@ import type {
 
 export type Unsubscribe = () => void;
 
-export type PlatformBridgeKind = 'electron' | 'capacitor' | 'mock';
+export type PlatformBridgeKind = 'electron' | 'capacitor';
 
 export interface AppInfo {
-  /** true = 內建假資料模式（COZYPAD_MOCK=1 或瀏覽器 mock bridge）。 */
-  mockData: boolean;
   /**
    * 啟動時降級處理過的問題（例如本機設定檔解不開）。App 仍可使用，
    * 但相關資料是空的，必須讓使用者看得到原因。
@@ -135,6 +136,8 @@ export interface PlatformBridge {
   /** 系統剪貼簿；桌面走原生 API，不受 renderer 權限限制。 */
   readClipboard(): Promise<string>;
   writeClipboard(text: string): Promise<void>;
+  /** Temporarily stage a raster image for a native terminal agent's Ctrl+V. */
+  writeClipboardImage?(attachment: AgentAttachmentUpload): Promise<void>;
 
   /** tmux 佈建：連線後自動偵測，缺少或版本過舊時由 UI 詢問是否安裝。 */
   getTmuxStatus(): Promise<TmuxStatus>;
@@ -161,14 +164,17 @@ export interface PlatformBridge {
   readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript>;
   openAgentTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
   renameAgentSession(request: RenameAgentSessionRequest): Promise<void>;
-  deleteAgentSession(request: AgentSessionRequest): Promise<void>;
-  uploadAgentAttachment(
-    request: UploadAgentAttachmentRequest,
-  ): Promise<AgentAttachment>;
+  deleteAgentSession(
+    request: AgentSessionRequest,
+  ): Promise<DeleteAgentSessionResult>;
+  uploadAgentAttachments(
+    request: UploadAgentAttachmentsRequest,
+  ): Promise<AgentAttachment[]>;
   sendAgentMessage(request: SendAgentMessageRequest): Promise<void>;
   interruptAgentSession(request: AgentSessionRequest): Promise<void>;
   resolveAgentApproval(request: ResolveAgentApprovalRequest): Promise<void>;
   answerAgentQuestion(request: AnswerAgentQuestionRequest): Promise<void>;
+  declineAgentQuestion(request: DeclineAgentQuestionRequest): Promise<void>;
   onAgentSessionChanged(
     listener: (event: AgentSessionChangedEvent) => void,
   ): Unsubscribe;

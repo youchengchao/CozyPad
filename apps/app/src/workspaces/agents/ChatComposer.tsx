@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { MAX_AGENT_ATTACHMENTS } from '@cozypad/contracts';
 import type { SlashCommand } from '@cozypad/contracts';
-
-export interface ComposerAttachment {
-  id: string;
-  name: string;
-  mediaType: string;
-  sizeBytes: number;
-  previewUrl?: string;
-}
+import { clipboardAttachmentFiles, formatAttachmentSize } from './attachmentBuffer';
+import type { ComposerAttachment } from './attachmentBuffer';
+export type { ComposerAttachment } from './attachmentBuffer';
 
 interface ChatComposerProps {
   agentLabel: string;
@@ -17,11 +13,15 @@ interface ChatComposerProps {
   attachments: ComposerAttachment[];
   uploading?: boolean;
   disabled?: boolean;
+  /** SPEC 1362-1364: why the composer is unavailable, and what to do next. */
+  disabledReason?: { text: string; nextStep?: string };
   running?: boolean;
   stopping?: boolean;
   onChange(value: string): void;
   onAttach(files: File[]): void;
   onRemoveAttachment(id: string): void;
+  /** SPEC 1415: retry one failed attachment without touching the rest. */
+  onRetryAttachment?(id: string): void;
   onCommand?(command: SlashCommand): void;
   onStop?(): void;
   onSend(text: string): void;
@@ -43,6 +43,15 @@ export function slashCommandSelectionBehavior(
 ): 'insert' | 'submit' | 'picker' {
   return command.behavior ?? 'insert';
 }
+
+export const ATTACHMENT_STATE_LABEL: Record<ComposerAttachment['state'], string> = {
+  buffered: 'Buffered',
+  packaging: 'Packaging',
+  transferring: 'Transferring',
+  verifying: 'Verifying',
+  ready: 'Ready',
+  error: 'Error',
+};
 
 export interface PromptHistoryResult {
   index: number | null;
@@ -67,7 +76,7 @@ export function navigatePromptHistory(
     : { index: nextIndex, value: history[nextIndex]! };
 }
 
-function caretIsOnHistoryEdge(
+export function caretIsOnHistoryEdge(
   textarea: HTMLTextAreaElement,
   direction: 'previous' | 'next',
 ): boolean {
@@ -86,11 +95,13 @@ export function ChatComposer({
   attachments,
   uploading = false,
   disabled = false,
+  disabledReason,
   running = false,
   stopping = false,
   onChange,
   onAttach,
   onRemoveAttachment,
+  onRetryAttachment,
   onCommand,
   onStop,
   onSend,
@@ -218,6 +229,11 @@ export function ChatComposer({
                     /{normalizeSlashCommandName(command.name)}
                   </span>
                   <span className="slash-desc">{command.description}</span>
+                  {command.owner === 'cozypad' ? (
+                    // SPEC 1445: this command is completed by CozyPad itself —
+                    // no agent turn, no Running state.
+                    <span className="slash-owner">CozyPad</span>
+                  ) : null}
                 </button>
               ))
             )}
@@ -227,7 +243,21 @@ export function ChatComposer({
           </div>
         </div>
       ) : null}
-      <div className="composer">
+      {disabled && disabledReason !== undefined ? (
+        // SPEC 1362-1364: a dead input box explains itself — the reason and
+        // the next step, not just a grey field.
+        <div className="composer-unavailable" role="status">
+          <span>{disabledReason.text}</span>
+          {disabledReason.nextStep === undefined ? null : (
+            <span className="composer-unavailable-next">
+              {disabledReason.nextStep}
+            </span>
+          )}
+        </div>
+      ) : null}
+      <div
+        className={`composer${attachments.length > 0 ? ' composer-with-attachments' : ''}`}
+      >
         {attachments.length > 0 ? (
           <div className="composer-attachments">
             {attachments.map((attachment) => (
@@ -239,13 +269,41 @@ export function ChatComposer({
                 )}
                 <span>
                   <strong>{attachment.name}</strong>
-                  <small>{Math.max(1, Math.ceil(attachment.sizeBytes / 1024))} KB</small>
+                  <small
+                    className={
+                      attachment.state === 'error' ? 'attachment-state-error' : ''
+                    }
+                    title={attachment.errorMessage}
+                  >
+                    {ATTACHMENT_STATE_LABEL[attachment.state]}
+                    {' · '}
+                    {attachment.mediaType}
+                    {' · '}
+                    {formatAttachmentSize(attachment.sizeBytes)}
+                  </small>
                 </span>
+                {attachment.state === 'error' && onRetryAttachment !== undefined ? (
+                  <button
+                    type="button"
+                    className="attachment-retry"
+                    title={`Retry ${attachment.name}`}
+                    onClick={() => onRetryAttachment(attachment.id)}
+                  >
+                    重試
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   title="Remove attachment"
+                  aria-label={`Remove ${attachment.name}`}
                   onClick={() => onRemoveAttachment(attachment.id)}
-                  disabled={disabled || uploading}
+                  // SPEC 1414: only Processing forbids removal — a buffered
+                  // or failed file stays removable while the agent runs.
+                  disabled={
+                    attachment.state === 'packaging' ||
+                    attachment.state === 'transferring' ||
+                    attachment.state === 'verifying'
+                  }
                 >
                   ×
                 </button>
@@ -264,10 +322,10 @@ export function ChatComposer({
             onChange(event.target.value);
           }}
           onPaste={(event) => {
-            const files = [...event.clipboardData.items]
-              .filter((item) => item.kind === 'file')
-              .map((item) => item.getAsFile())
-              .filter((file): file is File => file !== null);
+            const files = clipboardAttachmentFiles(
+              event.clipboardData.items,
+              event.clipboardData.files,
+            );
             if (files.length === 0) return;
             if (event.clipboardData.getData('text') === '') event.preventDefault();
             onAttach(files);
@@ -310,12 +368,16 @@ export function ChatComposer({
               (event.key === 'ArrowUp' || event.key === 'ArrowDown')
             ) {
               const direction = event.key === 'ArrowUp' ? 'previous' : 'next';
-              const enteringHistory = historyIndex === null;
-              const canNavigate =
-                !enteringHistory ||
-                (direction === 'previous' &&
-                  value === '' &&
-                  caretIsOnHistoryEdge(event.currentTarget, direction));
+              // SPEC 1350: history engages only at the caret's boundary —
+              // every time, not just on entry. Once a multi-line prompt is
+              // recalled, arrows inside it move the caret; swapping the
+              // entry destroyed the text mid-edit. This also lets a
+              // non-empty draft enter history (it is saved and restored on
+              // the way back out).
+              const canNavigate = caretIsOnHistoryEdge(
+                event.currentTarget,
+                direction,
+              );
               if (canNavigate && moveThroughHistory(direction)) {
                 event.preventDefault();
                 return;
@@ -343,10 +405,14 @@ export function ChatComposer({
             type="button"
             className="composer-attach"
             title="Attach image or file"
-            disabled={disabled || uploading || attachments.length >= 10}
+            aria-label="Attach image or file"
+            // SPEC 1395-1399: only the count/size limits gate adding — a
+            // buffered file makes no remote request, so a running turn is
+            // no reason to refuse it.
+            disabled={uploading || attachments.length >= MAX_AGENT_ATTACHMENTS}
             onClick={() => fileInputRef.current?.click()}
           >
-            {uploading ? '…' : '+'}
+            {uploading ? 'Packaging…' : '＋ Attach'}
           </button>
           {running && onStop !== undefined ? (
             <button

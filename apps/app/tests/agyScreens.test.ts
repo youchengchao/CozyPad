@@ -269,6 +269,84 @@ describe('AGY overlay recognition', () => {
       ]);
     });
 
+    it('reads a full quota report whose gauge headings end in Remaining', () => {
+      // The report parser had its own trailing-"limit" anchor, so on AGY
+      // 1.1.10 every group parsed with zero gauges and the header showed
+      // nothing — while the raw terminal plainly listed both limits.
+      const status = readAgyStatus([
+        '  Models & Quota',
+        '  Account: someone@example.com',
+        '',
+        '  GEMINI MODELS',
+        '  Weekly Limit Remaining',
+        '    [██████████████████████████████████████████████░░░░] 93.42%',
+        '    93% remaining · Refreshes in 137h 38m',
+        '  Five Hour Limit Remaining',
+        '    [██████████████████████████████████████████████████] 100.00%',
+        '    Quota available',
+      ]);
+
+      expect(status.limits).toEqual([
+        {
+          label: 'Gemini · Weekly Limit',
+          remainingPercent: 93,
+          note: 'Refreshes in 137h 38m',
+        },
+        {
+          label: 'Gemini · Five Hour Limit',
+          remainingPercent: 100,
+          note: 'Quota available',
+        },
+      ]);
+    });
+
+    it('reads limits whose heading ends in Remaining', () => {
+      // AGY 1.1.10 prints `Weekly Limit Remaining`. Anchoring the heading on a
+      // trailing "Limit" dropped every rate limit from the header silently.
+      const status = readAgyStatus([
+        '  Weekly Limit Remaining',
+        '    [██████████████████████████████████████████████████] 99.33%',
+        '    99% remaining · Refreshes in 95h 9m',
+      ]);
+
+      expect(status.limits).toEqual([
+        {
+          label: 'Weekly Limit',
+          remainingPercent: 99,
+          note: 'Refreshes in 95h 9m',
+        },
+      ]);
+    });
+
+    it('takes an untouched limit from its gauge, which carries the only number', () => {
+      // A limit nobody has spent reads `Quota available`, not `N% remaining`.
+      const status = readAgyStatus([
+        '  Five Hour Limit Remaining',
+        '    [██████████████████████████████████████████████████] 100.00%',
+        '    Quota available',
+      ]);
+
+      expect(status.limits).toEqual([
+        {
+          label: 'Five Hour Limit',
+          remainingPercent: 100,
+          note: 'Quota available',
+        },
+      ]);
+    });
+
+    it('leaves context usage unknown rather than reporting an empty context', () => {
+      // A screen without a total used to yield 0%, which reads as "nothing
+      // used" — the opposite of "we could not tell".
+      const status = readAgyStatus([
+        '  Context Usage',
+        '  System prompt: 12.0k (1.2%)',
+        '  Tools: 8.0k (0.8%)',
+      ]);
+
+      expect(status.contextUsedPercent).toBeUndefined();
+    });
+
     it('keeps quota groups in the compact status labels', () => {
       expect(readAgyStatus(QUOTA_REPORT).limits?.map((limit) => limit.label)).toEqual([
         'Gemini · Weekly Limit',

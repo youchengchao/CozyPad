@@ -1,0 +1,827 @@
+{
+  "summary": "Inventory the gap between SPEC-hand.md and the actual agent page code, producing an actionable fix list",
+  "agentCount": 10,
+  "logs": [
+    "composer-attachment: 8 claimed -> 8 confirmed",
+    "session-state: 8 claimed -> 8 confirmed",
+    "agy-vs-unified: 8 claimed -> 8 confirmed",
+    "codex-path: 8 claimed -> 8 confirmed",
+    "agy-parsing: 8 claimed -> 5 confirmed",
+    "confirmed total: 37"
+  ],
+  "result": {
+    "total": 37,
+    "bySlice": [
+      {
+        "key": "agy-vs-unified",
+        "claimed": 8,
+        "items": [
+          {
+            "kind": "實作 bug",
+            "title": "draft 非空時，Overlay 與 Approval/Question 面板整片消失，畫面可能全空",
+            "spec_says": "1057「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置。」1358「無阻擋輸入的 Question／Approval。」（Composer 可用條件）1455-1461 Approval Card 狀態需含 Pending／Submitting／Allowed／Denied。",
+            "code_does": "AgyCliSurface.tsx:1710-1718 `showPanel = overlay === null && draft === '' && ...`；AgyCliSurface.tsx:1851 overlay 也要求 `draft === ''` 才渲染；AgyCliSurface.tsx:1947 `hidden={overlay !== null}` 又把 composer 藏掉。三個條件互相咬：只要 draft 不是空字串而 overlay 被辨識出來，overlay 不畫、panel 不畫、composer 被 hidden，整個互動區是空的。同時 agyTerminalModel.ts:731 `if (draft !== '') return true;` 讓 canCompose 在 approval/question 模式下反而變成可輸入，使用者可以打字並 Enter 送進一個正在等 y/n 的 CLI。draft 非空是會自己發生的：AgyCliSurface.tsx:853-859 在 `!draftTouchedRef.current` 時會從終端畫面 `extractAgyPromptDraft` 自動回填 draft。對照 ChatTimeline.tsx:116-148，approval card 永遠渲染，只用 `interactive` 決定按鈕 disabled，從不隱藏。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx",
+              "apps/app/src/workspaces/agents/agyTerminalModel.ts"
+            ],
+            "fix_sketch": "1) AgyCliSurface.tsx:1710-1718、1851 兩處移除 `draft === ''`，只看 overlay/mode。2) agyTerminalModel.ts:721-738 的 `if (draft !== '') return true;` 改為只排除 approval/question：`if (draft !== '' && mode !== 'approval' && mode !== 'question') return true;`。切勿照宣稱把 menu/viewer 一併排除——apps/app/tests/agyTerminalModel.test.ts:441-442 與 agyRealScreens.test.ts:471 明確要求 viewer+'/'、running+'/mo' 仍可輸入（這是為了擋 '/' 全畫面重繪奪走 composer），改了會破既有測試且回歸舊 bug。3) composer 改成永遠渲染但 overlay !== null 時 disabled（與第 4 條合併做，否則 1947 拿掉 hidden 後 draft 非空會讓使用者對著 overlay 打字）。4) 補 isAgyComposerEditable 的 approval/question 測試。",
+            "risk": "isAgyComposerEditable 有既有測試（apps/app/tests/agyTerminalModel.test.ts），改它的行為要同步調整測試；`draft !== ''` 那條捷徑原本是為了擋「打 `/` 後全畫面重繪把 composer 搶走」，拿掉模式例外時要確認 mode 'suggestions'/'prompt' 仍走原路徑。完全不動 Claude／Codex 路徑（ChatTimeline/ChatComposer 不改）。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "程式屬實。AgyCliSurface.tsx:1710-1718 showPanel 含 `overlay === null && draft === ''`；1851 `{overlay !== null && draft === '' ? ...}`；1947 `hidden={overlay !== null}`。三者確實互斥，draft 非空 + overlay 被辨識 => 三塊都不畫。agyTerminalModel.ts:731 `if (draft !== '') return true;` 亦屬實，approval/question 模式下 canCompose 變 true（1562-1564），違反 SPEC 1358「無阻擋輸入的 Question／Approval」與 1057「不隱藏該操作的位置」。自動回填屬實：853-859 在 !draftTouchedRef.current 時由 extractAgyPromptDraft 回填（agyTerminalModel.ts:553-558，僅 prompt/suggestions 模式）。ChatTimeline.tsx:116-148 approval 確實永遠渲染、只 disabled。已確認全程沒有任何地方在進入 approval/question 時清 draft（setDraft 只出現在 784/857/1142/1332）。\n兩點修正宣稱者的力道：(a)『overlay + draft 非空』這條全空路徑較邊緣——sendPrompt 1332 送出後即 setDraft('')，正常 /model 流程 draft 是空的；可觸發路徑是啟動時 statusSync 自動送 /context（1597）被 853-859 刮回 draft，屬時序相依。(b) 真正穩定可重現且較嚴重的是『draft 非空 + approval/question』：卡片消失且 composer 反而可輸入。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "AGY timeline 每次終端重繪都強制捲到底，向上閱讀被打斷",
+            "spec_says": "1329「接近底部才 Auto-follow。」1330「向上閱讀時顯示 New Event 提示。」1331「每個 Session 保存 Scroll Position。」3049「向上閱讀時不強制捲到底部。」3050「每 Session 保存 Scroll Position。」",
+            "code_does": "AgyCliSurface.tsx:1020-1023 `useEffect(() => { timeline.scrollTop = timeline.scrollHeight; }, [screen.fingerprint, turns])` — 無條件捲到底。而 agyTerminalModel.ts:537 `fingerprint: \\`${mode}\\n${lines.join('\\n')}\\`` 包含整張畫面文字，AGY 執行中的 spinner 每一格都會產生新 fingerprint，等於每秒數次把使用者拉回底部，向上捲根本捲不住。對照 ChatTimeline.tsx:48-61：先做 `nearBottom = scrollHeight - scrollTop - clientHeight < 160` 判斷才 follow，並用 `positions` Map 依 sessionId 保存/還原捲動位置。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "把 1020-1023 改成 ChatTimeline.tsx:48-61 同一套：先算 `el.scrollHeight - el.scrollTop - el.clientHeight < 160` 才寫 scrollTop。位置保存不能用 ChatTimeline 那種 useRef Map——AgyCliSurface 在 AgentsWorkspace.tsx:1053-1055 是 key={sessionId} 且切走就卸載，ref 會一起死；要用 module 層 `const AGY_SCROLL_CACHE = new Map<string, number>()`（與 AGY_TURN_CACHE／AGY_STATUS_CACHE 同層），掛載時還原、onScroll 或 unmount cleanup 時寫入，並在 clearAgySessionCache 一起清。SPEC 1330 的 New Event 提示可留後續。無 DOM 測試會被影響（apps/app/tests 內沒有 AgyCliSurface 的 render 測試）。",
+            "risk": "依賴 turns 更新時的自動跟隨，改後新回覆若使用者原本就在底部仍要跟上，門檻值沿用 160px 即可；AGY 的 timeline padding 較大（styles.css:2679-2683），必要時放寬門檻。不動 Claude 路徑。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "AgyCliSurface.tsx:1020-1023 確為無條件 `timeline.scrollTop = timeline.scrollHeight`，deps `[screen.fingerprint, turns]`。agyTerminalModel.ts:537 `fingerprint: ${mode}\\n${lines.join('\\n')}` 確實包含整張畫面，spinner 每格都換 fingerprint。styles.css:1095-1098 `.chat-timeline { overflow-y: auto }`，2679 起 .agy-chat-timeline 未覆寫，確實會捲動。對照組 ChatTimeline.tsx:48-61 確有 nearBottom<160 判斷 + positions Map 依 sessionId 存還原。違反 SPEC 1329「接近底部才 Auto-follow」、1331/3050「每 Session 保存 Scroll Position」、3049「向上閱讀時不強制捲到底部」（行號逐字核對無誤）。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "AGY 按 Esc 會清掉整個 draft；Claude 路徑的 Esc 只關閉 slash 選單",
+            "spec_says": "1055-1056「Claude、Codex、AGY 使用同一套 UI、同一組操作」「不因 Agent 不同而改變版面或操作位置」。規格未直接規範 Esc 語意，但同一操作在兩個 Agent 上不得有相反結果。",
+            "code_does": "AgyCliSurface.tsx:1507-1512：`if (event.key === 'Escape') { preventDefault(); if (slashAutocomplete) sendRaw(escape); replaceRemoteDraft(''); return; }` — `replaceRemoteDraft('')` 是無條件執行的，不管有沒有開 slash 選單，Esc 一律把 draft 清空，而且把清除鍵送進遠端 CLI，打了一半的長 prompt 直接消失且不可復原。對照 ChatComposer.tsx:309-313：Esc 只 `setSlashDismissed(true)`，文字完整保留。另外 AGY 根本沒有 dismissed 狀態：slashAutocomplete 於 AgyCliSurface.tsx:1088-1089 純粹由 `draft.trimStart().startsWith('/')` 推導，使用者沒有任何方式在保留文字的前提下關掉建議清單（ChatComposer.tsx:98/107/112/129 有 slashDismissed）。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "1) 新增 `const [slashDismissed, setSlashDismissed] = useState(false)`，比照 ChatComposer.tsx:128-130 在 draft 不再以 '/' 開頭時重置（AGY 用 `useEffect(() => { if (!draft.trimStart().startsWith('/')) setSlashDismissed(false) }, [draft])`）。2) 1088-1089 加 `&& !slashDismissed`。3) 1507-1512 改為：slashAutocomplete 時 `setSlashDismissed(true); sendRaw(agyKeySequence('escape')); return;`（不動 draft）；否則只 `sendRaw(agyKeySequence('escape'))`。不要另外改 remoteDraftRef——applyDraft 1121-1133 已有以畫面輸入行修正 remote 的機制，下次輸入會自行對齊。",
+            "risk": "Esc 目前同時被用來把遠端輸入行清乾淨以保持本地/遠端 mirror 一致（remoteDraftRef）；改成不清 draft 後，要確認 mirrorAgyDraft 的 remoteDraftRef 不會與 CLI 實際輸入行脫節——送 escape 前先不改 remoteDraftRef 即可，因為 applyDraft（1115-1148）本來就有以畫面輸入行修正 remote 的機制。不動 Claude 路徑。",
+            "severity": "high",
+            "effort": "小",
+            "verify_evidence": "AgyCliSurface.tsx:1507-1512 屬實，`replaceRemoteDraft('')` 在 slash 判斷之外無條件執行，且 replaceRemoteDraft→applyDraft→mirrorAgyDraft 會把退格送進遠端。1453-1506 之前沒有任何分支攔截 Escape。slashAutocomplete 於 1088-1089 純由 `draft.trimStart().startsWith('/') && slashOptions.length > 0` 推導，全檔無 slashDismissed，確實無法在保留文字下關掉建議清單；ChatComposer.tsx:98/107/112/129/309-313 對照無誤（Esc 只 setSlashDismissed(true)）。\n需下修的是規格力道：SPEC 未規範 Esc，宣稱者自己也承認；唯一可援引的是 1055-1056「同一組操作／不因 Agent 不同而改變操作」。另有反面理由——AGY 原生 CLI 的 Esc 本來就清輸入行，現況可視為刻意鏡射（1059 允許 Native Interactive View）。因此缺陷成立（一鍵無法復原地毀掉長 prompt、且沒有其他方式關選單），但 severity 應為 medium 而非 high。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Overlay 開啟時整個 Composer 被 hidden，而非「顯示為不可用並說明原因」",
+            "spec_says": "1057「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置。」1059「Native Interactive View 是同一版面中的一個顯示區域，不是另一套畫面。」1338-1342 Composer 元件清單（Multiline Input／Attachment Button／Attachment Tray／Slash Command／Send／Stop）為固定版面。",
+            "code_does": "AgyCliSurface.tsx:1947 `<div className=\"composer-wrap agy-composer-wrap\" hidden={overlay !== null}>` — /model、/usage、權限選單等 overlay 一開，整條 composer（輸入框、Attach、Send、Stop）從版面消失，timeline 高度跳動，textarea 失去焦點；overlay 關掉又整個跳回來。Claude 路徑的 ChatComposer 從不被移除，只用 disabled（ChatComposer.tsx:267、354、375）表達不可用。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "1) 移除 1947 的 hidden。2) 把 overlay 判斷併進 disabled：2020 textarea、2066-2070 Attach、2091-2095 Send 各加 `|| overlay !== null`（或在 1562 定義 `const composerBlocked = overlay !== null` 一併算進 canCompose 的使用端，但不要改 isAgyComposerEditable 的簽名，以免動到既有測試）。3) 2102 的 .agy-composer-hint 在 overlay !== null 時換成不可用原因文案，沿用 1756-1763 statusline hint 的同一機制。4) 焦點：1643-1652 已把焦點交給 overlayRef，textarea 因 disabled 不會搶回，但要確認 1660 的 surfaceRef.focus() 不受影響。5) 版面高度改變需目視確認 styles.css:2679 起的 .agy-chat-timeline。此條與第 1 條必須一起做：只拿掉 hidden 而不修 isAgyComposerEditable，draft 非空時 composer 會在 overlay 上可輸入。",
+            "risk": "1643-1652 的焦點 effect 會在 overlay 開時把焦點交給 overlayRef；composer 不再被 hidden 後要確認焦點不會被 textarea 搶回（textarea 已 disabled，不會取得焦點）。版面高度改變會影響 styles.css:2679 起的 agy-chat-timeline 佈局，需目視確認。不動 Claude 路徑。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "AgyCliSurface.tsx:1947 `<div className=\"composer-wrap agy-composer-wrap\" hidden={overlay !== null}>` 屬實，整條 composer（含 1986-2014 附件托盤、2015 textarea、2061 Attach、2075 Stop、2087 Send）在 overlay 開啟時從 flex 版面消失。對照 ChatComposer.tsx:267/354/375 只用 disabled。SPEC 1057「以『該能力不可用』呈現並說明原因；不隱藏該操作的位置」、1059、1336-1343 元件清單、1362-1364「不可用時顯示原因與下一步」逐行核對無誤。\n小修正：fix_sketch 的行號有一處錯——textarea 的 disabled 在 2020（不是 1020，1020 是捲動 effect）；Attach 2066-2070、Send 2091-2095 正確。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "AgyTranscriptPreview 完全沒有捲動處理，預覽長對話會停在最舊那則",
+            "spec_says": "1331「每個 Session 保存 Scroll Position。」3050「每 Session 保存 Scroll Position。」3022「Select Session 只 Preview History。」",
+            "code_does": "AgyCliSurface.tsx:672-751 的 AgyTranscriptPreview 只有一個 `<div className=\"chat-timeline agy-chat-timeline agy-transcript-preview\">`（704-708），沒有任何 ref、沒有任何捲動 effect，因此掛載後 scrollTop 為 0，長對話一律從最舊一則開始顯示。非 AGY 的預覽走的是同一個 ChatTimeline（AgentsWorkspace.tsx:1029-1035，interactive={false}），而 ChatTimeline.tsx:44-61 會在首次為某 sessionId 掛載時 `el.scrollTop = positions.get(sessionId) ?? el.scrollHeight`，直接落在最新一則。同一個操作（在清單點選 session 預覽）在 AGY 與 Claude 上結果不同。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "在 AgyTranscriptPreview 內加 scrollRef，effect 依賴 [sessionId, turns.length]，規則複製 ChatTimeline.tsx:48-61；位置存在 module 層 Map（與第 2 條共用同一個 AGY_SCROLL_CACHE，避免兩份實作），沒有記錄就用 scrollHeight。注意 turns 由 681-702 非同步補進來，effect 一定要含 turns.length。",
+            "risk": "非常侷限，只影響預覽視圖。若之後要把 AgyCliSurface 與 AgyTranscriptPreview 的捲動邏輯抽成共用 hook，要避免與第 2 條的修改重複實作。不動 Claude 路徑。",
+            "severity": "medium",
+            "effort": "小",
+            "verify_evidence": "AgyCliSurface.tsx:672-751 全函式確實沒有任何 ref／捲動 effect，僅 704-708 一個 div。該 div class 為 chat-timeline agy-chat-timeline，styles.css:1095-1098 有 overflow-y:auto、且無 .agy-transcript-preview 覆寫規則，所以確實可捲動且初始 scrollTop=0。對照 AgentsWorkspace.tsx:1022-1036：非 AGY 預覽走 ChatTimeline interactive={false}，ChatTimeline.tsx:48-57 首次為某 sessionId 掛載時 `el.scrollTop = positions.get(sessionId) ?? el.scrollHeight`，落在最新一則。同操作雙結果屬實。\n規格力道須說明：SPEC 1331/3050 只要求「保存 Scroll Position」（AGY 預覽完全沒保存，這點成立），3022「Select Session 只 Preview History」與『初次應落在最新』無直接關係；最強的依據其實是 1055-1056 的一致性。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "AGY 的 pending attachment 存在元件內，切換 session 就無聲丟失",
+            "spec_says": "300「每個 Session 保存自己的 Draft 與附件。」3059「每 Session 保存獨立 Draft／Pending Attachment。」432「Agent Draft／Attachment：按 Session 留在本機；回到原 Machine 後恢復。」",
+            "code_does": "AgentsWorkspace.tsx:200-201 以 `drafts` / `attachments` 兩個 Record 依 sessionId 保存，於 1097、1111 傳給 ChatComposer，所以 Claude／Codex 切走再切回來，草稿與附件托盤都還在。AGY 相反：AgyCliSurface.tsx:784 `const [draft, setDraft]`、790 `const [attachments, setAttachments]` 都是元件內 state，而該元件在 AgentsWorkspace.tsx:1053-1055 只有 entered session 才渲染、且 key 綁 sessionId；agentSessionViewState.ts:22-31 的 selectSessionForPreview 一選別的 session 就把 entered 設成 null，AgyCliSurface 直接卸載。卸載時 AgyCliSurface.tsx:819-828 只把 previewUrl revoke 掉，buffered File 就沒了，沒有任何提示。（draft 本身還能靠 853-859 從終端輸入行回填，附件無此退路。）",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx",
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx"
+            ],
+            "fix_sketch": "採 module cache 版（避免動到同時服務 Claude 的 AgentsWorkspace attachments state）：新增 `const AGY_ATTACHMENT_CACHE = new Map<string, ComposerAttachment[]>()`，790 的 useState initializer 從它讀，並在 setAttachments 的三個寫入點（1156 attachFiles、removeAttachment、1344 送出後清空）同步寫 cache。819-828 的 revoke cleanup 必須改成「不在 unmount 做」，改由 clearAgySessionCache（AgentsWorkspace.tsx:261 的刪除流程已呼叫）負責 revoke + delete，否則 blob 會漏。若要更徹底再談 props 版。",
+            "risk": "previewUrl 的 objectURL 生命週期會變長，需確保 session 被刪除（AgentsWorkspace 既有的 drop 流程，271 行附近）與 clearAgySessionCache 時確實 revoke，否則會漏 blob。若改走 props 版本會動到 AgentsWorkspace 中同時服務 Claude 的 attachments state，屬於會碰到 Claude 路徑的改法，建議先做 module cache 版。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "逐項屬實。AgentsWorkspace.tsx:200-203 drafts／attachments 兩個 Record 依 sessionId 保存，1097／1111 傳給 ChatComposer；272-279 刪除 session 時會 revoke previewUrl。AGY 相反：AgyCliSurface.tsx:784 draft、790 attachments 均為元件內 state；AgentsWorkspace.tsx:1020-1055 只有 entered 才渲染 AgyCliSurface 且 key 綁 sessionId；agentSessionViewState.ts:22-32 selectSessionForPreview 確實把 entered 設 null（1030 行）→ 卸載；819-828 的 unmount cleanup 只 revoke previewUrl，buffered File 全數消失且無提示。違反 SPEC 300、432、3059（行號逐字核對無誤）。附帶：unmount 時 1013-1015 還會 closeTerminal，draft 只能靠 853-859 於重新掛載時從遠端輸入行回填，附件確實沒有退路。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "Approval／Question 出現時，最後一則助理回覆被整段清空",
+            "spec_says": "2608、3048「Streaming Message 原地更新。」1455-1461 Approval Card 需保留原內容與狀態。",
+            "code_does": "AgyCliSurface.tsx:1812-1822：`const interactiveTurn = current && (screen.mode === 'approval' || screen.mode === 'question'); const visibleAssistantText = interactiveTurn || isStaleAgyReplyCandidate(...) ? '' : turn.assistantText;` — 只要當前 turn 進入 approval/question，該 turn 已經串出來的助理文字就被強制成空字串，1835-1846 因而什麼都不渲染（running 也已為 false，連 working 提示都沒有），使用者要決定 y/n 時看不到 AGY 剛剛說了什麼；模式一離開文字又冒回來。ChatTimeline.tsx:65-183 沒有任何隱藏既有 item 的邏輯。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "不要只在渲染層拿掉條件。approval 畫面未被 recogniseAgyScreen 辨識（agyTerminalModel.ts:598 只擋 overlay），所以 refreshScreen 860-894 仍會把 approval 畫面刮進 assistantText——直接拿掉 1812-1813 有露出終端殘渣的風險。正確作法：在 860-894 的 setTurns 內、mayScrapeAgyReply 之前加 `if (next.mode === 'approval' || next.mode === 'question') return current;`（凍結，保留進入 approval 前的文字），再移除 1812-1813 的 interactiveTurn，只留 isStaleAgyReplyCandidate。並以上述兩個 inline approval 畫面補一個 extractAgyAssistantText/凍結行為的測試。",
+            "risk": "若 approval 畫面的文字真的會被刮進 assistantText，拿掉隱藏後會露出終端殘渣；動手前先用 apps/app/tests/fixtures/agyScreens.ts 的真實畫面確認 extractAgyAssistantText 在 approval 模式下的輸出。不動 Claude 路徑。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "AgyCliSurface.tsx:1812-1822 屬實：current turn 遇 approval/question 時 visibleAssistantText 被強制 ''，1835-1846 因 running 為 false（1720 `running = screen.mode === 'running'`）連 working 提示都不畫，該 turn 只剩使用者訊息。ChatTimeline.tsx:65-183 確實沒有任何隱藏既有 item 的邏輯。\n兩點需修正宣稱的描述：(a) 使用者並非完全看不到內容——draft 為空時 showPanel 會顯示 screen.title、approvalCommand 與 panelCopy（206-245 取畫面末 5 行）；真正遺失的是本回合已串出的完整回覆，且模式進出時文字閃現／版面跳動，這才是與 SPEC 2608「Streaming Message 原地更新」相牴觸之處。(b) 引用的 1455-1461 只是 Approval Card 狀態列舉，「保留原內容」出現在 1465 且限定 Expired，宣稱的規格依據偏弱。另外 apps/app/tests/fixtures/agyScreens.ts 並沒有 approval fixture（只有 HOME／各式 picker／CONTEXT_REPORT／QUOTA_REPORT），要驗證得用 agyTerminalModel.test.ts:272-286 與 agyRealScreens.test.ts:191-200 的 inline approval 畫面。"
+          },
+          {
+            "kind": "重複實作",
+            "title": "Diff／Tool card／Composer 三套 UI 各存兩份，輸出已經開始分岔",
+            "spec_says": "1055-1058「使用同一套 UI、同一組操作、同一個版面」「差異在 Adapter 層吸收」「不為單一 Agent 新增專屬畫面」。3040-3041「Claude、Codex、AGY Event 可顯示為 Message、Tool、Diff、Approval、Question、Usage、Error」「共用 Timeline Item」。",
+            "code_does": "Diff：ChatTimeline.tsx:15-35 DiffBody 對 `+++`／`---` 不特判，AGY 側 AgyCliSurface.tsx:247-270 DiffLines 多了 `diff-file` class，兩者輸出的 `.diff-body` 已不同。Tool card：ChatTimeline.tsx:89-102 顯示 name／summary／durationMs／output，AgyCliSurface.tsx:602-624 自寫一份，且 608 的 `tool-summary` 與 611 的 `tool-output` 印的是同一個 `block.detail`，展開後同一行文字出現兩次。Composer：AgyCliSurface.tsx:1947-2103 是 ChatComposer.tsx:186-385 的整份複製，附件托盤（1986-2014 對 229-261）漏掉了 `attachment.file === undefined` 時的 'Ready' 狀態，slash 選單（1948-1982 對 188-225）漏掉無相符指令時的空狀態文案。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx",
+              "apps/app/src/workspaces/agents/ChatTimeline.tsx"
+            ],
+            "fix_sketch": "只做風險最低的一半，且避開 Claude 路徑：(1) 移除 AgyCliSurface.tsx:610-612 的 `<pre className=\"tool-output\">{block.detail}</pre>`（單行 detail 已在 608 顯示），或改為僅在 detail.includes('\\n') 時才印。(2) Diff 一致化：本機無 Claude CLI 可驗證，改為把 AgyCliSurface.tsx:247-270 的 DiffLines 對齊 ChatTimeline 的 DiffBody（放棄 diff-file），不要動 ChatTimeline；等有 Claude 實機環境再談把 diff-file 併回共用 DiffBody 並 export。(3)(4) 兩處文案缺漏不必補。Composer 抽共用元件本輪不做——第 1、3、4 條都在改 AGY composer，抽共用會與它們衝突。",
+            "risk": "這是唯一會碰到 Claude 路徑的一條：export DiffBody 並加 `diff-file` 特判會改到 Claude／Codex 的 file_diff 呈現，而本機沒有 Claude CLI 無法實機驗證。若要完全避開，改成把 AGY 的 DiffLines 對齊 ChatTimeline 的行為（放棄 diff-file）而不修改 ChatTimeline。Composer 抽共用元件會同時影響兩條路徑，本輪不建議做。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "部分成立，力道需分開評。成立且值得修的兩項：(1) Diff 分岔屬實——ChatTimeline.tsx:15-35 DiffBody 不特判 +++/---，AgyCliSurface.tsx:247-270 DiffLines 加 'diff-file'，且 styles.css:1808-1810 `.diff-file { color: var(--text-dim) }` 確有樣式，兩條路徑的 +++/--- 一邊灰、一邊綠紅，是真的可見差異。(2) Tool card 重複輸出屬實——AgyCliSurface.tsx:608 tool-summary 與 611 tool-output 印同一個 block.detail；detail 來自 agyTerminalModel.ts:872-884 的單行 TOOL_ROW_PATTERN，必為單行，styles.css:1763-1768/1777 兩者都可見，展開後同一行出現兩次，是明確的實作 bug。\n須下修的兩項：(3) 附件托盤缺 'Ready' 幾乎是死碼——attachmentBuffer.ts:54-67 一律帶 file，ChatComposer.tsx:241-242 的 `file === undefined` 分支實務上不會觸發。(4) slash 選單缺空狀態文案並非缺陷——AGY 的 1948 由 slashOptions.length>0 決定開關，清單本身由 CLI 過濾（1085-1089），沒有「有選單但零筆」的狀態。規格引用行號略偏：實際是 3043-3044（3040-3041 是標題與空行），內容相符；1055-1058 正確。"
+          }
+        ],
+        "architectural_verdict": "主要是「兩套元件各自處理狀態」，不是終端解析。證據三項：\n\n一、八條問題全部落在 AgyCliSurface.tsx 的 React state／render 層，沒有一條是解析錯誤。它們是：捲動 effect（1020-1023）、顯示閘門布林值（showPanel 1710-1718、overlay 1851、hidden 1947）、draft 生命週期（784、1507-1512）、附件 state 位置（790、819-828）、渲染層強制清空（1812-1822）。這些都不需要動到 agyTerminalModel.ts／agyScreens.ts 一行。\n\n二、解析層是這個功能覆蓋最好的部分，元件層是覆蓋最差的部分。apps/app/tests 下 agyTerminalModel(29)＋agyScreens(17)＋agyRealScreens(20)＋agyPtyIntegration(3)＝69 個測試，其中 20 個跑真實畫面 fixture；而 2106 行的 AgyCliSurface.tsx 有 0 個測試。使用者說的「一堆 bug」正好長在沒有測試、且不是解析的那一層。\n\n三、每一條缺陷，ChatTimeline／ChatComposer 那套都已經有正確實作，AGY 只是因為是另一份拷貝而沒有繼承：near-bottom auto-follow 與每 session 捲動位置（ChatTimeline.tsx:48-61）、Esc 只關選單不清草稿（ChatComposer.tsx:309-313）、每 session 保存 draft／附件（AgentsWorkspace.tsx:200-201、1097、1111）、不可用時 disabled 而非移除（ChatTimeline.tsx:129/137、ChatComposer.tsx:267/354/375）。這正是規格 1057-1058 想避免的：能力差異應該被 Adapter 吸收，而不是讓版面與操作各長一套。\n\n因此方向應該是版面統一重構，但順序建議先修後統一：第 1、2、3 條（overlay/panel 的 draft 閘門、強制捲底、Esc 清草稿）是使用者天天會撞到、且改動封閉在 AgyCliSurface 內、完全不碰 Claude 路徑的，先修掉可以立刻止血；之後再把 timeline 捲動、composer、diff／tool card 收斂成單一元件，由 props 表達「該能力不可用」。反過來先做大重構風險高：本機沒有 Claude CLI，共用元件一旦改壞無法驗證。\n\n需要保留的例外：AGY 確實有 Claude 沒有的東西（agyTerminalModel 的畫面解析、mirrorAgyDraft 的本地/遠端輸入鏡像、statusSync 的 /context 與 /usage 自動查詢，後者本身是規格 1225-1228 明文要求）。統一版面時這些應留在 AGY adapter 層，不要塞進共用元件。"
+      },
+      {
+        "key": "agy-parsing",
+        "claimed": 8,
+        "items": [
+          {
+            "kind": "違反規格",
+            "title": "解析用畫面尺寸沒有真的固定：tmux 建 session 時沒指定尺寸、attach 沒排掉其他 client、本機端尺寸靠兩個各自寫死的常數",
+            "spec_says": "2571「解析用畫面尺寸固定；不隨視窗大小改變。」2572「兩端畫面尺寸需一致。」",
+            "code_does": "packages/tmux-runtime/src/runtime.ts:147 `tmux new-session -d -s \"$session\" ...` 沒有 `-x/-y`。tmux 對 detached session 用 default-size（80x24），且 status 預設為 on（server 以 `-f /dev/null` 啟動，不讀使用者設定，所以是 tmux 內建預設），AGY 一啟動是在 80x23 畫面上跑；一直到 apps/desktop/src/main/agentCommunicationService.ts:1732 attach 時才變成 client 的 120x40。apps/desktop/src/main/agentCommunicationService.ts:1732 用的是 `attach-session -t`（沒有 `-d`）：斷線後尚未被 tmux 回收的舊 client、或任何第二個 client 都還掛著，畫面尺寸就由 tmux 的 window-size 規則決定而不是由我們決定。本機路徑：apps/app/src/workspaces/agents/AgyCliSurface.tsx:167-168 寫死 AGY_COLS=120/AGY_ROWS=40，apps/desktop/src/main/localAgentRuntime.ts:46 另外寫死 {cols:120,rows:40}，兩個常數沒有任何關聯；而 apps/desktop/src/main/transport/localTransport.ts:266 的 resizeTerminal 是空實作，所以 AgyCliSurface.tsx:979-983 那句「re-assert the size the parser uses」在本機完全沒有作用——只要有人改動任一邊的數字，本機兩端就永久對不齊且無聲。旁證：apps/app/tests/agyRealScreens.test.ts:18-31、72-75 這些「verbatim」實機畫面分別是約 60 欄與 76 欄，footer 被截成 `· hig` / `G`，代表實際跑起來時兩端尺寸本來就沒有一致。",
+            "files": [
+              "packages/tmux-runtime/src/runtime.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/desktop/src/main/transport/localTransport.ts",
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx",
+              "packages/contracts/src/terminal.ts"
+            ],
+            "fix_sketch": "(1) TmuxRuntime.newSession options 增加選填 `size?: {cols:number;rows:number}`，有值時在 new-session 加 `-x <cols> -y <rows>`；只有 agentCommunicationService 的 agy 分支（start/revive）傳 120x40，Claude/Codex 不傳，預設行為不變。(2) 讓 AGY session 一開始就沒有 status 列：把 `set-option -t <target> status off` 從 openTerminal 移到 session 建立後立刻執行（或在 launch script 內），openTerminal 保留一份冪等的重設。(3) openTerminal 的指令改成 `set-option -t T status off; resize-window -t T -x C -y R 2>/dev/null || true; exec tmux attach-session -d -t T`（-d 踢掉殘留 client；resize-window 需 tmux 2.9+，故容錯）。(4) 把 120/40 提到 @cozypad/contracts（terminal.ts 匯出 AGY_PARSE_COLS/AGY_PARSE_ROWS），AgyCliSurface 與 localAgentRuntime 一律 import，刪掉兩處字面值。(5) LocalTransport.resizeTerminal 從靜默 no-op 改成：要求尺寸與開啟尺寸不同時丟出／回報一次警告，別再假裝成功。(6) apps/desktop/tests/agentCommunicationService.test.ts:574-575 有逐字比對 attach 指令，必須同步更新。",
+            "risk": "newSession 是 Claude／Codex／AGY 共用入口，所以必須把尺寸做成選填參數、預設維持現狀，否則就動到本機無法驗證的 Claude 路徑；只要 Claude 分支不傳尺寸就完全不受影響。`attach-session -d` 只在 AGY 的 openTerminal 這條路徑（該函式開頭 1692-1695 已限定 agy + terminal 模式），Claude 不會走到。`resize-window` 需要 tmux 2.9+，故加 `2>/dev/null || true`。既有測試 apps/desktop/tests/agentCommunicationService.test.ts 會比對 attach 指令字串，改完要同步更新該斷言。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "行號全部對得上。規格 SPEC-hand.md:2571/2572 確實寫「解析用畫面尺寸固定；不隨視窗大小改變」「兩端畫面尺寸需一致」。packages/tmux-runtime/src/runtime.ts:147 的 new-session 只有 -d -s -c -P -F，確無 -x/-y；tmux server 以 -f /dev/null 啟動（agentCommunicationService.ts:1715），故走 tmux 內建 default-size 80x24 + status on。apps/desktop/src/main/agentCommunicationService.ts:1732 逐字為 `set-option -t <t> status off >/dev/null 2>&1; exec tmux attach-session -t <t>` — 確實沒有 -d。全 repo grep `resize-window|default-size|window-size` 零命中，沒有任何補救。本機端：AgyCliSurface.tsx:167-168 `AGY_COLS=120/AGY_ROWS=40`，localAgentRuntime.ts:46 另一組 `{cols:120,rows:40}`（localAgentRuntime.ts:95-96、119-120 用它開 pty），兩者無關聯；localTransport.ts:267-269 resizeTerminal 是空 body，routingTransport.ts:83-84 會把本機 terminal 的 resize 路由到它，所以 AgyCliSurface.tsx:979-983 的 re-assert 在本機確為靜默 no-op。旁證亦成立：apps/app/tests/agyRealScreens.test.ts:19-31 標榜 verbatim 的畫面只有約 60 欄、72-76 行的 MODEL_PICKER 約 76 欄，footer 被截成 `· hig` / `G`。唯一需要修正的措辭：client 端的解析尺寸其實是固定的（headless terminal，不隨視窗變動），2571 本身沒被違反；真正違反的是 2572「兩端一致」——AGY 啟動時在 80x23、attach 後才變 120x40，且第二個 client 可再改寫尺寸。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "畫面前提不成立時完全沒有標示「解析結果不可靠」，反而靜默誤判成另一種畫面並鎖死 composer",
+            "spec_says": "2573「會話工具不得在該畫面加入自己的列。」2574「畫面條件不成立：標示解析結果不可靠。」",
+            "code_does": "全 repo 找不到任何 unreliable／degraded／不可靠 的狀態或欄位（grep 全庫零命中）。apps/desktop/src/main/agentCommunicationService.ts:1732 把 `set-option ... status off` 的輸出與錯誤全部丟到 `>/dev/null 2>&1`，成功與否沒有人檢查；attach 之後也沒有任何地方回頭確認 `#{window_width}x#{window_height}` 是否等於 request.cols/rows。實測後果（我用 agyTerminalModel 直接跑）：畫面底部只要多出一列 tmux status（`[0] 0:agy*  \"host\" 12:00 06-Aug-26`），deriveAgyScreenModel 就回 mode='welcome'、promptLineIndex=-1、isAgyComposerEditable=false，而且那列 status 會被當成 AGY 的回覆文字寫進聊天氣泡。也就是「條件不成立」時使用者看到的不是警告，而是一個看起來已經斷線、不能打字的 session。",
+            "files": [
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "packages/contracts/src/terminal.ts",
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "沿用既有 this.options.transport.exec（不新增依賴），在 openTerminal attach 前跑 `tmux display-message -p -t <target> '#{window_width} #{window_height} #{?status,1,0}'`（短 timeout，失敗即忽略），與 request.cols/rows 比對。TerminalOpenedSchema（packages/contracts/src/terminal.ts:10）加**選填** `parseGeometry?: {cols, rows, statusRows}`，Terminal workspace 不受影響。AgyCliSurface 收到 opened 後若尺寸不符或 statusRows>0，設一個 state 並在既有 header 區顯示「解析結果可能不可靠：畫面 100x30，預期 120x40／會話工具仍在畫面加列」。只標示、不停用任何操作（規格只要求標示）。建議一併把 `status off` 的失敗不再吞掉——至少讓 statusRows>0 這條路徑觸發警告。",
+            "risk": "TerminalOpened 是 Terminal workspace 共用契約，欄位務必選填（zod optional）才不會讓既有 terminal 測試失敗。多一次 exec 會讓 AGY 開畫面慢一個 round-trip，可用短 timeout 且失敗即忽略。不動 Claude 路徑（openTerminal 一開始就擋掉非 agy）。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "規格 SPEC-hand.md:2573「會話工具不得在該畫面加入自己的列」、2574「畫面條件不成立：標示解析結果不可靠」確實存在，且是無條件敘述（非 capability-gated）。全庫 grep `unreliable|degraded|不可靠`（apps + packages, ts/tsx/md）零命中，確無任何實作。agentCommunicationService.ts:1732 的 `status off` 輸出與 exit code 全部丟進 `>/dev/null 2>&1`，attach 後也沒有任何 `display-message` 回頭核對 window_width/height。我用 vitest 直接跑 deriveAgyScreenModel 重現：在正常 welcome 畫面底部多加一列 `[0] 0:agy*  \"host\" 12:00 06-Aug-26`，結果 mode='welcome'、promptLineIndex=-1、isAgyComposerEditable('connected','running',...)=false，且 extractAgyAssistantText 回傳的就是那列 tmux status 全文——確實會被當成 AGY 回覆寫進氣泡，使用者看到的是「看似斷線、不能打字」而非警告。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "回覆內容只要含有 → ↑ ↓ ← 或 arrow／esc to cancel 這些字，整段回覆會被刪光，還會把使用者自己的提問變成假選項",
+            "spec_says": "規格未直接規範（屬解析脆弱點）；牴觸 2565「Terminal-only Output ... 不得猜測 Approval、Diff、Tool Result」的精神——把純文字回覆猜成可選清單。",
+            "code_does": "apps/app/src/workspaces/agents/agyTerminalModel.ts:101-102 的 KEY_HINT_PATTERN 是「整行任意位置含有 ↑|↓|←|→|arrow|esc to cancel|ctrl+x…」就命中，沒有錨定成 footer 形狀。它被用在兩個致命位置：(a) 第 145 行 `const selectable = lines.some(...)` — 整個畫面只要有任何一行含箭頭，就開啟選項解析，於是 transcript 裡每個 `> 使用者提問` 與每個 `• 條列` 都變成選項；(b) 第 567 行 cleanAssistantLine `if (isChromeLine(clean) || KEY_HINT_PATTERN.test(clean)) return null;` — 含箭頭的內容行直接被丟掉。我實測兩個案例：畫面為 `> summarise the migration` /（空）/ `  Renamed userId → user_id across the schema.` 時，options=[{label:'summarise the migration', selected:true}]、回覆字串為空字串；畫面回覆為 `Use the arrow keys, or hjkl.` + `Press esc to cancel insert mode.` 時同樣回覆為空字串、使用者提問變成被選中的選項。agent 回覆出現箭頭與 esc/ctrl 說明是家常便飯，這應該就是「一堆 bug」的最大來源之一。",
+            "files": [
+              "apps/app/src/workspaces/agents/agyTerminalModel.ts"
+            ],
+            "fix_sketch": "新增 KEY_HINT_ROW_PATTERN，要求 footer 形狀（行首為 key token、後接大寫開頭動作、以 `·`／多空白分隔，或 `Keyboard:` 前綴；可直接沿用 agyScreens.ts 的 BARE_KEY_ROW 寫法）。145 行的 selectable、315 行 isChromeLine、567 行 cleanAssistantLine 改用它；FOOTER_PATTERN/SPINNER_PATTERN 不動；112-113 的 KEY_HINT_GLOBAL 保留寬鬆版（只抹片段不刪行）。另外 567 行的 `KEY_HINT_PATTERN.test` 與 isChromeLine 重複，可直接刪掉該半句。改完必跑 agyRealScreens.test.ts 的 TRUST_GATE／SLASH_MO／MODEL_PICKER 與 agyTerminalModel.test.ts 的問題卡片測試，確認選單仍被辨識。純 AGY 檔案，不影響 Claude。",
+            "risk": "selectable 收緊後，某些 AGY 只印簡略提示的選單可能不再被辨識成選項——要跑 agyRealScreens.test.ts 的 TRUST_GATE（第 191 行）、SLASH_MO（第 461/474 行）、MODEL_PICKER（第 446 行）與 agyTerminalModel.test.ts 的問題卡片測試確認全數仍過。完全不碰 Claude 路徑（此檔只有 AGY 用）。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "agyTerminalModel.ts:101-102 的 KEY_HINT_PATTERN 確實是無錨定的整行搜尋（`↑|↓|←|→|arrow|…|esc\\s+(?:to\\s+)?(?:cancel|close|stop)|ctrl\\+[a-z]|…`），用在 145 行 `const selectable = lines.some(...)`、315 行 isChromeLine、567 行 cleanAssistantLine，行號全對。兩個實測案例我都用 vitest 跑過並完全重現：畫面 ['> summarise the migration','','  Renamed userId → user_id across the schema.'] → mode='menu'、options=[{label:'summarise the migration',selected:true,lineIndex:0}]、extractAgyAssistantText 回傳 ''；畫面 ['> how do i move the cursor','','  Use the arrow keys, or hjkl.','  Press esc to cancel insert mode.'] → 同樣 options 為使用者提問、回覆 ''。因為 145 行開了 selectable，GENERIC_OPTION_PATTERN（60-61 行，marker 含 `>`）就把 `>` 開頭的提問 echo 收成選項；內容行則被 567 行整行丟掉。規格關聯性宣稱得當：2565 只講不得猜測 Approval/Diff/Tool Result/Usage，把純文字猜成可選清單是精神牴觸而非逐字違反，屬實作 bug。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "回覆超過一個畫面高度時，已累積的內容會被「目前可見的尾巴」整段取代，訊息開頭永久消失",
+            "spec_says": "規格未直接規範；對應 4.5「Streaming Message 原地更新」與 3.4.6 Timeline 的訊息完整性。",
+            "code_does": "apps/app/src/workspaces/agents/agyTerminalModel.ts:713-718：`extractAgyAssistantText` 只在 `candidate.length < previous.length && previous.startsWith(candidate)` 時保留 previous，其他情況一律回傳 candidate。當回覆長到把自己的 prompt echo 頂出 40 列視窗，start 會退回 TURN_SEPARATOR 之後（第 680-696 行），candidate 變成「畫面上還看得到的尾段」，那是 previous 的 suffix 而不是 prefix，於是 startsWith 為 false，整段累積文字被尾段覆蓋。我實測：previous='Line A\\nLine B\\nLine C'，畫面剩 Line B/C/D，結果回傳 'Line B\\nLine C\\nLine D'——Line A 消失。呼叫端 apps/app/src/workspaces/agents/AgyCliSurface.tsx:874-893 直接把結果寫回 turn 並 persistTurns，所以是寫進 localStorage 的永久遺失。",
+            "files": [
+              "apps/app/src/workspaces/agents/agyTerminalModel.ts"
+            ],
+            "fix_sketch": "在 713-718 補 overlap 合併：previous 非空、且 candidate 既非 previous 的延伸也非其前綴時，以「行陣列」找 previous 的最長 suffix == candidate 的最長 prefix（從最大重疊往下試，要求重疊 ≥1 行且該行非空白／非分隔線），有重疊就回傳 previous + candidate 剩餘行；完全無重疊才維持現行回傳 candidate。函式簽章不變。補一個長回覆捲動測試（previous 三行、畫面剩後兩行 + 新一行 → 期望四行）。不碰 Claude 路徑。",
+            "risk": "逐行 overlap 若判斷太寬鬆，可能在 AGY 重畫時把重複段接兩次——限制成「以行陣列比對且要求重疊 ≥1 行」並在無重疊時維持現行行為即可。要補一個長回覆捲動的測試。不碰 Claude 路徑。",
+            "severity": "high",
+            "effort": "小",
+            "verify_evidence": "agyTerminalModel.ts:713-718 逐字為 `const candidate = ...; if (candidate === '') return previous; if (previous !== '' && candidate.length < previous.length && previous.startsWith(candidate)) return previous; return candidate;` — 只有「candidate 是 previous 前綴」才保留舊值。680-696 行的 fallback 確實會在找不到 prompt echo 時把 start 退到最後一條 TURN_SEPARATOR 之後。我用 vitest 重現：previous='Line A\\nLine B\\nLine C'、畫面只剩 Line B/C/D，回傳 'Line B\\nLine C\\nLine D'，Line A 消失。呼叫端 AgyCliSurface.tsx:874-893 確實直接 setTurns + AGY_TURN_CACHE.set + persistTurns（寫 localStorage）。另外我確認上游守門擋不住這條：mayScrapeAgyReply 在 previous !== '' 時第 604 行直接 return true；isStaleAgyReplyCandidate 第 629 行在 current !== '' 時直接 return false。所以是真實的永久資料遺失。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "Resume 沒有延續原生對話時，Timeline 不標分界、也不告知 AGY 不記得之前的內容",
+            "spec_says": "275「不延續原生對話時：保留 CozyPad Timeline；Timeline 標出分界。」276「明確顯示 Agent 不記得分界之前的內容。」277「不得以 CozyPad Timeline 冒充 Agent 記憶。」3026 同義驗收條件。",
+            "code_does": "apps/app/src/workspaces/agents/AgentsWorkspace.tsx:823-835：relaunch 時只呼叫 clearAgyRuntimeCache(sessionId)，而 AgyCliSurface.tsx:185-187 的 clearAgyRuntimeCache 只清 AGY_STATUS_CACHE，turns 完整保留；reviveNonce 只是讓 surface 重新掛載。重新掛載後 AgyCliSurface.tsx:1025-1045 只在 turns.length===0 時才去要 transcript，所以舊 turns 會直接接在新對話上面，中間沒有任何分界元素。配合第 5 項（遠端永遠 --continue、可能接到別的對話）與第 6 項（可能綁錯對話），使用者看到的是一條連續的對話，實際上 AGY 完全不記得上半段。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "AgyLocalTurn 增加選填 `kind?: 'boundary'`（讀不到就當一般 turn，與 AgyCliSurface.tsx:120-160 的 persistTurns/readPersistedTurns 舊快取相容）。revive 回傳的 bundle 已含 session.identity，配合第 5 條補上的「是否沿用原生對話」判定，在 AgentsWorkspace.tsx:822 附近的 relaunch 分支往 turns 尾端 append 一則 boundary turn 並 persist。AgyCliSurface 的 turn 渲染加分支，畫成「以下為新的原生對話；AGY 不記得這條線之前的內容」的分隔列；refreshScreen 的更新邏輯（874-893）要略過這種 turn（在 866 行的 activeTurnId 比對前先排除）。命名不要綁 agy——依規格 3.4.2 它是 Timeline 內的一個 item，未來 Claude 走同一個 ChatTimeline 要能共用。目前不動 Claude 路徑。",
+            "risk": "turn 結構有寫進 localStorage（persistTurns / readPersistedTurns，AgyCliSurface.tsx:120-160 一帶），新欄位要對舊快取相容（讀不到 kind 就當成一般 turn）。這是 AGY 專屬版面元素，別做成只有 AGY 才有的新畫面——依規格 3.4.2 它應該是 Timeline 內的一個 item，未來 Claude 走同一個 ChatTimeline 時也要能用同一個概念，所以命名不要綁 agy。目前不動 Claude 路徑。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "規格 SPEC-hand.md:275/276/277 與驗收條件 3026 逐字存在且為無條件要求。AgentsWorkspace.tsx:822-836 的 relaunch 分支確實只做 clearAgyRuntimeCache(sessionId) + 清 agyActivity + bump reviveNonce；AgyCliSurface.tsx:185-187 的 clearAgyRuntimeCache 只 `AGY_STATUS_CACHE.delete(sessionId)`，AGY_TURN_CACHE 與 localStorage 的 turns 原封不動（對照 170-178 的 clearAgySessionCache 才會清 turns）。重新掛載後 AgyCliSurface.tsx:1025-1053 的 recovery effect 第 1029 行 `if (turns.length > 0) return;`，所以舊 turns 直接接在新對話上方，中間沒有任何分界元素。全庫也找不到 boundary/分界 之類的 timeline item。與第 5、6 條疊加後，使用者看到的是一條連續對話而 AGY 只記得後半段——正是 277「不得以 CozyPad Timeline 冒充 Agent 記憶」禁止的情形。"
+          }
+        ],
+        "architectural_verdict": ""
+      },
+      {
+        "key": "session-state",
+        "claimed": 8,
+        "items": [
+          {
+            "kind": "實作 bug",
+            "title": "AGY 的 live status 覆蓋層永不失效：離開畫面或斷線後仍顯示 ready／running",
+            "spec_says": "SPEC-hand.md:1485-1486「Disconnected｜無法確認遠端 Process」「Exited｜Process 已結束」；SPEC-hand.md:1139-1143 Filter 依狀態分類",
+            "code_does": "AgentsWorkspace.tsx:396-402 liveStatus() 對 agy 一律用 agyActivity[id] ?? session.status；agyActivity 只在 AgyCliSurface 掛載中由 onStatusChange 寫入（AgentsWorkspace.tsx:1062-1067），只有 relaunch（826-831）與 forgetSession（283）會清掉。agyTerminalModel.ts:746-757 agySurfaceSessionStatus 永遠不會回傳 'disconnected'。service 端 disconnected()（agentCommunicationService.ts:942-956）與 follow finalizer（2307-2320）確實會把 record 改成 disconnected／exited 並 emit，但這些正確值在 renderer 被過期的 agyActivity 蓋掉。另外 badge()（AgentsWorkspace.tsx:463-470）用的是 session.status，跟清單的 liveStatus 是兩個來源，同一個 session 在 tab 圓點和清單上會不一致。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/app/src/workspaces/agents/agyTerminalModel.ts"
+            ],
+            "fix_sketch": "改寫 liveStatus()：`const stored = session.status; if (stored === 'disconnected' || stored === 'exited' || stored === 'error') return stored;` 之後才對 agy 用 `agyActivity[session.id] ?? stored`。這樣 service 從 tmux／連線層拿到的事實一律勝出，agyActivity 只在 ready/starting/running/waiting_approval 區間內精修。再加 unmount cleanup：AgyCliSurface 的 useEffect cleanup 以 `${sessionId}:${reviveNonce}` 為 key，只在 `current[sessionId]` 仍是自己最後寫入的那筆時才刪，避免 revive 重掛載時把新值清掉。badge() 改成 `mine.map(liveStatus)` 後再判斷 waiting/running，讓 tab 圓點與清單同源。",
+            "risk": "不動 Claude 路徑（liveStatus 的 agy 分支只對 agy 生效，badge 改用同一函式對 claude/codex 行為不變，因為該分支直接回傳 session.status）。要注意 AgyCliSurface 卸載時的 cleanup 不能在 revive 重掛載時把新狀態一起清掉——用 sessionId+nonce 判斷，或在 cleanup 只清「自己寫進去的那一筆」。",
+            "severity": "high",
+            "effort": "小",
+            "verify_evidence": "程式與宣稱一致。AgentsWorkspace.tsx:396-402 liveStatus() 對 agy 一律 `agyActivity[session.id] ?? session.status`；grep 全檔 setAgyActivity 只出現在 283（forgetSession）、826-831（relaunch）、1063-1067（AgyCliSurface onStatusChange），沒有 unmount cleanup，所以離開 session 後最後一筆推測值永久留存，清單一律吃它。agyTerminalModel.ts:746-757 agySurfaceSessionStatus 的回傳集合是 exited/error/running/waiting_approval/starting/ready，確實沒有 'disconnected'。service 端 disconnected()（agentCommunicationService.ts:942-956）會把非 exited 的 record 改 'disconnected' 並 emitSession，follow finalizer（2307-2320）會改 'exited' 並 emitSession——這兩個權威值到了 renderer 都被 stale agyActivity 蓋掉。badge()（463-470）確實直接讀 session.status，與清單的 liveStatus 是兩個來源。規格側 SPEC-hand.md:1485-1486 的 Disconnected／Exited 定義與 1136-1144 的 Filter 依狀態分類也如宣稱。唯一補充：exited 在「畫面仍掛載」時會因為 sessionStatus prop 傳進 agySurfaceSessionStatus 而被正確回報，所以最痛的是 disconnected 與「離開後」這兩條路徑。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Process 結束時 Timeline 仍留著執行中的 Item（永遠轉圈的訊息與工具卡）",
+            "spec_says": "SPEC-hand.md:1321-1325「Generation 結束：未收到 End 的 Streaming Message 標為中斷。未收到 End 的 Tool Card 標為結果未知。Session Status 為 Exited 時，Timeline 不得同時顯示執行中的 Item。」",
+            "code_does": "agentCommunicationService.ts:2296-2321 follow 的 finally 只把 record.status 設成 'exited' 並清 activeTurn，沒有掃過 stored.timeline；2272-2295 的 error 分支同樣只設 status。而 assistant 訊息是以 streaming:true 推進 timeline 的（2387-2398），tool card 建立時 status:'running'（2443-2451），沒有收到結束事件就永遠停在那個值。ChatTimeline.tsx:72、85、93 會據此一直畫 msg-streaming 的游標與 tool-status-running。實機表現：agent 中途死掉，最後一則回覆永遠在閃游標，工具卡永遠顯示執行中。",
+            "files": [
+              "apps/desktop/src/main/agentCommunicationService.ts"
+            ],
+            "fix_sketch": "contracts：ChatMessageItemSchema 加 `interrupted: z.boolean().optional()`，ToolCallItemSchema 的 status enum 加 'unknown'（兩者都是 optional／新增列舉值，舊 store 反序列化不受影響；ToolCallItem 加值要同步檢查 ChatTimeline 的 tool-${status} className 與 CSS）。service：新增 private finalizeInFlightItems(stored)，掃 timeline 把 kind==='message' && streaming===true 的設 streaming:false + interrupted:true，把 kind==='tool_call' && status==='running' 的設 status:'unknown'，回傳是否有異動。在 2286-2294 與 2307-2320 兩處於 emitSession 之前呼叫，並補 this.emitTimeline(current)（現行 exited 分支根本沒 emitTimeline，這點要一起補，否則前端拿不到修正後的 timeline）。ChatTimeline 對 interrupted 顯示「已中斷」標記、對 tool status 'unknown' 顯示「結果未知」。",
+            "risk": "這條在 claude／codex 共用路徑上，本機無法實機驗證 Claude；但改動只發生在 process 已死的收尾點，不影響正常 turn。若選擇在 ChatItem 加新欄位，contracts 的 zod schema 要給預設值，否則舊 store 反序列化會失敗。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "規格 SPEC-hand.md:1321-1325 三條逐字如宣稱（未收到 End 的 Streaming Message 標為中斷／Tool Card 標為結果未知／Exited 時不得同時顯示執行中的 Item）。程式：follow 的 finally（agentCommunicationService.ts:2296-2321）只 appendError＋設 status:'exited'＋清 activeTurn，完全沒碰 stored.timeline，而且只 emitSession 沒 emitTimeline；error 分支（2286-2294）同樣只設 status。streaming:true 於 2391-2398 與 2405-2412 推入，唯一被關掉的地方是 assistant_message_completed（2430 `current.streaming = false`）；tool card status:'running' 於 2444-2451 建立，唯一被改的地方是 tool_call_completed（2474）。全檔 grep `streaming` 與 `'completed'` 證實沒有任何收尾掃描。ChatTimeline.tsx:72、85、93 確實據 item.streaming 畫 msg-streaming／caret，據 item.status 畫 tool-status-running。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "AGY Resume 會綁上主機上「最近改動過的任一個」原生對話，可能是別的 session 的",
+            "spec_says": "SPEC-hand.md:274-278「Session 綁定的 Native Conversation ID 可在 Resume 後更換」「無法確認是否為同一原生對話：明確告知」「不得以 CozyPad Timeline 冒充 Agent 記憶」",
+            "code_does": "agentCommunicationService.ts:1513-1521：AGY 若 record 沒有 identity，就 fallback 到 getLatestLocalAgyConversationId()；agyTranscript.ts:109-136 latestConversationDb() 是掃 conversations 目錄取 mtime 最新的 .db，完全沒有依 session 或 cwd 篩選。1563-1573 拿這個 id 直接 bindAgentIdentity，等於把 A session 永久綁到 B session 的原生對話；1525-1528 的 resumeLatest 走 `--continue` 也是同一個語意。之後 readAgyTranscript（1608-1629）就用這個 id 去讀，preview 會顯示別段對話的內容，且畫面上沒有任何「這可能不是同一段對話」的提示。",
+            "files": [
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/desktop/src/main/agyTranscript.ts"
+            ],
+            "fix_sketch": "(a) latestAgyConversationId 增一個 `notBefore?: number` 參數，只接受 mtimeMs >= notBefore 的 .db；revive 傳入該 session 上次 exited 的 updatedAt（`Date.parse(stored.record.updatedAt)`）。比不到就回 undefined，讓它退回 `--continue`（維持現有語意，不硬綁）。(b) StoredAgentSession 加 conversationBinding: 'confirmed' | 'assumed'，fallback 與 --continue 兩條路徑都設 'assumed'，並在 revive 成功後往 stored.timeline 追加一則 assistant 分界訊息，文字明講「無法確認是否為同一段原生對話」。(c) 該旗標透過第 4 項的 summary 欄位帶到 header。同步改 agyResume.integration.test.ts 的預期：在 notBefore 條件成立時仍綁上、並額外斷言 binding 為 'assumed'。",
+            "risk": "僅 AGY 路徑，完全不動 Claude／Codex。要留意 apps/desktop/tests/agyResume.integration.test.ts 目前很可能就是在驗證 fallback 會綁上最新 conversation，改行為時要一起改那支測試的預期。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "規格 SPEC-hand.md:274-278 逐字如宣稱。程式：agentCommunicationService.ts:1513-1521 AGY 在無 identity 時 fallback 到 `getLatestLocalAgyConversationId?.()`（多一個宣稱沒提的前提：僅 isLocalHost===true 才走，遠端走 1525-1528 的 resumeLatest → `--continue`，見 1198-1201 的 argv 組裝）。agyTranscript.ts:22-23 CONVERSATIONS_DIR 是 `~/.gemini/antigravity-cli/conversations` 這個全域目錄，109-130 latestConversationDb() 只比 mtime，沒有任何 session／cwd 篩選；1563-1573 直接把它 bindAgentIdentity 成永久綁定；readAgyTranscript（1608-1629）之後就用這個 id 讀 transcript。UI 側確認過 chat-session-head（AgentsWorkspace.tsx:993-1019）沒有任何「可能不是同一段對話」的提示。宣稱提到的 apps/desktop/tests/agyResume.integration.test.ts:126-155 也確實斷言 persisted identity.agentConversationId === latestAgyConversationId()。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "「原生對話更換」完全沒有對使用者呈現：header 沒有綁定狀態，timeline 沒有分界",
+            "spec_says": "SPEC-hand.md:272-277「Session 綁定的 Native Conversation ID 可在 Resume 後更換；Session ID 不變」「不延續原生對話時：保留 CozyPad Timeline；Timeline 標出分界」「明確顯示 Agent 不記得分界之前的內容」；SPEC-hand.md:1217-1218 Session Header 需顯示「是否已綁定原生對話」「本次 Resume 是否延續原生對話」",
+            "code_does": "agentCommunicationService.ts:2362-2383：session_initialized 若帶回一個和舊綁定衝突的 conversation id，catch 區塊直接把 identity 清成 null 再重綁新的，沒有任何事件、沒有 timeline 標記——Codex 每次 revive 都會走到這裡（1449-1451 註解自己講 thread 隨 process 死）。summary()（2943-2957）根本沒有把 record.identity 帶出去，chat.ts:21-38 的 AgentSessionSummarySchema 也沒有對應欄位，所以 renderer 沒有資料可顯示。AgentsWorkspace.tsx:993-1019 的 chat-session-head 只有 title 與 cwd。結果：使用者 Resume 之後以為 agent 記得前面的對話，實際上是新開的原生對話。",
+            "files": [
+              "packages/contracts/src/chat.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx"
+            ],
+            "fix_sketch": "(1) AgentSessionSummarySchema 加 `nativeConversationBound: z.boolean().default(false)` 與 `nativeConversationContinuity: z.enum(['continued','new','assumed','unknown']).default('unknown')`（有 default 才不會打壞既有 parse 與 packages/contracts/tests）。(2) StoredAgentSession 記一個 continuity 旗標：revive 前先存 previousConversationId，2362-2383 走 try 成功（id 相同）設 'continued'、走 catch（id 不同）設 'new'、AGY fallback／--continue 設 'assumed'、從未綁定設 'unknown'——判斷一律以「觀察到的 id 是否等於舊 id」為準，不用 agentKind 硬寫。summary() 從 stored.record.identity !== null 與該旗標填值。(3) 'new' 與 'assumed' 兩種情況往 stored.timeline 推一則分界項目（沿用 kind:'message' role:'assistant' 加固定前綴即可，避免動 discriminatedUnion），文字說明分界之前的內容 agent 不記得。(4) chat-session-head 顯示這兩個欄位，三家共用。",
+            "risk": "會動到 Claude 路徑的顯示與 summary schema，本機無法實機驗證 Claude 的 --resume 是否保留同一 session_id；因此旗標判斷要以「觀察到的 id 是否與舊 id 相同」為準，不要用 agentKind 硬寫。contracts schema 新欄位務必 optional/default，否則 packages/contracts/tests 與既有 store 會炸。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "規格 SPEC-hand.md:272-278 與 3.4.5 Session Header 的 1217「是否已綁定原生對話」、1218「本次 Resume 是否延續原生對話」逐字如宣稱，且是無條件的顯示要求，非 capability-gated。程式：agentCommunicationService.ts:2362-2383 的 catch 區塊確實把 identity 清成 null 再重綁新 id，註解自承「A revived agent can open a NEW conversation」，過程中沒有任何 event、沒有 timeline 標記（emitSession／emitTimeline 在 2544-2545 統一發，但送出的 summary 不含 identity）。summary()（2943-2957）確實沒有帶 record.identity 的任何欄位；chat.ts:21-37 AgentSessionSummarySchema 也沒有對應欄位，renderer 無資料可顯示。AgentsWorkspace.tsx:993-1019 chat-session-head 只有 title、AGY chip、cwd 與 Stop 按鈕。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Claude 在取得 Conversation ID 之前就被標成 Ready",
+            "spec_says": "SPEC-hand.md:219-221「會公布 Conversation ID 的 Agent 未取得時：顯示 Starting」「Title、PID、Process Name、tmux／smux Name 不得代替 Conversation ID」；SPEC-hand.md:1481 Starting =「建立 Process；會公布 Conversation ID 者含取得 ID」",
+            "code_does": "agentCommunicationService.ts:1437-1443：claude 在 initialize control_request 送出且 process 存活後就直接寫 status:'ready'，此時 identity 還是 null。真正的 conversation id 要等 system/init 進來（packages/adapter-claude/src/streamParser.ts:133-151 → agentCommunicationService.ts:2345-2352）才綁定，而那段程式只在 status==='starting' 時才會改狀態，等於 claude 永遠不會經過 Starting。Codex 的處理是對的（1396-1419 留在 starting，2350-2351 收到 thread id 才轉 ready），AGY 不公布 id 直接 ready（1420-1426）也符合 220。實務影響：composer 在 id 綁定前就開放，這時送出的第一個 prompt 之後若要 Resume，identity 綁的是後來才出現的 id。",
+            "files": [
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/desktop/tests/agentCommunicationService.test.ts"
+            ],
+            "fix_sketch": "分兩步，不要只做宣稱的「拿掉 1437-1443 + 探測窗口逾時轉 ready」（那個 fallback 在 claude 只於首個 prompt 後才吐 system/init 時會退化成現況、等於白改）。(1) 拿掉 1437-1443，讓 claude 與 codex 一樣留在 'starting'，交給 2345-2352 轉 ready。(2) 解開 composer 與 status 的耦合：AgentsWorkspace.tsx:1120-1126 的 disabled 條件把 'starting' 拿掉，改為只在 identity 未綁定且已送出過 prompt 時鎖（或直接允許 starting 送出，符合 SPEC 2.5 的流程順序）；狀態晶片仍顯示 Starting。(3) 保險：startAgentConversation 後若在既有探測窗口結束仍未綁 identity，不轉 ready，改在 timeline 記一則「尚未取得 Conversation ID」說明，讓使用者知道 Resume 綁定可能延後。(4) 同步改測試 294：先斷言 'starting'，餵一行 system/init 後再斷言 'ready'；不要動 codex／agy 分支。",
+            "risk": "這條直接動 Claude 路徑且本機無法實機驗證，是全部 8 條裡風險最高的。apps/desktop/tests/agentCommunicationService.test.ts:294 目前明確斷言 create claude 回 'ready'，改行為必須同步改這支測試（改成先 'starting'、餵一行 system/init 後再驗 'ready'）。不要順手改 codex／agy 分支。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "規格 SPEC-hand.md:219-221 與 1481 逐字如宣稱。程式：agentCommunicationService.ts:1437-1443 claude 在 assertAgentStayedAlive（2774-2801，只是讀遠端 launch-status 檔案的存活探測，與 conversation id 無關）與 hasSession 之後直接設 status:'ready'，此時 identity 仍為 null；真正綁定在 2345-2352 的 session_initialized，來源是 adapter-claude/src/streamParser.ts:133-151 的 system/init，而 2350-2351 只在 status==='starting' 時轉 ready，所以 claude 永遠不經過 Starting。codex（1396-1419 不設 status，留在 starting）與 agy（1420-1426 直接 ready，符合 220）如宣稱。測試 apps/desktop/tests/agentCommunicationService.test.ts:292-294 確實斷言 create claude 回 'ready'。額外查到兩點宣稱沒提但會決定修法：ChatComposer 在 AgentsWorkspace.tsx:1120-1126 對 status==='starting' 是 disabled，若單純不設 ready 會出現「composer 鎖死 → 送不出第一個 prompt → claude 不吐 system/init → 永遠 starting」的死結；而 SPEC-hand.md:207-209 的建立流程本身就是「7. 送出第一個 Prompt → 8. 啟動或連接 Process → 9. 取得 Conversation ID」，亦即規格預期 Starting 期間仍可送 prompt。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "已刪除 Session 的晚到錯誤與 timeline 事件沒有被丟棄",
+            "spec_says": "SPEC-hand.md:1514-1515「晚到的 Event、狀態更新、Stream 結束不得使已刪除的 Session 重新出現」「刪除成功後不得再顯示該 Session 不存在的錯誤」",
+            "code_does": "AgentsWorkspace.tsx:293-294 只有 onAgentSessionChanged 有 forgotten.current 守門；onAgentTimelineChanged（309-313）與 onAgentCommunicationError（317-319）都沒有。error 事件本身帶 sessionId（packages/contracts/src/agentCommunication.ts:197-200），renderer 卻整個忽略它，一律塞進全域紅色 banner。service.delete 在刪除後仍會用同一個 sessionId emit onError（agentCommunicationService.ts:1674-1685），加上 AgyCliSurface 卸載前還可能打到已被刪掉的 session 而收到 requireSession 的 `unknown agent session: <id>`（2983-2987），使用者刪成功後照樣看到紅字。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx"
+            ],
+            "fix_sketch": "(1) onAgentTimelineChanged 開頭加 `if (forgotten.current.has(sessionId)) return;`。(2) onAgentCommunicationError 加 `if (event.sessionId !== undefined && forgotten.current.has(event.sessionId)) return;`。(3) AgyCliSurface 的 onNotify 也要過濾：在 AgentsWorkspace 傳下去的 onNotify 包一層 `if (forgotten.current.has(selectedSession.id)) return;`，否則 1303／1382 的 `unknown agent session: <id>` 仍會冒出來。(4) delete 的「Removed locally, but the remote…」屬於刪除結果回報而非 session 錯誤，改由第 8 項的刪除結果面板呈現，不要走 onError。不要清空 forgotten。",
+            "risk": "純 renderer，不動 Claude 路徑。注意 forgotten 是 useRef 且永不清空，切換 profile 時（332-343）不會重置——這是刻意的，別順手加清空邏輯，否則就把這個防護拆了。",
+            "severity": "medium",
+            "effort": "小",
+            "verify_evidence": "規格 SPEC-hand.md:1514-1515 逐字如宣稱。程式：AgentsWorkspace.tsx:294 只有 onAgentSessionChanged 有 `if (forgotten.current.has(session.id)) return;`；onAgentTimelineChanged（309-313）直接 setTimelines、onAgentCommunicationError（317-319）直接 setError(event.message)，兩者都沒有守門。錯誤事件帶 sessionId 已確認（agentCommunication.ts:197-200，optional）。service.delete 在 sessions.delete 與 onSessionDeleted 之後仍會用同一個 sessionId emit onError（1674-1678 遠端清理失敗、1681-1685 未連線），一路經 ipc.ts:95 → preload.ts:316-319 到 renderer 的全域紅字。forgotten 是 useRef（255）且 profile 切換（332-343）不重置，宣稱對它的描述正確。補充一點：宣稱把「AgyCliSurface 收到 requireSession 的 unknown agent session」也算進來，但那條走的是 AgyCliSurface.tsx:1303／1382 的 onNotify → setError，不是 error event，加 forgotten 守門修不到它。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Status Filter 分類與 3.4.13 不符：Disconnected 被歸到 idle，也沒有 Needs Input 分類",
+            "spec_says": "SPEC-hand.md:1136-1144「Running：Starting、Running」「Needs Input：Needs Input」「Idle：Ready」「Exited：Exited」「Error：Error、Disconnected」「Filter 分類需涵蓋 3.4.13 的每一個 Session Status」",
+            "code_does": "AgentsWorkspace.tsx:53-67 只有三個 bucket：running 收 running/waiting_approval/starting、exited 收 exited/error、其餘（ready 與 disconnected）都掉進 idle。929-948 的 filter UI 也只出 all/running/idle/exited。實務影響：等待 Approval 的 session 混在 running 裡篩不出來，斷線的 session 混在 idle 裡看起來像可用。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx"
+            ],
+            "fix_sketch": "SessionBucket 擴成 'running' | 'needsInput' | 'idle' | 'exited' | 'error'；sessionBucket() 依規格重排：starting/running→running、waiting_approval→needsInput、ready→idle、exited→exited、error/disconnected→error。BUCKET_LABEL 補兩鍵（needs input／error）、bucketCounts 初值物件補兩鍵（否則 counts[bucket] 是 undefined 而非 0）、929-930 陣列擴成 ['all','running','needsInput','idle','exited','error']，並確認 STATUS_LABEL 的 'offline' 文案與新的 error bucket 不衝突。此處 bucket 一律用 liveStatus() 計算（已是現況），配合第 1 項修好後才會真的正確。",
+            "risk": "純 renderer 清單層，三家 agent 共用同一份 bucket 定義，不動 Claude 的資料流。bucketCounts 是 Record<SessionBucket, number>，漏補鍵會是 undefined 而不是 0，記得一起改。",
+            "severity": "medium",
+            "effort": "小",
+            "verify_evidence": "規格 SPEC-hand.md:1136-1144 逐字如宣稱，且 1144「Filter 分類需涵蓋 3.4.13 的每一個 Session Status」是硬性要求。程式：AgentsWorkspace.tsx:53 `type SessionBucket = 'running' | 'idle' | 'exited'`，61-67 sessionBucket() 把 running/waiting_approval/starting 收進 running、exited/error 收進 exited、其餘（ready 與 disconnected）落到 idle；929-930 的按鈕陣列確實只有 `['all','running','idle','exited']`。bucketCounts（420-426）初值物件只有三個鍵，宣稱的補鍵提醒正確。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "Delete Dialog 沒有 Scope 清單，也沒有逐項結果回報",
+            "spec_says": "SPEC-hand.md:1496-1513：範圍含 Local Index／Agent Process／Remote Event／Remote Attachment／Agent Native Conversation；「Dialog 顯示 Session、Machine、Agent、Directory」「每個選取 Scope 顯示實際影響」「每項分別回報結果」「部分失敗不得顯示全部完成」「未連線時遠端 Scope 不執行；回報未完成並列出殘留項目」",
+            "code_does": "AgentsWorkspace.tsx:1353-1384 的 dialog 只有 title 與 cwd，沒有 Machine、沒有 Agent、沒有任何 scope 勾選或影響說明。service.delete（agentCommunicationService.ts:1643-1686）把 kill tmux 與 removeRemoteSessionStorage 綁成同一個 try，任何一步失敗只吐一句合併的錯誤字串，呼叫端拿不到逐項結果；未連線時（1681-1685）只送一句字串，沒有列出殘留項目清單。renderer 端 removeSession()（567-585）在 await 成功後直接 forgetSession，畫面上行消失＝看起來全部完成。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "packages/contracts/src/agentCommunication.ts"
+            ],
+            "fix_sketch": "(1) contracts 新增 DeleteAgentSessionResultSchema：`{ scopes: Array<{ scope: 'localIndex'|'process'|'remoteEvents'|'remoteAttachments'|'nativeConversation', outcome: 'done'|'skipped'|'unsupported'|'failed', detail?: string, residualPath?: string }> }`，bridge.deleteAgentSession 改回傳它（純新增回傳值，呼叫端 main.ts:501／1405 的 `catch {}` 不受影響）。(2) service.delete 把 killSession 與 removeRemoteSessionStorage 拆成各自 try，各自產生一筆 scope 結果；未連線時遠端三個 scope 標 'skipped' 並帶 residualPath（tmux session 名與 remoteSessionDir）；nativeConversation 標 'unsupported'（三家都沒有刪除能力，依 1502「Agent 支援時顯示」應顯示為不可用而非隱藏）。用回傳值取代 1674-1685 的 events.onError。(3) dialog 補 Machine（session.host）、Agent（agentKind）、Directory，列出五個 scope 與各自影響及是否不可復原。(4) removeSession() 成功後先渲染逐項結果面板，全部 done 才自動收起並 forgetSession；有 failed／skipped 就保留面板顯示殘留項目。同步更新 mockBridge 與 capacitorBridge 的回傳。",
+            "risk": "delete 的回傳型別改變會影響 preload/ipc/bridge 三處簽章（apps/desktop/src/main/ipc.ts、preload.ts、apps/app/src/platform/*Bridge.ts）與 mockBridge，改動面比其他項大但不碰 agent 協定，Claude 路徑只在「刪除 claude session」時經過同一段共用碼。nativeConversation scope 目前三家都沒有實作刪除能力，依 3.4 定位應顯示為「該能力不可用」而不是隱藏。",
+            "severity": "medium",
+            "effort": "大",
+            "verify_evidence": "規格 SPEC-hand.md:1496-1516 逐字如宣稱（範圍五項、Dialog 顯示 Session/Machine/Agent/Directory、每個 Scope 顯示實際影響、不可復原明確標示、每項分別回報、部分失敗不得顯示全部完成、未連線時遠端 Scope 不執行並列出殘留項目）。程式：AgentsWorkspace.tsx:1353-1384 dialog 只有 title 與 cwd 一句話，沒有 Machine、Agent、沒有任何 scope 或影響說明。service.delete（agentCommunicationService.ts:1643-1686）把 killSession 與 removeRemoteSessionStorage 包在同一個 try（1668-1678），任一步失敗只吐一句合併字串；未連線分支（1681-1685）只送一句話、沒有殘留項目清單；回傳型別是 Promise<void>（packages/contracts/src/bridge.ts:167）。removeSession()（567-585）await 成功後直接 forgetSession，行消失＝看起來全部完成。宣稱的改動面評估也正確：簽章要動 preload.ts:257、ipc、capacitorBridge.ts:553、mockBridge.ts:438。"
+          }
+        ],
+        "architectural_verdict": "主要是「兩套元件各自處理狀態」造成的，不是終端解析造成的。證據：agentCommunicationService.ts:2250 在 follow 迴圈裡對 agy 直接 `return`，所以 service 端從不從輸出更新 AGY 的 record.status——它只在 create（1420-1426 寫 ready）、revive（1559 starting）、disconnected()（942-956 寫 disconnected）、follow finalizer（2307-2320 寫 exited）與 connected() 的 reconcile 這幾個點寫入。也就是說 service 仍然是「連線層與行程存活」的唯一權威，而畫面內的 running／waiting_approval／ready 則完全由 renderer 的 AgyCliSurface 從螢幕推出來（agyTerminalModel.ts:746-757）。兩個來源在 AgentsWorkspace.tsx:396-402 用一個 `agyActivity[id] ?? session.status` 硬合併，且合併方向是「畫面推測優先於行程事實」，於是只要畫面元件卸載或斷線，過期的推測就會蓋掉正確的 disconnected／exited；同一頁的 badge()（463-470）又走另一條沒有合併的路徑，同一個 session 在 tab 圓點與清單上互相矛盾。這幾個症狀跟終端解析準不準無關——就算 mode 判斷 100% 正確，卸載後的殘值與被蓋掉的 disconnected 一樣會發生。終端解析真正該負責的只有「running / waiting_approval / ready 的細分精度」，那是 adapter 層的品質問題，不是狀態機問題。因此修正方向應該是收斂所有權：讓 record.status 維持單一權威，AgyCliSurface 不直接產生 session status，而是回報一個 screen mode 給上層，由同一個函式依「行程事實優先、畫面推測補細節」的順序決定最終狀態；這也正好符合規格 3.4 定位要求的「差異在 Adapter 層吸收，不因 Agent 不同而改變版面或狀態語意」。"
+      },
+      {
+        "key": "composer-attachment",
+        "claimed": 8,
+        "items": [
+          {
+            "kind": "規格已有但未實作",
+            "title": "送出後沒有「送出中／逾時→待確認」狀態機，送出即等於成功",
+            "spec_says": "SPEC-hand.md:318-323「**送出後狀態** — 已送出、尚未收到 Agent 第一個事件：顯示送出中；Composer 與 Send 停用。收到第一個事件：視為送達；轉為 Running。逾時仍無事件：轉為待確認。送出中與待確認的指示與 User Message 分開」；SPEC-hand.md:325-331「**待確認** — 查詢 Turn／Event 判定實際結果。查得未接受：還原 Draft 與 Attachment Tray；Composer 恢復。…不自動重送」；SPEC-hand.md:1360「可用條件：無送達結果待確認的 Prompt」",
+            "code_does": "AgentsWorkspace.tsx:587-670 sendMessage 全程只有一個布林 uploading[sessionId]：593 設 true，finally（約 667-670）在 bridge.sendAgentMessage 的 Promise resolve 當下就設回 false。沒有等 Agent 第一個事件、沒有逾時計時器、沒有待確認狀態、也沒有再次查詢／明確重送的入口；失敗只有 666 行 setError 一條全域錯誤字串。ChatComposer.tsx:375-377 的 Send disabled 也只讀 disabled/uploading。實際效果：IPC 回來後 composer 立刻解鎖、draft 被清空（AgentsWorkspace.tsx:658-662），但 User Message 要等 host 送事件才出現 —— 中間這段使用者看到的是「字消失了、什麼都沒有、可以再打字」，這正是最容易被回報成 bug 的行為。對照組：AGY 的 Stop 已經有 stopVerification: 'requested' | 'unconfirmed'（AgyCliSurface.tsx:2075-2085），可見待確認的模式在專案裡是成立的，只是 Prompt 送達這條線沒做。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/app/src/workspaces/agents/ChatComposer.tsx"
+            ],
+            "fix_sketch": "不要新增與 uploading 平行的 'sending' 語意去重複已經由 status==='running' 提供的鎖，只補真正缺的兩件事：(1) 在 AgentsWorkspace 加 per-session pendingSend: Record<string, {timer:number; text:string; attachments:ComposerAttachment[]}>，於 sendMessage 呼叫 bridge.sendAgentMessage 前掛一個 window.setTimeout（20-30s，無條件保險絲）；promise 無論 resolve 或 reject 都在 finally 清 timer。(2) timer 觸發時轉 'unconfirmed'，在 composer 上方（不進 ChatTimeline）渲染指示列，附「再次查詢」（呼叫既有 bridge.listAgentSessions/timeline 重讀該 session：timeline 內有對應 user item 且 status 非 ready → 判定已接受並清狀態；否則用快照還原 draft 與 tray）與「明確重送」兩顆按鈕，且絕不自動重送。(3) forgetSession（AgentsWorkspace.tsx:259-290 的 drop 群）必須一併 clearTimeout 並移除 pendingSend，否則刪 session 後 timer 會回寫已消失的 key。順帶把 sendMessage 加上「已有待確認 Prompt 就不受理」的前置檢查以滿足 SPEC:1360。若要一併修 SPEC:323，改法是 host 把 user item 的樂觀寫入移到 writeFrame 成功之後（rollback 邏輯就能整段刪除），但這動到 Claude/Codex 主路徑且本機無法實機驗證，建議獨立一次改動。",
+            "risk": "直接動到 Claude／Codex 送訊息主路徑，本機無 Claude CLI 無法實機驗證。最大風險是「第一個事件」的判定條件抓錯導致 composer 永遠鎖住 —— 逾時計時器必須是無條件的保險絲，且 forgetSession（AgentsWorkspace.tsx:258-288 那個 drop）要一併清掉 sendState 與 timer，否則刪除 session 後 timer 還會回寫已消失的 key。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "規格條文屬實：SPEC-hand.md:318-323（送出後狀態）、325-331（待確認）、1360（可用條件：無送達結果待確認的 Prompt）全部逐字對得上。程式面：AgentsWorkspace.tsx:587-671 的 sendMessage 確實只有一個 uploading 布林（593 設 true、669 finally 設 false），沒有逾時計時器、沒有 'unconfirmed' 狀態、沒有『再次查詢／明確重送』入口 —— 全 repo grep 'unconfirmed' 只命中 AgyCliSurface 的 stopVerification（96、1376-1381、2075）。所以「規格已有但未實作」這個結論成立，而且真正的破口是：bridge.sendAgentMessage 是 ipcRenderer.invoke，若主行程 handler 卡住（writeFrame 卡在停滯的 pipe），promise 永不 settle，uploading 永遠是 true，composer 永久鎖死且沒有任何逃生口。\n\n但 code_does 的行為描述有重大錯誤，必須更正（宣稱者顯然沒讀 desktop 端）：\n(a)「User Message 要等 host 送事件才出現，中間使用者看到字消失、什麼都沒有」是錯的。agentCommunicationService.ts:1938-1959 在 writeFrame 之前就把 user message 推進 timeline、把 record.status 設成 'running'，並同步 emitSession/emitTimeline（ipc.ts:92、94 用 webContents.send），這些推播都在 invoke 的回覆之前送出。所以訊息是立刻出現的。\n(b)「IPC 回來後 composer 立刻解鎖」也是錯的。uploading 轉 false 時 selectedSession.status 已經是 'running'，AgentsWorkspace.tsx:1120 那條 disabled 仍然為 true，composer 並沒有解鎖。\n(c)「送出即等於成功」不成立。agentCommunicationService.ts:2011-2033 的 catch 會把樂觀寫入的 user item 依 userItemId 移除、還原 title、status 依 tmux 存活判定回 'ready' 或 'error'，再 rethrow；renderer 的 catch（665-666）此時 draft（660-664 才清）與 attachments（653-659 才清）都還沒被清掉，等於已經做到規格 328「查得未接受：還原 Draft 與 Attachment Tray」的同步失敗版本。\n因此 severity 應由 high 下修為 medium：缺的是逾時分支與待確認的查詢／重送，不是整條送出路徑沒保護。附帶一提，規格 323「User Message 仍於 Prompt 被接受後才顯示」其實也被違反（host 在 writeFrame 前就樂觀寫入），只是有 rollback 補償 —— 這點宣稱漏了。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "「進入 Session 後用量同步完成或逾時」這個可用條件只有 AGY 做，Claude／Codex 沒有",
+            "spec_says": "SPEC-hand.md:1359「可用條件：進入 Session 後的用量同步已完成或已逾時」；SPEC-hand.md:1225-1226「進入 Session 後先自動取得 Context 與 Usage；期間 Composer 停用。完成或逾時後開放 Composer；逾時標示用量未知」",
+            "code_does": "AGY 有：AgyCliSurface.tsx:797 statusSyncPhase state，1563-1564 canCompose = isAgyComposerEditable(...) && (statusSyncPhase === 'done' || 'failed')，1585-1626 的 effect 依序跑 /context 與 /usage。統一路徑沒有：AgentsWorkspace.tsx:1118-1126 傳給 ChatComposer 的 disabled 只看 uploading 與 session.status（running/waiting_approval/starting/disconnected/exited/error），完全沒有用量同步這一項；全 repo 除 AgyCliSurface 外沒有第二處 status/usage 同步。結果是同一條規格條件在兩個 Agent 上行為不同 —— 正是規格 3.4 定位要避免的「因 Agent 不同而改變操作」。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/app/src/workspaces/agents/ChatComposer.tsx"
+            ],
+            "fix_sketch": "分兩段做，先做顯示、後做（或不做）閘門。(1) 顯示：在 chat-session-head（AgentsWorkspace.tsx:993-1019）加一個與 AGY statusline 同語意的用量列，資料取 timeline 內最後一個 kind==='usage' item（chat.ts:101-107）；取不到就照 SPEC:1226/1057 直接標「用量未知」，不要留白。(2) 閘門：Claude／Codex 目前沒有「進入 session 主動查用量」的路徑，硬加 pending 只會製造死鎖。若要滿足 SPEC:1359，正解是在 host 端補一次明確查詢（Claude 走 control_request、Codex 走 thread 的 token 回報），renderer 才加 usageSync: Record<string,'pending'|'done'|'timeout'> 併進 1118-1126 的 disabled，逾時值 3-5s 且逾時保險絲必須與功能同一次上線。在 host 查詢做好之前，寧可只做 (1) 並讓 composer 保持開放 —— 規格要的是『完成或逾時後開放』，一個永遠立即逾時的閘門等於沒閘門，不值得為它承擔鎖死風險。",
+            "risk": "動到 Claude／Codex 進入 session 的第一秒行為，本機無法實機驗證。若 adapter 從不回報 usage item，會把 composer 鎖到逾時為止 —— 逾時值要短（建議 3-5s）且必須先於功能上線就存在，否則會變成比現況更嚴重的體感 bug。可考慮先只做逾時保險絲、預設偏向開放。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "規格條文屬實：SPEC-hand.md:1225-1226、1359 逐字對得上，且沒有 capability-gated 的免責寫法；反而 SPEC-hand.md:1057「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置」與 3216 第 31 條「三家 Agent 使用同一版面；能力不可用時的降級呈現」把『不做』也堵死了。程式面全部屬實：AgyCliSurface.tsx:797 statusSyncPhase、1562-1564 canCompose 併入 done/failed、1584-1626 依序跑 /context 與 /usage、1637-1641 有 12s 逾時保險絲、1756-1763 顯示『Syncing usage…』與『Usage unavailable』。統一路徑則完全沒有：AgentsWorkspace.tsx:1118-1126 的 disabled 只有 uploading + 六種 status；grep 'usage' 在 apps/app/src/workspaces/agents 除 AgyCliSurface 外，只剩 ChatTimeline.tsx:175-178 的 usage item 渲染與 AgentsWorkspace.tsx:96 的 slash 說明字串；993-1019 的 chat-session-head 也沒有任何 Context／Usage 欄位。\n宣稱唯一站不住的是 fix_sketch：它假設「看到該 session 的 usage item 就轉 done」，但 agentCommunicationService.ts:2527-2530 的 usage item 只在 agent 送 usage event（即一個 turn 跑完）時才 push，進入 session 當下不會有，照這樣做會讓 composer 每次進 session 都鎖到逾時為止，比現況更糟 —— 宣稱自己在 risk 也隱約提到，但 fix 沒改掉。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "Prompt History 的游標邊界只在「進入歷史」時檢查，進去之後方向鍵完全搶走多行編輯",
+            "spec_says": "SPEC-hand.md:1348「Prompt History 只在游標邊界啟用；離開後恢復 Draft」",
+            "code_does": "ChatComposer.tsx:314-329：canNavigate = !enteringHistory || (direction === 'previous' && value === '' && caretIsOnHistoryEdge(...))。當 historyIndex !== null 時 enteringHistory 為 false，canNavigate 直接為 true，完全不再檢查游標位置。使用者按 ArrowUp 叫回一段多行 prompt 後，想把游標往上移一行去改字，結果跳到「另一則歷史」，剛叫回來的內容直接被換掉。第二個問題：進入條件寫的是 value === ''（不是規格的游標邊界），所以 caretIsOnHistoryEdge（66-75 行）在 'previous' 方向永遠恆真、在 'next' 方向從沒被呼叫過，等於死碼；而且 draft 非空時根本進不了歷史，historyDraftRef（100、156-158 行）保存的 draft 必定是空字串，「離開後恢復 Draft」這條規格實際上不可能被觸發。AgyCliSurface.tsx:1520-1544 是同一份邏輯的另一份拷貝，條件寫成 (historyIndex !== null || draft === '')，同樣的兩個問題。",
+            "files": [
+              "apps/app/src/workspaces/agents/ChatComposer.tsx",
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "照宣稱的方向改即可：ChatComposer.tsx:319-324 換成 const canNavigate = caretIsOnHistoryEdge(event.currentTarget, direction)（拿掉 enteringHistory 與 value===''），讓每一次導覽都過同一個閘門；moveThroughHistory 保留「historyIndex===null 且 previous 時存 value 到 historyDraftRef」，非空 draft 才真的能被還原。純函式 navigatePromptHistory 簽章不動，chatComposer.test.ts:51-84 不受影響；建議另補一個「多行歷史值 + 游標在中間 → ArrowUp 不導覽」的元件測試。AGY 端把 1520-1526 改成呼叫同一個 caretIsOnHistoryEdge（textareaRef.current 就是那個 textarea），並注意 1549-1559 的 fallback 會接手被拒絕的方向鍵，要確認一次按鍵只會走其中一條分支、event.preventDefault 只發生一次，否則方向鍵會同時跳歷史又送進終端。",
+            "risk": "這是純 renderer 的鍵盤行為，不碰 IPC，Claude 路徑不受影響（Claude／Codex 與 AGY 共用同一個 navigatePromptHistory，已有 chatComposer.test.ts:51-84 覆蓋純函式部分，函式簽章不變就不會弄壞）。AGY 端要注意 1547-1557 那段「draft !== '' 時方向鍵交還 CLI」的 fallback 會與新條件重疊，改動時要確認 event.preventDefault 只發生一次，否則方向鍵會同時跳歷史又送給終端。",
+            "severity": "medium",
+            "effort": "小",
+            "verify_evidence": "規格條文在 SPEC-hand.md:1350（宣稱寫 1348，差兩行，但文字一字不差）。程式全部屬實：ChatComposer.tsx:319-324 canNavigate = !enteringHistory || (direction==='previous' && value==='' && caretIsOnHistoryEdge(...))。historyIndex!==null 時 enteringHistory 為 false，canNavigate 恆真，之後方向鍵不再檢查游標 —— 叫回多行 prompt 後按 ArrowUp 會跳到另一則歷史而不是移動游標，內容被換掉。第二個問題也成立：進入條件是 value==='' 而非游標邊界，而 caretIsOnHistoryEdge（66-75）在 value==='' 且 'previous' 時必然回 true（selectionStart===selectionEnd 且 slice(0,0) 不含 '\\n'），'next' 方向因短路從未被呼叫，整個函式是死碼；連帶 moveThroughHistory（155-158）存進 historyDraftRef 的 draft 必為空字串，navigatePromptHistory 回 index===null 時還回來的也是空字串，SPEC:1350 的「離開後恢復 Draft」在實務上不可能被觸發。AGY 端 AgyCliSurface.tsx:1520-1526 條件寫成 (historyIndex !== null || draft === '')，同樣兩個問題且連 caret 檢查都沒有。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Tray 的 Remove 被「Composer 停用」擋住，而規格只允許 Processing 擋",
+            "spec_says": "SPEC-hand.md:1409-1412「Buffered 不發遠端 Request。Processing 指 Packaging、Transferring、Verifying；Error 不屬於 Processing。Processing 中不可移除單項。Error 項目可單獨移除，也可單獨重試」",
+            "code_does": "ChatComposer.tsx:250-257 的 Remove 按鈕 disabled={disabled || uploading}。disabled 由 AgentsWorkspace.tsx:1118-1126 決定，在 status 為 running / waiting_approval / starting / disconnected / exited / error 時都是 true。也就是說 Agent 正在跑上一個 turn 時，使用者貼錯的截圖卡在 tray 裡拿不掉，得等 turn 結束 —— 但那段時間根本沒有任何 Processing 在進行，附件還停在 Buffered。對照 AgyCliSurface.tsx:2003-2007，AGY 那顆 Remove 只有 disabled={uploadingAttachments}，行為是對的；兩邊又一次不一致。",
+            "files": [
+              "apps/app/src/workspaces/agents/ChatComposer.tsx"
+            ],
+            "fix_sketch": "ChatComposer.tsx:254 改成 disabled={uploading}（項目層級狀態做進來後再換成該項的 state ∈ {packaging, transferring, verifying}），拿掉 || disabled。Attach 按鈕（353-355）建議一併從 disabled || uploading || 上限 改成 uploading || 上限：SPEC:1395-1399 的限制只有 10 個／20 MB／超限只拒新增，沒有 turn running 不得新增這一條。這兩處與第 5 項（tray 狀態欄位）同一次改比較省事，因為屆時 uploading 會被項目 state 取代。",
+            "risk": "改的是 renderer 的 disabled 判斷，不碰送出流程，Claude 路徑的行為變化僅限於「turn 進行中可以整理 tray」。要確認 sendMessage（AgentsWorkspace.tsx:587-666）是在按下 Send 的當下用閉包快照 pending，所以送出中途被移除的項目不會半途改變本次批次 —— 目前 591 行 const pending = attachments[sessionId] ?? [] 已經是快照，安全。",
+            "severity": "medium",
+            "effort": "小",
+            "verify_evidence": "規格條文在 SPEC-hand.md:1412-1416（宣稱寫 1409-1412，差三行，文字對）。程式屬實：ChatComposer.tsx:250-257 的 Remove disabled={disabled || uploading}（254 行），而 disabled 來自 AgentsWorkspace.tsx:1118-1126，running/waiting_approval/starting/disconnected/exited/error 都會為 true，那些狀態下附件仍停在 Buffered、沒有任何 Processing 在跑。對照 AgyCliSurface.tsx:2002-2010 的 Remove 只有 disabled={uploadingAttachments}（2006 行），兩邊確實不一致。宣稱 risk 裡「591 行 const pending = attachments[sessionId] ?? [] 已是快照」也查證屬實，放寬 Remove 不會讓送出中的批次被中途改掉。\n唯一要打折的地方：SPEC:1414「Processing 中不可移除單項」是禁令而非白名單，嚴格讀並沒有明文寫「其他情況一律可移除」，理論上可主張 Composer 不可用時整個 Composer（含 Tray）都停用。但 SPEC:1416「可取消整次 Send：已完成項目回到 Ready，未完成項目回到 Buffered」預設 tray 在非 Processing 時是可操作的，加上 AGY 端的既有實作，判定違規成立。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "Attachment Tray 沒有 Transferring／Verifying／Error 三種狀態，也沒有單項重試",
+            "spec_says": "SPEC-hand.md:1402-1407「每項顯示：Preview／Icon、Original Name、Type、Size、Buffered／Packaging／Transferring／Verifying／Ready／Error、Remove」；SPEC-hand.md:1412「Error 項目可單獨移除，也可單獨重試」；SPEC-hand.md:1409-1410 Processing 定義；SPEC-hand.md:313「任一附件失敗：Prompt 不送出；保留 Draft 與附件」",
+            "code_does": "ChatComposer.tsx:240-248 的狀態字串只有三個分支：file === undefined → 'Ready'、uploading → 'Packaging'、否則 'Buffered'。沒有 Transferring、沒有 Verifying、沒有 Error。失敗處理在 AgentsWorkspace.tsx:665-666，整批 catch 之後只丟一條全域 setError 字串，tray 內每一項都默默退回 Buffered，使用者看不出是哪一個附件掛了，也沒有單項重試 —— 只能整批重送。AgyCliSurface.tsx:1996-2000 更少，連 Ready 都沒有，只有 uploadingAttachments ? 'Packaging' : 'Buffered'。附帶一個可見的小錯：AgentsWorkspace.tsx:593 對每一次送出（包含純文字、零附件）都設 uploading = true，於是按 Enter 送純文字時 Attach 按鈕會閃一下「Packaging…」（ChatComposer.tsx:358），這是 uploading 這個旗標同時被當成「附件處理中」和「Prompt 在途中」用的後遺症。",
+            "files": [
+              "apps/app/src/workspaces/agents/attachmentBuffer.ts",
+              "apps/app/src/workspaces/agents/ChatComposer.tsx",
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx"
+            ],
+            "fix_sketch": "照宣稱的方向可行，但把 uploading 的兩種語意一次拆乾淨：(1) attachmentBuffer.ts:7-15 加 state: 'buffered'|'packaging'|'transferring'|'verifying'|'ready'|'error' 與選用 errorMessage，bufferAttachmentFiles 產出填 'buffered'。(2) AgentsWorkspace.sendMessage 在 601 上傳前把該批標 'transferring'、612-614 長度檢核當成 verifying 階段、618-641 換成遠端項目時標 'ready'、catch 時標 'error' 並存訊息，不要再用 file===undefined 反推。(3) ChatComposer.tsx:240-248 與 AgyCliSurface.tsx:1997-2000 改讀 attachment.state；state==='error' 多渲染一顆重試鈕，回呼 onRetryAttachment(id) 由 AgentsWorkspace 只對該項重跑 uploadAgentAttachments。(4) AgentsWorkspace.tsx:593 改成只在 pending.length > 0 時 setUploading，Prompt 在途的鎖交給 status==='running'／第 1 項的 pendingSend。注意 uploadAgentAttachments 目前是整批一次 IPC，若要讓單項重試不重傳其他項，重試路徑要傳只含該項的陣列（現有簽章支援）。attachmentBuffer.test.ts 用 objectContaining，加欄位不會壞。",
+            "risk": "ComposerAttachment 是 ChatComposer 與 AgyCliSurface 共用型別，加欄位要兩邊都補；attachmentBuffer.test.ts:25-33 用 expect.objectContaining，加欄位不會弄壞它，但 19-23 那個 toEqual 陣列比對是 objectContaining 包起來的，仍安全。動到 sendMessage 就會動到 Claude 路徑（本機無法驗證），建議與第 1 項同一次改，避免 uploading 語意被拆一半。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "規格條文在 SPEC-hand.md:1401-1408（六種狀態）、1415（Error 可單獨移除／單獨重試）、314（任一附件失敗保留 Draft 與附件），宣稱的行號差 1-3 行但文字全對。程式屬實：ChatComposer.tsx:240-248 只有 file===undefined→'Ready' / uploading→'Packaging' / 否則 'Buffered' 三個分支，沒有 Transferring、Verifying、Error；失敗只走 AgentsWorkspace.tsx:665-666 的整批 setError，tray 每項默默退回 Buffered，無法辨識是哪一項失敗，也沒有單項重試。AgyCliSurface.tsx:1997-2000 更少（只有 Packaging／Buffered，連 Ready 都沒有）。附帶那個小錯也屬實：AgentsWorkspace.tsx:593 對每一次送出（含零附件的純文字）都設 uploading=true，於是 ChatComposer.tsx:358 的 Attach 按鈕會閃一下『Packaging…』。attachmentBuffer.ts:7-15 的 ComposerAttachment 確實沒有 state 欄位，36-74 的 bufferAttachmentFiles 也沒有產生它。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "AGY 上傳成功但貼圖失敗時，重試會把整批附件重新上傳一次",
+            "spec_says": "SPEC-hand.md:314「附件已落地、Prompt 失敗：重試沿用原 Attachment；不重傳」",
+            "code_does": "AgyCliSurface.tsx:1253-1308：uploadAgentAttachments 成功後（1265-1275），程式繼續呼叫 pasteNativeAgyMedia（1293-1302）。若貼圖那段丟例外（1184 打包、1197-1199 缺 bytes、1216 host 不支援 terminal media upload 都會丟），catch 在 1303-1305 只 onNotify 然後 return，attachments state 完全沒被改動，每一項仍帶著原本的 file。使用者再按一次 Send，1259-1272 會把同一批 bytes 重新編碼、重新上傳，遠端 session 目錄留下重複檔案。更麻煩的是 pasteNativeAgyMedia 是逐張貼（1220-1230），可能已經成功貼進去第 1 張才在第 2 張失敗，重試時第 1 張會在 AGY 的 prompt 行被貼第二次。統一路徑其實做對了：AgentsWorkspace.tsx:618-640 在呼叫 sendAgentMessage 之前就把 tray 內容換成上傳後的遠端項目（file 被拿掉），所以重試時 596-599 的 buffered 過濾為空、直接沿用原 id，不重傳 —— 兩邊對同一條規格的實作不同。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "照宣稱做但補兩點：(1) 在 1284 之後、1293 之前先 setAttachments 把每項換成上傳後形態（保留 previewUrl、清掉 file、id 換成遠端 id），做法對照 AgentsWorkspace.tsx:618-641。(2) 換 id 會破壞 1289-1291 uploadedNonMedia 的 index 對齊，所以先把那段改成用 mediaIds（1288 已建好的 Set）直接過濾 uploaded 對應的來源項，或乾脆改用 isInlineAttachmentImage(uploaded[i].mediaType) 判斷，不要再靠 index 反查 pendingAttachments。(3) sendPrompt 開頭（1254-1258）加分支：pendingAttachments 皆無 file 時跳過 1259-1272 的編碼與上傳，直接用已存的 ChatAttachment 走 pasteNativeAgyMedia 與 promptWithAttachmentReferences；pasteNativeAgyMedia 需要原始 bytes，把 encodedByAttachmentId 提升成 component ref 快取（key 用遠端 id），送出成功或 tray 清空時一併釋放，避免整批 base64 常駐記憶體。(4) 逐張貼失敗的重複貼圖問題，最小修法是在 ref 上記已成功貼出的 id，重試時跳過。補一個「上傳後貼圖失敗、再送一次只呼叫一次 uploadAgentAttachments」的測試。",
+            "risk": "純 AGY 路徑，不碰 Claude／Codex。風險在 1289-1291 的 uploadedNonMedia 是用 index 對齊 pendingAttachments 算出來的，一旦 id 在中途被換掉，這段索引對齊要重新確認；建議改成用 Set 比對 mediaType 而不是 index。既有測試 attachmentBuffer.test.ts 不涵蓋這段流程，改完要補一個「上傳後貼圖失敗、再送一次只呼叫一次 uploadAgentAttachments」的測試。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "規格條文在 SPEC-hand.md:315（宣稱寫 314，差一行，文字對）。程式屬實：AgyCliSurface.tsx:1265-1272 上傳成功後，1293-1301 才呼叫 pasteNativeAgyMedia；後者會在 1184（打包）、1198-1200（缺 bytes）、1218（host 不支援 terminal media upload）丟例外，catch 在 1302-1305 只 onNotify 就 return，attachments state 完全沒動（清空只發生在成功路徑的 1344），每一項仍帶原本的 file。再按一次 Send，1259-1272 會重新編碼並重新上傳同一批，遠端 session 目錄留重複檔案。逐張貼的部分也屬實（1220-1230 迴圈），第 1 張已貼成功、第 2 張失敗時重試會把第 1 張再貼一次。對照組也查證無誤：AgentsWorkspace.tsx:631-641 在 643 呼叫 sendAgentMessage 之前就把 tray 換成上傳後的遠端項目（無 file），所以送出失敗後重試時 596-599 過濾出的 buffered 為空、直接沿用原 id，符合 SPEC:315 —— 兩邊對同一條規格的實作確實不同。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Composer 不可用時不顯示原因與下一步，使用者只看到一個死掉的輸入框",
+            "spec_says": "SPEC-hand.md:1362-1364「**不可用時** — 顯示原因與下一步」",
+            "code_does": "ChatComposer.tsx 收到 disabled=true 之後，只是把 textarea（267 行）、Attach（353-355）、Send（375-377）設成 disabled，placeholder 仍然是 265 行那句「Message X · Enter to send · Shift+Enter for newline」，畫面上沒有任何一個字說明為什麼不能打。判斷原因所需的資訊在 AgentsWorkspace.tsx:1118-1126 全部都有（uploading／running／waiting_approval／starting／disconnected／exited／error 七種來源），但只被壓成一個布林傳下去，資訊在傳遞過程中被丟掉。AGY 側同樣沒有：AgyCliSurface.tsx:2102 的 agy-composer-hint 永遠只印按鍵說明。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/app/src/workspaces/agents/ChatComposer.tsx"
+            ],
+            "fix_sketch": "prop 型別不必大改（換型別會同時牽動兩個呼叫點且容易漏 status）。做法：ChatComposer 保留 disabled，新增選用 disabledReason?: { text: string; nextStep?: string }，在 226 那個 composer div 之前渲染一行 hint（disabled && disabledReason 才顯示）。AgentsWorkspace 把 1118-1126 的布林運算式抽成一個 composerAvailability(session, uploading) 函式，同時回傳 boolean 與 reason，兩者由同一個 switch 產生，避免日後兩邊漂移；文案至少覆蓋 starting／running／waiting_approval／disconnected／exited／error 六種，各配一句下一步（running→按 Stop 或等待完成；waiting_approval→在 Approval Card 回覆；disconnected→重新連線後 Resume；exited/error→按 Resume）。AGY 端把同一個函式的輸出接到 2102 行的 agy-composer-hint：canCompose 為 false 時顯示原因＋下一步，true 時維持按鍵說明；AGY 的來源是 connection／sessionStatus／screen.mode／statusSyncPhase，需要另一個對應表，不要硬套統一路徑的 status。",
+            "risk": "prop 型別變更會同時影響 Claude／Codex 與 AGY 兩個呼叫點，但都在 renderer、不碰 IPC。Claude 路徑本機無法實機驗證 —— 建議先讓 disabledReason 與現有 disabled 並存一版，確認七種 status 的字串都對得上再拿掉舊 prop，避免某個 status 漏掉時 composer 變成永遠可用。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "規格條文屬實：SPEC-hand.md:1362-1364「不可用時 — 顯示原因與下一步」，行號完全正確；SPEC-hand.md:1057 亦要求能力不可用要說明原因。統一路徑屬實：ChatComposer.tsx 只把 textarea（267）、Attach（353-355）、Send（375-377）設 disabled，placeholder（265）永遠是那句按鍵說明，畫面上沒有任何原因文字；判斷原因所需的七個來源在 AgentsWorkspace.tsx:1118-1126 都在，卻被壓成一個布林。\n但「AGY 側同樣沒有」是錯的：AgyCliSurface.tsx:2021-2027 的 placeholder 會依狀態顯示『AGY is working…』『AGY session closed』或 screen.promptHint，1756-1763 的 statusline 還會顯示『Syncing usage…』與『Usage unavailable』。AGY 缺的只是「下一步」，不是完全沒有原因。另外統一路徑也不是零線索：running/waiting_approval 時 ChatComposer.tsx:360-370 會出現 Stop 鈕、AgentsWorkspace.tsx:1007-1018 header 也有 Stop；未進入 session 時 1037-1051 的 session-resume-bar 有完整說明。真正沒有任何解釋的是「已進入但 status 為 disconnected / exited / error / starting」這幾種。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Tray 每項沒有顯示 Type，Size 一律用 KB 顯示",
+            "spec_says": "SPEC-hand.md:1402-1408「每項顯示：Preview／Icon、Original Name、Type、Size…」；SPEC-hand.md:297-298「Image 顯示縮圖。File 顯示名稱、類型、大小、Buffered」",
+            "code_does": "ChatComposer.tsx:238-249 每一項只印 name、狀態字串、以及 Math.max(1, Math.ceil(attachment.sizeBytes / 1024)) + ' KB'，完全沒有 Type。AgyCliSurface.tsx:1995-2001 一模一樣。KB 的單一單位在 20 MB 上限下會印出「20480 KB」這種讀不出來的數字。同一個 repo 裡 MessageAttachments.tsx:26-30 的 formatAttachmentSize 已經正確處理 B／KB／MB 三段，而且 MessageAttachments.tsx:271-274 的送出後卡片也已經正確印了 mediaType，只有送出前的 tray 沒跟上 —— 這是兩份 tray 各自手寫格式化造成的漏。",
+            "files": [
+              "apps/app/src/workspaces/agents/ChatComposer.tsx",
+              "apps/app/src/workspaces/agents/AgyCliSurface.tsx"
+            ],
+            "fix_sketch": "把 formatAttachmentSize 從 MessageAttachments.tsx 搬到 attachmentBuffer.ts（該檔無任何 bridge 依賴），MessageAttachments 改為 re-export 以免動到 messageAttachments.test.ts:31-35 的 import 路徑；這樣可避免 ChatComposer 反向 import 把 getBridge（MessageAttachments.tsx:4）拉進 composer 的相依圖。ChatComposer.tsx:240-248 與 AgyCliSurface.tsx:1997-2000 的 <small> 統一成「狀態 · mediaType · formatAttachmentSize(sizeBytes)」。順手把 ChatComposer.tsx:250-257 的 Remove 補上 aria-label（AGY 端 2005 行已有）。純顯示層，零行為風險，建議與第 5 項一起改，因為屆時狀態字串會改讀 attachment.state。",
+            "risk": "純顯示層，零行為風險，不動 Claude 路徑的任何邏輯。唯一要注意的是 MessageAttachments.tsx 目前會 import getBridge（第 4 行），從 ChatComposer 反向 import 會把 bridge 模組拉進相依圖 —— 若不想要，就把 formatAttachmentSize 移到 attachmentBuffer.ts 再由兩邊 import，測試 messageAttachments.test.ts:31-35 的 import 路徑要跟著改。",
+            "severity": "low",
+            "effort": "小",
+            "verify_evidence": "規格條文在 SPEC-hand.md:1401-1408（Preview／Icon、Original Name、Type、Size、狀態、Remove）與 297-298，宣稱行號差 1 行，文字對。程式屬實：ChatComposer.tsx:238-249 只印 name、狀態字串、Math.max(1, Math.ceil(sizeBytes/1024)) + ' KB'，沒有 Type；AgyCliSurface.tsx:1995-2001 一模一樣。20 MB 上限下確實會印出 20480 KB。對照組也屬實：MessageAttachments.tsx:26-30 的 formatAttachmentSize 已正確處理 B／KB／MB，271-274 的送出後卡片已正確印 mediaType。"
+          }
+        ],
+        "architectural_verdict": ""
+      },
+      {
+        "key": "codex-path",
+        "claimed": 8,
+        "items": [
+          {
+            "kind": "實作 bug",
+            "title": "item/permissions/requestApproval 會被登記成 pending control，但永遠不會產生 Approval Card → Turn 卡死",
+            "spec_says": "SPEC-hand.md:342-357（2.9 Approval Card：Machine／工作目錄／完整動作／目標／影響／選項；Agent 未提供選項清單時只呈現 Allow Once 與 Deny）；SPEC-hand.md:1451-1476（3.4.12 Approval Card 狀態機）；SPEC-hand.md:1484「Needs Input | 等待 Approval／Question／Input」。規格假設每一個會擋住 Turn 的 Approval 都必須有一張可操作的卡。",
+            "code_does": "apps/desktop/src/main/agentCommunicationService.ts:815-824 的 parseCodexControlRequest 白名單包含 'item/permissions/requestApproval'，第 2257 行把它寫進 stored.pendingControls。但 apps/desktop/src/main/adapters/codexAppServer.ts:303-305 只對 'item/commandExecution/requestApproval' 與 'item/fileChange/requestApproval' 產生 approval_requested，permissions 那條在第 363 行 return [] 掉。結果：timeline 沒有卡片、status 不會變 waiting_approval（agentCommunicationService.ts:2489 沒被觸發），Composer 因 status 仍是 running 而停用（AgentsWorkspace.tsx:1118-1126），Codex 端在 JSON-RPC 上無限等待。使用者只能 Stop 或殺掉 session。另外就算他想手動解，resolveApproval（:2066-2072）找不到 approval item 會丟錯，answerQuestion（:2120-2125）也因為 toolName 不在 ['AskUserQuestion','RequestUserInput'] 而丟錯。",
+            "files": [
+              "apps/desktop/src/main/adapters/codexAppServer.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/desktop/tests/codexAppServer.test.ts"
+            ],
+            "fix_sketch": "不要只在 codexAppServer.ts:303-305 手加第三條 method：把 parseCodexControlRequest 的白名單抽成 export 常數（CODEX_CONTROL_METHODS），兩邊共用，讓「會登記成 pending control」與「會產生卡片」永遠同步，這才能防下一個 method 又開新黑洞。permissions 分支的 command 用 display(params) 全文容錯，不要挑單一未驗證欄位；riskSummary 用固定文案。務必另行查證 permissions approval 的回覆 payload 是否也是 {decision:'accept'|'decline'}（resolveApproval:2076-2082 直接沿用此形狀），不同的話會變成「按了也沒解」。測試補在 codexAppServer.test.ts:76 旁的 approval case。",
+            "risk": "完全不動 Claude 路徑：parseCodexAppServerLine 只在 agentCommunicationService.ts:2263-2264 的 agentKind === 'codex' 分支被呼叫，Claude 走 parseClaudeStreamLine。唯一風險是 permissions approval 的 params 欄位名稱我沒有實機驗證，fallback 分支要用 display() 容錯，不要假設某個欄位一定存在。",
+            "severity": "high",
+            "effort": "小",
+            "verify_evidence": "行號全部對得上。agentCommunicationService.ts:815-824 的白名單確實含 'item/permissions/requestApproval'，:2257 `current.pendingControls[control.requestId] = control` 無條件登記。codexAppServer.ts:303-305 的 if 只認 commandExecution／fileChange，permissions 落到 :363 的 `return []`。全 repo grep 'permissions/requestApproval' 只有 agentCommunicationService.ts:819 一處，沒有別處補救。後果鏈成立：無 approval_requested → :2479-2489 不執行 → status 停在 running → Composer disabled（AgentsWorkspace.tsx:1118-1126）。手動解也不通，但錯誤點略有出入：resolveApproval 是先在 :2066-2071 因找不到 approval item 丟 'Pending approval request not found'（非宣稱的 :2075）；answerQuestion:2120-2124 因 toolName 不在白名單而丟錯則屬實。規格 SPEC-hand.md:342-357／1451-1476／1484 引用無誤且是硬性規則。唯一未證實處：repo 內沒有證據顯示遠端 Codex 真的會送這個 method（只有 :811-814 註解說方法名取自 generated schema），所以是條件式 bug；但「登記了卻無法呈現」的內部不一致本身就是黑洞。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Codex 送來但無法呈現的 Question（自由輸入／選項數不在 2-6）被靜默丟棄，Turn 卡死；混合題組還會送出不完整的答案",
+            "spec_says": "SPEC-hand.md:1283-1290（3.4.6 Question Card）：「一次詢問可包含多題」「未全部作答前 Agent 仍在等待」「無法呈現的詢問：顯示原始內容並提供拒絕」。規格明確要求無法呈現時要有 fallback＋拒絕路徑，而不是丟掉。",
+            "code_does": "apps/desktop/src/main/adapters/codexAppServer.ts:193 `if (options.length < 2 || options.length > 6) return [];` 直接丟棄整題；:178-179 也丟棄沒有 string `question` 欄位的題目。但 agentCommunicationService.ts:815-824 已經無條件把 'item/tool/requestUserInput' 登記成 pendingControls（:2257），所以 Codex 那邊仍在等 JSON-RPC 回覆，CozyPad 這邊卻一張卡都沒有。更糟的是混合題組：agentCommunicationService.ts:2141-2146 的 relatedItems 只掃描「有存活成卡片」的 question item，`relatedItems.every(...)` 在部分題目被丟棄時會提早成立，於 :2148-2158 送出只含部分答案的 result 給 Codex。契約端 packages/contracts/src/chat.ts:120 `options: z.array(QuestionOptionSchema).min(2).max(6)` 是這個丟棄規則的根因。",
+            "files": [
+              "apps/desktop/src/main/adapters/codexAppServer.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "packages/contracts/src/chat.ts",
+              "apps/app/src/workspaces/agents/ChatTimeline.tsx",
+              "apps/desktop/tests/codexAppServer.test.ts"
+            ],
+            "fix_sketch": "分兩步。(1) 先修部分答案這個真正會送錯資料的 bug：:2146 的判斷改成以 pending.input.questions.length 為分母，且要求 relatedItems.length === 分母 並且 every(answered) 才回覆。不動 schema、不動 UI，Claude／Codex 同時受益，可獨立提交。(2) 規格 fallback：chat.ts 放寬成 min(0) 並加 optional unrepresentable／rawPrompt；codexAppServer.ts:179/193 與 adapter-claude/streamParser.ts:61/75 兩處都改成回傳標記過的 question_requested。拒絕路徑不能複用 onAnswerQuestion——answerQuestion:2112-2113 需要有效 optionIndex，0 選項必丟 'Question option not found'；要新增 declineQuestion IPC（codex 回 JSON-RPC error／claude 回 behavior:'deny'），ChatTimeline 對 unrepresentable item early-return 一個只有原文＋拒絕鈕的分支，正常題目的 render 一行不動。",
+            "risk": "會動到 packages/contracts/src/chat.ts 的共用 QuestionItemSchema，Claude 的 AskUserQuestion 卡片也吃這個 schema（agentCommunicationService.ts:2498-2508 是共用路徑）。放寬 min(2) 屬於放寬，不會讓既有 Claude payload 驗證失敗，但 ChatTimeline 的 question 分支是共用元件，改動後 Claude 的問答卡外觀會一起變 —— 本機無法驗證 Claude，建議新增的 unrepresentable 分支用 early-return 隔開，讓既有的正常題目 render 路徑一行都不動。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "codexAppServer.ts:179 丟棄無 string question 的題、:193 `if (options.length < 2 || options.length > 6) return []` 完全屬實；chat.ts:120 的 min(2).max(6) 是根因也屬實。pendingControls 仍被登記（:815-824、:2257）→ Codex 端無限等待。部分答案 bug 成立：:2141-2145 的 relatedItems 只掃描存活成卡片的 question item，:2146 relatedItems.every(...) 在部分題目被丟棄時提早成立，:2147-2158 送出只含部分答案的 result。規格 SPEC-hand.md:1286-1290 逐字符合，非 capability-gated。宣稱的不足：files 清單漏了 packages/adapter-claude/src/streamParser.ts——那裡 :61-75 有一模一樣的丟棄規則（同樣 options.length<2||>6 return []），所以這是 Claude／Codex 共通缺陷，不是 Codex 專屬，且 Claude 端同樣會 control_request 沒人回覆而卡住。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "Approval／Question 在 Process 結束或 Resume 之後永遠停在 pending，按鈕還能按，按下去只會丟錯",
+            "spec_says": "SPEC-hand.md:1453-1470（3.4.12）：狀態需含 Expired；「所屬 Execution Generation 已結束：標為 Expired；停用所有選項」「Expired 保留原內容；不改寫成 Allowed／Denied」「Expired 後 Session 不再顯示 Needs Input 與 Pending Approval」。SPEC-hand.md:1325「Session Status 為 Exited 時，Timeline 不得同時顯示執行中的 Item」。",
+            "code_does": "agentCommunicationService.ts:2307-2320 的 exit 分支只把 record.status 設成 'exited' 並清 activeTurn，完全沒碰 stored.timeline 裡的 approval／question item。revive() 在 :1509-1512 清掉 pendingControls 與 questionAnswers，但同樣沒碰卡片。於是舊卡仍是 resolution 'pending' / selectedIndex null，ChatTimeline.tsx:125-141 與 :154-171 依 `interactive` 判定就把按鈕開著。使用者一按：resolveApproval 在 :2075 丟 'Approval control request has expired'，answerQuestion 在 :2124 丟同類錯誤，或先被 assertSessionConnected（:2976-2981）擋成 'Agent tmux session has exited'，最後只變成 AgentsWorkspace.tsx:880-885 的紅色 error banner。契約端 packages/contracts/src/chat.ts:97 的 resolution enum 只有 pending/allowed/denied，根本沒有 expired 可存。",
+            "files": [
+              "packages/contracts/src/chat.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/app/src/workspaces/agents/ChatTimeline.tsx"
+            ],
+            "fix_sketch": "方向對，落點要補。chat.ts:97 enum 加 'expired'、QuestionItemSchema 加 optional expired。新增 private expirePendingInteractions(stored)，呼叫點除了 exit 分支（:2312 設 status 之前）與 revive（:1508-1512），還要加第三處：followSession 的 catch 分支 :2286-2291（status 轉 'error' 前），否則 error 路徑同樣留下殭屍卡。ChatTimeline.tsx:125 的條件改成 item.resolution === 'pending' && interactive，:142-146 的 chip 加 Expired，question 分支 :161 的 disabled 加 item.expired === true。既有測試（apps/desktop/tests/agentCommunicationService.test.ts:927-1090 的 revive 案例）沒有對 exit 後 timeline 的斷言，不會被打到；補一個「exit 後 pending approval 轉 expired」的斷言。",
+            "risk": "這是 Claude／Codex 共用路徑（exit 分支與 ChatTimeline 都不分 agentKind），Claude 的 approval 卡會一起變。行為上是「原本會丟錯 → 改成不能按」，屬於收斂而非放寬，但 Claude 本機無法驗證。enum 加值是 additive，既有持久化的 session store 讀回來不受影響。要留意 packages/contracts/tests 與 apps/desktop/tests/agentCommunicationService.test.ts 裡有沒有針對 exit 後 timeline 的斷言。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "規格與缺口屬實：SPEC-hand.md:1453-1470 明列 Expired 狀態及其規則；chat.ts:97 resolution enum 只有 pending/allowed/denied，全 repo grep 'expired' 只抓到 agentCommunicationService.ts:2075 與 :2124 兩句錯誤訊息字串，沒有任何地方存得下 Expired。exit 分支 :2307-2320 確實只改 record.status 與 activeTurn，revive() :1508-1512 確實只清 pendingControls/questionAnswers 不碰 timeline。但宣稱的失效機制有一半錯：AgentsWorkspace.tsx:303-307 在收到 status 'exited'/'error' 時會 leaveEnteredSession，selectedSessionEntered 轉 false，ChatTimeline 改以 interactive={false} 渲染（:1029-1035），按鈕是 disabled——Process 結束當下根本按不下去，也不會出現宣稱的紅色 error banner。真正可按且會丟錯的窗口是：(a) Resume 之後（:819-821 enterSelectedSession 重新進入，舊 generation 的卡片仍 pending 且 interactive，:2075 丟錯）、(b) status 'disconnected' 時（不觸發 leaveEntered，assertConnected:2970-2973 丟錯）。另規格 :1469 目前只是靠 status 被覆寫成 exited 而順帶滿足，Resume 後即失效。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "Codex Resume 確實照規格開了新原生對話，但 UI 完全沒告知；Timeline 沒有分界、Header 沒有「是否延續原生對話」",
+            "spec_says": "SPEC-hand.md:268「Process 已結束、Agent 只能開新對話：啟動新 Process；建立新原生對話」；:274-278「Native Conversation ID 可在 Resume 後更換；Session ID 不變」「不延續原生對話時：保留 CozyPad Timeline；Timeline 標出分界」「明確顯示 Agent 不記得分界之前的內容」「不得以 CozyPad Timeline 冒充 Agent 記憶」；:1217-1218（3.4.5 Session Header 必須顯示「是否已綁定原生對話」與「本次 Resume 是否延續原生對話」）。",
+            "code_does": "啟動行為是對的：revive() 在 agentCommunicationService.ts:1513-1521 只對 claude／agy 算 resumeConversationId，codex 恆為 undefined；buildLaunchScript:1193-1194 一律用 `codex app-server --listen stdio://`；startAgentConversation:1410-1419 送 thread/start 開新 thread。問題全在告知：applyNormalizedEvent:2362-2383 收到新 thread 的 session_initialized 時，bindAgentIdentity 因 conversation id 不同而丟錯（packages/contracts/tests/agentSession.test.ts:61-70 有此行為的測試），catch 區塊直接 `identity: null` 重綁，靜默換掉原生對話身分，不 push 任何 timeline item、不發任何通知。summary()（:2943-2956）沒有任何 conversation 綁定欄位，AgentsWorkspace.tsx:993-1019 的 chat-session-head 只印 title 與 cwd。使用者 Resume 完看到滿滿舊 timeline，會直接接著問「剛剛那個檔案」，而 Codex 什麼都不記得。",
+            "files": [
+              "packages/contracts/src/chat.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/app/src/workspaces/agents/ChatTimeline.tsx",
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx"
+            ],
+            "fix_sketch": "原案可行，但注意兩點。(1) ChatItemSchema 是 discriminatedUnion，加 'notice' kind 會波及所有 switch 與持久化 parse（ChatTimeline.tsx:66 無 default，TS 會抓出漏網）；這是正確做法，不要偷懶改用 assistant message 冒充，那直接違反規格 :277。(2) catch 區塊是 Claude/Codex 共用，文案務必依 agentKind 分岔：codex 寫「已建立新原生對話」，claude 寫「無法確認是否為同一原生對話」（規格 :278）。(3) continuedNativeConversation 不要在 summary() 現算，應由 revive() 當下寫一個 flag 進 StoredAgentSession 再讀出：codex 恆 false，claude/agy 依 resumeConversationId 是否有值。header 那一行與第 8 條的 version 顯示合併做。",
+            "risk": "catch 區塊（:2369-2383）是 Claude 與 Codex 共用的 —— 註解本身就寫「Claude's --resume may fork」。加 notice 對 Claude 也是規格要求的行為，但本機無法驗證 Claude 是否真的會走進這個 catch；建議 notice 文案依 agentKind 分岔，Codex 講「已建立新原生對話」，Claude 講「無法確認是否為同一原生對話」（對應規格 :278）。ChatItemSchema 加新 kind 會讓所有 switch 需要處理，ChatTimeline.tsx:66 的 switch 沒有 default，TypeScript 會抓出漏網處。",
+            "severity": "high",
+            "effort": "中",
+            "verify_evidence": "啟動行為屬實：revive():1513-1521 的三元只對 claude／agy 算 resumeConversationId，codex 落在最後的 undefined；buildLaunchScript:1193-1194 對 codex 一律 [executablePath,'app-server','--listen','stdio://']，無任何 resume 參數。告知面的缺口也全部屬實：applyNormalizedEvent:2362-2383 的 catch 區塊在新 thread id 進來時（bindAgentIdentity 對不同 conversation 丟 'refusing to rebind'，packages/contracts/tests/agentSession.test.ts:61-73 正是這個行為的測試）直接以 identity:null 重綁，不 push timeline item、不發 onError、無任何 UI 訊號；summary():2943-2956 確實沒有任何 conversation 綁定欄位；chat-session-head（AgentsWorkspace.tsx:993-1019）只印 title、cwd 與 Stop。規格 SPEC-hand.md:268／274-278／1217-1218 引用逐字正確，1217-1218 是 Session Header 「顯示」的硬性清單項。"
+          },
+          {
+            "kind": "實作 bug",
+            "title": "fileChange 的 Approval Card 標題只印出不透明的 item id，看不到要改哪些檔案",
+            "spec_says": "SPEC-hand.md:342-349（2.9 Approval Card 必須顯示 Machine、工作目錄、完整動作、目標、影響）；SPEC-hand.md:357「需要先檢視內容才能決定的選項：提供完整檢視後回到同一 Approval」。",
+            "code_does": "apps/desktop/src/main/adapters/codexAppServer.ts:311-313：`const command = network === undefined ? display(params.command ?? params.itemId ?? method) : ...`。'item/fileChange/requestApproval' 的 params 沒有 `command`，所以 fallback 到 `params.itemId`，卡片的主要內容變成類似 `fc_1` 的字串。riskSummary（:320-324）只回一句罐頭「Codex requests permission to modify files」。前端 ChatTimeline.tsx:118-124 就把這兩個字串直接畫出來，另外只多印一行 cwd —— 沒有 Machine（規格 :344），也沒有任何檔案清單或 diff。使用者只能盲按 Allow 或 Deny。",
+            "files": [
+              "apps/desktop/src/main/adapters/codexAppServer.ts",
+              "apps/app/src/workspaces/agents/ChatTimeline.tsx",
+              "packages/contracts/src/chat.ts"
+            ],
+            "fix_sketch": "拆兩個提交。(1) 必成立的那半：ApprovalItemSchema 加 optional machine，applyNormalizedEvent:2480-2488 從 stored.host 填入，ChatTimeline.tsx:124 的 approval-meta 補印——additive，Claude 一起受益，零風險。(2) 檔案清單：codexAppServer.ts:308-326 拆一個 fileChange 分支，用 isRecord + Array.isArray 從 params.changes 抽 path 組成 command，**取不到必須原樣退回 params.command ?? params.itemId ?? method**，否則空字串會讓 command: z.string().min(1) 在 parse 時炸掉整條 timeline（原案這點判斷正確，務必保留）。規格 :357 的「完整檢視後回到同一 Approval」本次不做，記 backlog。",
+            "risk": "codexAppServer.ts 是 Codex 專屬，不碰 Claude。ChatTimeline 的 approval 卡與 ApprovalItemSchema 是共用的，加 optional machine 欄位是 additive；Claude 的卡會多一行 machine，但不改判斷邏輯。params 的實際欄位名沒有實機驗證，取值一定要走「取不到就退回 params.itemId」的既有路徑，否則 ApprovalItemSchema 的 `command: z.string().min(1)` 會在 parse 時炸掉整個 timeline。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "codexAppServer.ts:311-313 的 display(params.command ?? params.itemId ?? method) 屬實，fileChange 的 params 若無 command 就退到 itemId。riskSummary 描述略有出入：:320-324 實際是 stringValue(params.reason) ?? 罐頭句，有 reason 時會用 reason，並非「只回一句罐頭」。ChatTimeline.tsx:118-124 確實只畫 riskSummary／command／cwd，無 Machine、無檔案清單、無 diff；ApprovalItemSchema（chat.ts:91-98）也沒有 machine／target 欄位可放。規格 SPEC-hand.md:344-349 與 :357 引用正確且是硬性清單。其中「Machine 未顯示」與 params 形狀無關，必然成立；「command 變成 fc_1」則取決於未實機驗證的 params 形狀，屬合理推斷。"
+          },
+          {
+            "kind": "規格已有但未實作",
+            "title": "多題 Question 拆成互不相干的卡片，沒有顯示「尚未作答的題數」，使用者不知道 Agent 還在等",
+            "spec_says": "SPEC-hand.md:1286-1288（3.4.6 Question Card 新增的多題規則）：「一次詢問可包含多題」「未全部作答前 Agent 仍在等待」「顯示尚未作答的題數」。",
+            "code_does": "codexAppServer.ts:177-207 對同一個 RPC 的每一題各發一個 question_requested，questionId 是 `${rawId}:${index}`；agentCommunicationService.ts:2498-2508 逐一 push 成獨立的 question item。後端其實知道題組關係——:2141-2146 用 `candidate.id.startsWith('question-${requestId}:')` 把它們湊回來判斷是否全部作答——但這個資訊完全沒有出到 summary 或 timeline。前端 ChatTimeline.tsx:149-174 的 case 'question' 只認單張卡，沒有題組容器、沒有「還有 N 題」。實際情況：Codex 一次問 3 題，使用者答完第 1 題後卡片鎖住、status 仍是 waiting_approval、Composer 依然停用（AgentsWorkspace.tsx:1118-1126），畫面上沒有任何東西說明為什麼還不能打字。",
+            "files": [
+              "packages/contracts/src/chat.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts",
+              "apps/app/src/workspaces/agents/ChatTimeline.tsx"
+            ],
+            "fix_sketch": "原案可行且成本最低。QuestionItemSchema 只加 optional batchId（batchIndex/batchSize 可由前端 group 推導），agentCommunicationService.ts:2498-2508 從 event.questionId 取 ':' 前段填入（Claude 的 AskUserQuestion 同樣是 `${toolCallId}:${index}`，見 packages/adapter-claude/src/streamParser.ts:78，兩邊邏輯一致）。ChatTimeline 在 question 卡頂加一行「本次詢問共 N 題，尚有 M 題未作答」，無 batchId 時退回目前單卡渲染。建議與第 2 條的 every() 分母修正同時做：沒有那個修正，有題目被丟棄時顯示的題數會與實際等待狀態不一致。",
+            "risk": "QuestionItemSchema 與 ChatTimeline 的 question 分支是 Claude 共用的。Claude 的 AskUserQuestion 也會走多題（questionId 同樣是 `id:index` 格式，:2114-2118 的解析共用），所以填 batchId 的邏輯對兩邊一致，但 Claude 本機無法驗證。建議 batchId 純 optional，前端沒有 batchId 時退回目前的單卡渲染，Claude 即使 id 格式不同也不會壞。",
+            "severity": "medium",
+            "effort": "小",
+            "verify_evidence": "codexAppServer.ts:194-205 逐題發 question_requested、questionId=`${rawId}:${index}`，agentCommunicationService.ts:2498-2508 逐一 push 成獨立 question item，屬實。後端確實知道題組關係（:2141-2145 的 candidate.id.startsWith('question-${requestId}:')）卻沒把 batch 資訊帶進 timeline item 或 summary（:2943-2956 無此欄位）。前端 ChatTimeline.tsx:149-174 只認單張卡，無題組容器、無未答題數。答完第 1 題後 status 不變（:2167-2171 只在全部答完才回 running），Composer 依 :1118-1126 繼續 disabled 且畫面無說明，屬實。規格 SPEC-hand.md:1288 是明列項目，非 capability-gated。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Codex 的 slash command 清單是寫死的四個，且 CozyPad 自行完成的 /status /diff 在選單裡與 Agent 指令無法分辨",
+            "spec_says": "SPEC-hand.md:1434-1435（3.4.11）：「清單包含 Agent 公布的 Command 與 CozyPad 提供的 Command」「不使用固定共用清單假設 Agent Capability」；:1445「選單需可分辨由 CozyPad 完成與由 Agent 處理的 Command」；:1444「部分 Command 由 CozyPad 直接完成；不建立 Agent Turn、不進入 Running」。",
+            "code_does": "apps/desktop/src/main/adapters/codexAppServer.ts:256 與 :275 兩處都硬塞 `slashCommands: ['compact', 'diff', 'review', 'status']`，跟遠端 Codex 版本實際支援什麼無關 —— 舊版沒有 review/compact 的話，使用者選了會直接吃到 JSON-RPC error。分類資訊也沒送出去：agentCommunicationService.ts:2943-2956 的 summary() 只填 slashCommands，從未填 slashCommandDescriptions 或 slashCommandBehaviors，而 AgentsWorkspace.tsx:1106-1109 正在讀 `selectedSession.slashCommandBehaviors?.[...]`，讀到的永遠是 undefined。實際分流在 sendMessage：:1869-1874 的 /status 與 /diff 由 CozyPad 直接完成（:1875-1931，不建 turn、不進 running，符合規格），:1974-1989 的 /compact 與 /review 送給 Agent —— 但選單上四個長得一模一樣。",
+            "files": [
+              "apps/desktop/src/main/adapters/codexAppServer.ts",
+              "apps/desktop/src/main/agentCommunicationService.ts"
+            ],
+            "fix_sketch": "先做 (b)、緩做 (a)，這點原案判斷正確，但欄位要換。(b) 新增獨立的 slashCommandOwners: z.record(z.string(), z.enum(['cozypad','agent'])).optional()，**不要**複用 slashCommandBehaviors（那是互動行為欄位，混用會弄壞 ChatComposer:134-139 的選字邏輯）；summary():2954 一併輸出，Codex 的 status/diff 標 cozypad、compact/review 標 agent；ChatComposer:216 旁加來源標記。(a) 移除硬編清單前必須先有偵測依據：detect() 於 :1074-1079 已取得 helpOutput/protocolHelpOutput，可據此判定 review/compact；偵測條件未確認前不要砍，否則現在能用的人會少兩個指令。",
+            "risk": "codexAppServer.ts 只服務 Codex。summary() 是共用的，但多輸出兩個 optional 欄位是 additive，Claude 那邊不填就維持現狀（AgentsWorkspace.tsx:1107 的 optional chaining 已經處理 undefined）。真正的風險在 (a)：把 compact/review 從清單拿掉會讓現在能用的人少兩個指令，所以要先確認偵測條件成立才移除；保守做法是先只做 (b)，讓分類可見，(a) 留待有辦法查證遠端 codex 版本時再做。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "codexAppServer.ts:256 與 :275 兩處硬編 ['compact','diff','review','status'] 屬實，與遠端版本無關。分類資訊確實沒送出：全 repo grep 顯示 slashCommandBehaviors 只出現在 chat.ts:33 的 schema 與 AgentsWorkspace.tsx:1107 的讀取端，後端 summary():2954 只填 slashCommands，從未填 behaviors／descriptions，所以 :1107 讀到恆為 undefined。分流也如宣稱：:1874-1932 的 /status /diff 由 CozyPad 直接完成（不建 turn、不進 running，符合 :1444），:1974-1989 的 /compact /review 送 Agent，選單上四個長得一模一樣（ChatComposer.tsx:216 只畫 description）。規格 SPEC-hand.md:1434-1435／1444-1445 引用正確。一個語意修正：slashCommandBehaviors 的 enum 是 insert|submit|picker（chat.ts:34），那是 ChatComposer:40/134-139 用來決定選字後插入還是直送的互動行為，不是「誰執行」。"
+          },
+          {
+            "kind": "違反規格",
+            "title": "Codex 不可用時整個 Agent 分頁被替換成單一說明面板，session list 與所有操作一起消失；能力清單與版本從未顯示",
+            "spec_says": "SPEC-hand.md:1084-1097（3.4.2 Agent Availability 的「顯示」清單：Detecting、Installed＋Version、Executable Missing、Unsupported Version、Structured Chat、Resume、Interrupt、Approval、Attachment、Slash Command、Permission Mode、Regenerate）；:1103「不可用時顯示判定原因與偵測到的環境」；產品定位「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置」。SPEC-hand.md:256-262（2.7 選取 Session 只顯示已保存 Timeline，不需要 Agent Process）。",
+            "code_does": "apps/app/src/workspaces/agents/AgentsWorkspace.tsx:901-914：只要 `!installation.installed || (agent !== 'agy' && !installation.supportsStructuredOutput)`，整個 agent-panes（:915 以下的 session sidebar + chat column）就不 render，換成一個只有標題、detail 與 Remote 環境的 agent-setup 區塊。使用者的 Codex 舊 session 因此整批看不見、無法預覽 timeline、無法 rename/delete，即使規格說預覽舊 Session 根本不需要 Agent Process。另外能力矩陣一項都沒畫：installation 帶回來的 supportsResume / supportsInteractiveApproval / supportsDangerouslySkipPermissions / launchModes / version（packages/contracts/src/agentCommunication.ts:27-41）在整個 AgentsWorkspace.tsx 裡除了 :901-902 的兩個布林之外都沒有被顯示，version 一次都沒出現。順帶一提後端對 Codex 恆回 supportsResume: false（agentCommunicationService.ts:1097-1102 只認 claude 的 --resume 與 agy 的 --conversation），但 Resume 按鈕（:1044-1050）並沒有依它 disable —— 這與規格 :268 的「Codex 也要能 Resume，只是開新對話」一致，所以真正錯的是這個旗標的語意，不是按鈕。",
+            "files": [
+              "apps/app/src/workspaces/agents/AgentsWorkspace.tsx",
+              "apps/desktop/src/main/agentCommunicationService.ts"
+            ],
+            "fix_sketch": "分三次提交，順序照原案。(a) 把 :901-914 改成保留 agent-panes、在 sidebar 上方插 availability banner；進入／新建的閘門已有 canCreate（:455-461），只需讓 resumeSession 對不可用 agent 擋下並說明原因，session list、preview、rename/delete 維持可用（此分支對本機未裝的 Claude 天天在跑，改動後要實際點一輪）。(b) banner 內加能力小表，逐項對應 :1086-1097，值取自 installation 既有欄位，取不到標「未知」而非省略；version 同時顯示於 banner 與 chat-session-head（:993-1019，與第 4 條合併）。(c) 不要把 codex 的 supportsResume 改成 true：雖然 :1514 有 && agentKind === 'claude' 保護，但 :1516 的 agy 分支與未來新 agent 很容易踩到。改為新增獨立的 resumeStartsNewConversation: boolean，supportsResume 值原地不動，UI 的 Resume 按鈕依「installed && 可啟動」判斷。",
+            "risk": "這個面板是三家 Agent 共用的（條件裡的 `agent !== 'agy'` 就同時涵蓋 Claude 與 Codex），改動會直接影響 Claude 在本機未安裝時的畫面 —— 而本機正好沒有 Claude Code CLI，這個分支現在天天在跑，所以改壞會很明顯。建議 (a) 先做，(b)(c) 分開提交。(c) 動到 AgentInstallation 契約與 revive() 的 :1513-1521 判斷式，若改 supportsResume 的值務必同時檢查 :1513 的 `installation.supportsResume && agentKind === 'claude'`，那行必須維持只對 claude 生效，否則 Codex 會被餵一個死掉的 thread id。",
+            "severity": "medium",
+            "effort": "中",
+            "verify_evidence": "AgentsWorkspace.tsx:901-914 的三元確實把整個 agent-panes（:915 起的 sidebar＋chat column）換掉，session list／預覽／右鍵選單全數消失；規格 SPEC-hand.md:256-262（選取 Session 只顯示已保存 Timeline、不啟動 Agent Process）與 :1057「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置」引用屬實。能力矩陣缺失也屬實：grep 顯示 installation 在 AgentsWorkspace 內只用於 :458-461 的 canCreate、:901-902 的兩個布林、:1275-1305 的 launchModes；version 在整個 apps/app 內一次都沒渲染（唯一的 .version 在 TmuxSetupDialog.tsx:104，那是 tmux 版本），對照 SPEC-hand.md:1084-1097 的顯示清單幾乎全缺。supportsResume 對 codex 恆 false 屬實（:1097-1102 只認 claude 的 --resume 與 agy 的 --conversation），Resume 按鈕（:1044-1050）確實不依它 disable，宣稱的「錯的是旗標語意不是按鈕」與規格 :268 一致。"
+          }
+        ],
+        "architectural_verdict": ""
+      }
+    ]
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "盤點"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Verify"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "盤點:agy-vs-unified",
+      "phaseIndex": 1,
+      "phaseTitle": "盤點",
+      "agentId": "a7e1337737e04043d",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785966723345,
+      "queuedAt": 1785966723335,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "主要是「兩套元件各自處理狀態」，不是終端解析。證據三項： 一…",
+      "promptPreview": "【背景】\nCozyPad 是 Electron + React 的個人工具，透過 SSH 操作遠端機器上的 coding agent。\n規格書 D:\\CozyPad\\SPEC-hand.md（約 3216 行，中文短條列）剛剛更新完，是這次的權威標準。\n\n【產品方向（規格 3.4 定位）】\n- Claude／Codex／AGY 使用同一套 UI、同一組操作、同一個版面。\n- 差異在 Adapter 層吸收；不因 Agent 不同而改變版面或操作位置。\n- 能力不足以「該能力不可用」呈現並說明原因；不隱藏該操作的位置。\n- 不為單一 Agent 新增專屬畫面。\n- Native Interactive View 是同一版面中的一個顯示區域，不是另一套畫面。\n\n【現況】\nAGY 目前有自己獨立的畫面元件 AgyCliSurface.tsx，與 Claude／Codex 走的 ChatTimel…",
+      "lastProgressAt": 1785967162065,
+      "tokens": 119112,
+      "toolCalls": 42,
+      "durationMs": 438720,
+      "resultPreview": "{\"items\":[{\"kind\":\"實作 bug\",\"title\":\"draft 非空時，Overlay 與 Approval/Question 面板整片消失，畫面可能全空\",\"spec_says\":\"1057「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置。」1358「無阻擋輸入的 Question／Approval。」（Composer 可用條件）1455-1461 Approval Card 狀態需含 Pending／Submitting／Allowed／Denied。\",\"code_does\":\"AgyCliSurface.tsx:1710-1718 `showPanel = overlay === null && draft === '' && ...`；AgyCliSurface.tsx:1851 overlay 也要求 `draft === ''` 才渲染；A…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "盤點:agy-parsing",
+      "phaseIndex": 1,
+      "phaseTitle": "盤點",
+      "agentId": "af741c430b5c18246",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785966723346,
+      "queuedAt": 1785966723336,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "【背景】\nCozyPad 是 Electron + React 的個人工具，透過 SSH 操作遠端機器上的 coding agent。\n規格書 D:\\CozyPad\\SPEC-hand.md（約 3216 行，中文短條列）剛剛更新完，是這次的權威標準。\n\n【產品方向（規格 3.4 定位）】\n- Claude／Codex／AGY 使用同一套 UI、同一組操作、同一個版面。\n- 差異在 Adapter 層吸收；不因 Agent 不同而改變版面或操作位置。\n- 能力不足以「該能力不可用」呈現並說明原因；不隱藏該操作的位置。\n- 不為單一 Agent 新增專屬畫面。\n- Native Interactive View 是同一版面中的一個顯示區域，不是另一套畫面。\n\n【現況】\nAGY 目前有自己獨立的畫面元件 AgyCliSurface.tsx，與 Claude／Codex 走的 ChatTimel…",
+      "lastProgressAt": 1785967504768,
+      "tokens": 160825,
+      "toolCalls": 67,
+      "durationMs": 781422,
+      "resultPreview": "{\"items\":[{\"kind\":\"違反規格\",\"title\":\"解析用畫面尺寸沒有真的固定：tmux 建 session 時沒指定尺寸、attach 沒排掉其他 client、本機端尺寸靠兩個各自寫死的常數\",\"spec_says\":\"2571「解析用畫面尺寸固定；不隨視窗大小改變。」2572「兩端畫面尺寸需一致。」\",\"code_does\":\"packages/tmux-runtime/src/runtime.ts:147 `tmux new-session -d -s \\\"$session\\\" ...` 沒有 `-x/-y`。tmux 對 detached session 用 default-size（80x24），且 status 預設為 on（server 以 `-f /dev/null` 啟動，不讀使用者設定，所以是 tmux 內建預設），AGY 一啟動是在 80x23 畫面…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "盤點:session-state",
+      "phaseIndex": 1,
+      "phaseTitle": "盤點",
+      "agentId": "a041b9124ad1527ec",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785966723346,
+      "queuedAt": 1785966723336,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "主要是「兩套元件各自處理狀態」造成的，不是終端解析造成的。…",
+      "promptPreview": "【背景】\nCozyPad 是 Electron + React 的個人工具，透過 SSH 操作遠端機器上的 coding agent。\n規格書 D:\\CozyPad\\SPEC-hand.md（約 3216 行，中文短條列）剛剛更新完，是這次的權威標準。\n\n【產品方向（規格 3.4 定位）】\n- Claude／Codex／AGY 使用同一套 UI、同一組操作、同一個版面。\n- 差異在 Adapter 層吸收；不因 Agent 不同而改變版面或操作位置。\n- 能力不足以「該能力不可用」呈現並說明原因；不隱藏該操作的位置。\n- 不為單一 Agent 新增專屬畫面。\n- Native Interactive View 是同一版面中的一個顯示區域，不是另一套畫面。\n\n【現況】\nAGY 目前有自己獨立的畫面元件 AgyCliSurface.tsx，與 Claude／Codex 走的 ChatTimel…",
+      "lastProgressAt": 1785967222229,
+      "tokens": 124116,
+      "toolCalls": 46,
+      "durationMs": 498883,
+      "resultPreview": "{\"items\":[{\"kind\":\"實作 bug\",\"title\":\"AGY 的 live status 覆蓋層永不失效：離開畫面或斷線後仍顯示 ready／running\",\"spec_says\":\"SPEC-hand.md:1485-1486「Disconnected｜無法確認遠端 Process」「Exited｜Process 已結束」；SPEC-hand.md:1139-1143 Filter 依狀態分類\",\"code_does\":\"AgentsWorkspace.tsx:396-402 liveStatus() 對 agy 一律用 agyActivity[id] ?? session.status；agyActivity 只在 AgyCliSurface 掛載中由 onStatusChange 寫入（AgentsWorkspace.tsx:1062-1067），只有 relau…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "盤點:composer-attachment",
+      "phaseIndex": 1,
+      "phaseTitle": "盤點",
+      "agentId": "a53a1015732f9140f",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785966723347,
+      "queuedAt": 1785966723336,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "【背景】\nCozyPad 是 Electron + React 的個人工具，透過 SSH 操作遠端機器上的 coding agent。\n規格書 D:\\CozyPad\\SPEC-hand.md（約 3216 行，中文短條列）剛剛更新完，是這次的權威標準。\n\n【產品方向（規格 3.4 定位）】\n- Claude／Codex／AGY 使用同一套 UI、同一組操作、同一個版面。\n- 差異在 Adapter 層吸收；不因 Agent 不同而改變版面或操作位置。\n- 能力不足以「該能力不可用」呈現並說明原因；不隱藏該操作的位置。\n- 不為單一 Agent 新增專屬畫面。\n- Native Interactive View 是同一版面中的一個顯示區域，不是另一套畫面。\n\n【現況】\nAGY 目前有自己獨立的畫面元件 AgyCliSurface.tsx，與 Claude／Codex 走的 ChatTimel…",
+      "lastProgressAt": 1785967126398,
+      "tokens": 91107,
+      "toolCalls": 33,
+      "durationMs": 403051,
+      "resultPreview": "{\"items\":[{\"kind\":\"規格已有但未實作\",\"title\":\"送出後沒有「送出中／逾時→待確認」狀態機，送出即等於成功\",\"spec_says\":\"SPEC-hand.md:318-323「**送出後狀態** — 已送出、尚未收到 Agent 第一個事件：顯示送出中；Composer 與 Send 停用。收到第一個事件：視為送達；轉為 Running。逾時仍無事件：轉為待確認。送出中與待確認的指示與 User Message 分開」；SPEC-hand.md:325-331「**待確認** — 查詢 Turn／Event 判定實際結果。查得未接受：還原 Draft 與 Attachment Tray；Composer 恢復。…不自動重送」；SPEC-hand.md:1360「可用條件：無送達結果待確認的 Prompt」\",\"code_does\":\"AgentsWorkspac…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "盤點:codex-path",
+      "phaseIndex": 1,
+      "phaseTitle": "盤點",
+      "agentId": "ad78c0a5104644db5",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785966723347,
+      "queuedAt": 1785966723336,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "【背景】\nCozyPad 是 Electron + React 的個人工具，透過 SSH 操作遠端機器上的 coding agent。\n規格書 D:\\CozyPad\\SPEC-hand.md（約 3216 行，中文短條列）剛剛更新完，是這次的權威標準。\n\n【產品方向（規格 3.4 定位）】\n- Claude／Codex／AGY 使用同一套 UI、同一組操作、同一個版面。\n- 差異在 Adapter 層吸收；不因 Agent 不同而改變版面或操作位置。\n- 能力不足以「該能力不可用」呈現並說明原因；不隱藏該操作的位置。\n- 不為單一 Agent 新增專屬畫面。\n- Native Interactive View 是同一版面中的一個顯示區域，不是另一套畫面。\n\n【現況】\nAGY 目前有自己獨立的畫面元件 AgyCliSurface.tsx，與 Claude／Codex 走的 ChatTimel…",
+      "lastProgressAt": 1785967145076,
+      "tokens": 111530,
+      "toolCalls": 38,
+      "durationMs": 421729,
+      "resultPreview": "{\"items\":[{\"kind\":\"實作 bug\",\"title\":\"item/permissions/requestApproval 會被登記成 pending control，但永遠不會產生 Approval Card → Turn 卡死\",\"spec_says\":\"SPEC-hand.md:342-357（2.9 Approval Card：Machine／工作目錄／完整動作／目標／影響／選項；Agent 未提供選項清單時只呈現 Allow Once 與 Deny）；SPEC-hand.md:1451-1476（3.4.12 Approval Card 狀態機）；SPEC-hand.md:1484「Needs Input | 等待 Approval／Question／Input」。規格假設每一個會擋住 Turn 的 Approval 都必須有一張可操作的卡。\",\"code_does…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "verify:composer-attachment",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a324dc2e1e1b37503",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785967126409,
+      "queuedAt": 1785967126399,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "你是嚴格的審查者。有人盤點了 CozyPad agent page 的規格與程式落差，請逐條查證。\n\n規格：D:\\CozyPad\\SPEC-hand.md\n\n宣稱（JSON）：\n[\n  {\n    \"kind\": \"規格已有但未實作\",\n    \"title\": \"送出後沒有「送出中／逾時→待確認」狀態機，送出即等於成功\",\n    \"spec_says\": \"SPEC-hand.md:318-323「**送出後狀態** — 已送出、尚未收到 Agent 第一個事件：顯示送出中；Composer 與 Send 停用。收到第一個事件：視為送達；轉為 Running。逾時仍無事件：轉為待確認。送出中與待確認的指示與 User Message 分開」；SPEC-hand.md:325-331「**待確認** — 查詢 Turn／Event 判定實際結果。查得未接受：還原 Draft 與 Atta…",
+      "lastProgressAt": 1785967480334,
+      "tokens": 90061,
+      "toolCalls": 34,
+      "durationMs": 353925,
+      "resultPreview": "{\"verdicts\":[{\"title\":\"送出後沒有「送出中／逾時→待確認」狀態機，送出即等於成功\",\"confirmed\":true,\"effort\":\"中\",\"evidence\":\"規格條文屬實：SPEC-hand.md:318-323（送出後狀態）、325-331（待確認）、1360（可用條件：無送達結果待確認的 Prompt）全部逐字對得上。程式面：AgentsWorkspace.tsx:587-671 的 sendMessage 確實只有一個 uploading 布林（593 設 true、669 finally 設 false），沒有逾時計時器、沒有 'unconfirmed' 狀態、沒有『再次查詢／明確重送』入口 —— 全 repo grep 'unconfirmed' 只命中 AgyCliSurface 的 stopVerification（96、1376-1381、2…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "verify:codex-path",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a8a0da9fd17ef1961",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785967145077,
+      "queuedAt": 1785967145077,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "你是嚴格的審查者。有人盤點了 CozyPad agent page 的規格與程式落差，請逐條查證。\n\n規格：D:\\CozyPad\\SPEC-hand.md\n\n宣稱（JSON）：\n[\n  {\n    \"kind\": \"實作 bug\",\n    \"title\": \"item/permissions/requestApproval 會被登記成 pending control，但永遠不會產生 Approval Card → Turn 卡死\",\n    \"spec_says\": \"SPEC-hand.md:342-357（2.9 Approval Card：Machine／工作目錄／完整動作／目標／影響／選項；Agent 未提供選項清單時只呈現 Allow Once 與 Deny）；SPEC-hand.md:1451-1476（3.4.12 Approval Card 狀態機）；SPEC-hand.…",
+      "lastProgressAt": 1785967733333,
+      "tokens": 121662,
+      "toolCalls": 42,
+      "durationMs": 588256,
+      "resultPreview": "{\"verdicts\":[{\"title\":\"item/permissions/requestApproval 會被登記成 pending control，但永遠不會產生 Approval Card → Turn 卡死\",\"confirmed\":true,\"effort\":\"小\",\"evidence\":\"行號全部對得上。agentCommunicationService.ts:815-824 的白名單確實含 'item/permissions/requestApproval'，:2257 `current.pendingControls[control.requestId] = control` 無條件登記。codexAppServer.ts:303-305 的 if 只認 commandExecution／fileChange，permissions 落到 :363 的 `return …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "verify:agy-vs-unified",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a4636b796ed8a18a7",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785967162067,
+      "queuedAt": 1785967162066,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "你是嚴格的審查者。有人盤點了 CozyPad agent page 的規格與程式落差，請逐條查證。\n\n規格：D:\\CozyPad\\SPEC-hand.md\n\n宣稱（JSON）：\n[\n  {\n    \"kind\": \"實作 bug\",\n    \"title\": \"draft 非空時，Overlay 與 Approval/Question 面板整片消失，畫面可能全空\",\n    \"spec_says\": \"1057「能力不足以『該能力不可用』呈現並說明原因；不隱藏該操作的位置。」1358「無阻擋輸入的 Question／Approval。」（Composer 可用條件）1455-1461 Approval Card 狀態需含 Pending／Submitting／Allowed／Denied。\",\n    \"code_does\": \"AgyCliSurface.tsx:1710-1718 `s…",
+      "lastProgressAt": 1785967536647,
+      "tokens": 107224,
+      "toolCalls": 37,
+      "durationMs": 374580,
+      "resultPreview": "{\"verdicts\":[{\"title\":\"draft 非空時，Overlay 與 Approval/Question 面板整片消失，畫面可能全空\",\"confirmed\":true,\"evidence\":\"程式屬實。AgyCliSurface.tsx:1710-1718 showPanel 含 `overlay === null && draft === ''`；1851 `{overlay !== null && draft === '' ? ...}`；1947 `hidden={overlay !== null}`。三者確實互斥，draft 非空 + overlay 被辨識 => 三塊都不畫。agyTerminalModel.ts:731 `if (draft !== '') return true;` 亦屬實，approval/question 模式下 canCompose 變…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "verify:session-state",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a1895889f632b48ac",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785967222231,
+      "queuedAt": 1785967222230,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "你是嚴格的審查者。有人盤點了 CozyPad agent page 的規格與程式落差，請逐條查證。\n\n規格：D:\\CozyPad\\SPEC-hand.md\n\n宣稱（JSON）：\n[\n  {\n    \"kind\": \"實作 bug\",\n    \"title\": \"AGY 的 live status 覆蓋層永不失效：離開畫面或斷線後仍顯示 ready／running\",\n    \"spec_says\": \"SPEC-hand.md:1485-1486「Disconnected｜無法確認遠端 Process」「Exited｜Process 已結束」；SPEC-hand.md:1139-1143 Filter 依狀態分類\",\n    \"code_does\": \"AgentsWorkspace.tsx:396-402 liveStatus() 對 agy 一律用 agyActivity[id] ??…",
+      "lastProgressAt": 1785967488431,
+      "tokens": 94292,
+      "toolCalls": 35,
+      "durationMs": 266200,
+      "resultPreview": "{\"verdicts\":[{\"title\":\"AGY 的 live status 覆蓋層永不失效：離開畫面或斷線後仍顯示 ready／running\",\"confirmed\":true,\"effort\":\"小\",\"evidence\":\"程式與宣稱一致。AgentsWorkspace.tsx:396-402 liveStatus() 對 agy 一律 `agyActivity[session.id] ?? session.status`；grep 全檔 setAgyActivity 只出現在 283（forgetSession）、826-831（relaunch）、1063-1067（AgyCliSurface onStatusChange），沒有 unmount cleanup，所以離開 session 後最後一筆推測值永久留存，清單一律吃它。agyTerminalModel.ts:746…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "verify:agy-parsing",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "ac34949effc301fc7",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1785967504770,
+      "queuedAt": 1785967504769,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "你是嚴格的審查者。有人盤點了 CozyPad agent page 的規格與程式落差，請逐條查證。\n\n規格：D:\\CozyPad\\SPEC-hand.md\n\n宣稱（JSON）：\n[\n  {\n    \"kind\": \"違反規格\",\n    \"title\": \"解析用畫面尺寸沒有真的固定：tmux 建 session 時沒指定尺寸、attach 沒排掉其他 client、本機端尺寸靠兩個各自寫死的常數\",\n    \"spec_says\": \"2571「解析用畫面尺寸固定；不隨視窗大小改變。」2572「兩端畫面尺寸需一致。」\",\n    \"code_does\": \"packages/tmux-runtime/src/runtime.ts:147 `tmux new-session -d -s \\\"$session\\\" ...` 沒有 `-x/-y`。tmux 對 detached session…",
+      "lastProgressAt": 1785967824417,
+      "tokens": 87719,
+      "toolCalls": 39,
+      "durationMs": 319646,
+      "resultPreview": "{\"verdicts\":[{\"title\":\"解析用畫面尺寸沒有真的固定：tmux 建 session 時沒指定尺寸、attach 沒排掉其他 client、本機端尺寸靠兩個各自寫死的常數\",\"confirmed\":true,\"effort\":\"中\",\"evidence\":\"行號全部對得上。規格 SPEC-hand.md:2571/2572 確實寫「解析用畫面尺寸固定；不隨視窗大小改變」「兩端畫面尺寸需一致」。packages/tmux-runtime/src/runtime.ts:147 的 new-session 只有 -d -s -c -P -F，確無 -x/-y；tmux server 以 -f /dev/null 啟動（agentCommunicationService.ts:1715），故走 tmux 內建 default-size 80x24 + status on。apps…"
+    }
+  ],
+  "totalTokens": 1107648,
+  "totalToolCalls": 413
+}

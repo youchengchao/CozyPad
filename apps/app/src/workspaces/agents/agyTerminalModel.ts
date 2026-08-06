@@ -53,7 +53,7 @@ export interface AgyScreenModel {
 }
 
 const ANSI_PATTERN =
-  /(?:\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -\/]*[@-~]|\u001b[@-_]|[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f])/gu;
+  /(?:\u001b\](?:[^\u0007\u001b]|\u001b(?!\u005c))*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -\/]*[@-~]|\u001b[()*+][A-Za-z0-9=]|\u001b[@-_]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f])/gu;
 const BORDER_PREFIX = /^[\s│┃┆┊╎╏╭╮╰╯┌┐└┘├┤┬┴┼─━═]*/u;
 const BORDER_SUFFIX = /[\s│┃┆┊╎╏╭╮╰╯┌┐└┘├┤┬┴┼─━═]*$/u;
 const SELECTED_MARKERS = new Set(['>', '❯', '›', '→', '●', '◉', '◆']);
@@ -101,6 +101,20 @@ const PANEL_PATTERN =
 const KEY_HINT_PATTERN =
   /(?:↑|↓|←|→|arrow|enter\s+(?:to\s+)?select|tab\s+(?:to\s+)?complete|esc\s+(?:to\s+)?(?:cancel|close|stop)|ctrl\+[a-z]|page\s*(?:up|down)|pgup|pgdown)/iu;
 /**
+ * A whole row of key guidance — `↑/↓ Navigate · enter Confirm`,
+ * `↑/↓ move · Enter select · Ctrl+C exit`, `Keyboard: ↑/↓ Navigate …`.
+ * Anchored on the row shape (leading key token, then a `·`-separated list)
+ * rather than "contains an arrow anywhere": replies legitimately say things
+ * like `Renamed userId → user_id` or `press esc to cancel insert mode`, and
+ * the loose match deleted those lines from answers and let the prompt echo
+ * become a fake option list.
+ */
+const KEY_HINT_ROW_PATTERN =
+  /^\s*(?:Keyboard:\s|(?:↑\/↓|←\/→|[↑↓←→]|esc|enter|tab|space|ctrl\+\w+|shift\+\w+|alt\+\w+|pgup|pgdown|page\s*(?:up|down)|f\d+|[a-z]\/[a-z])\s+\S[^·]*·\s)/iu;
+/** A row that is only one key instruction, e.g. `esc to cancel`. */
+const STANDALONE_KEY_HINT_PATTERN =
+  /^\s*(?:esc|enter|tab|ctrl\+\w+|shift\+\w+)\s+(?:to\s+)?(?:cancel|close|stop|interrupt|quit|exit|select|complete|confirm|toggle|expand|send|clear|undo|dismiss|(?:go\s+)?back)\s*$/iu;
+/**
  * AGY's persistent footer. Depending on width it renders as
  * `? for shortcuts                    Gemini 3.6 Flash · high` or, once the
  * hint scrolls away, as the bare model/effort tag. Neither is ever a reply.
@@ -142,7 +156,7 @@ function parseOptions(lines: readonly string[]): AgyScreenOption[] {
   // AGY chooser — trust gate, slash menu, model picker — also paints a
   // navigation hint, and a plain transcript never does. Without that hint the
   // whole conversation history would turn into a menu of fake commands.
-  const selectable = lines.some((line) => KEY_HINT_PATTERN.test(withoutBox(line)));
+  const selectable = lines.some((line) => KEY_HINT_ROW_PATTERN.test(withoutBox(line)));
 
   lines.forEach((rawLine, lineIndex) => {
     const line = withoutBox(rawLine);
@@ -223,12 +237,19 @@ function parseOptions(lines: readonly string[]): AgyScreenOption[] {
       run.length = 0;
       runStart = -1;
     }
-    // Questions arrive in the user's language; a full-width `？` ends one just
-    // as surely as the ASCII mark.
-    const question = lines
-      .slice(Math.max(0, runStart - 5), Math.max(0, runStart))
-      .some((line) => /[?？]$/u.test(withoutBox(line)));
-    if (run.length >= 2 && question) {
+    // Questions arrive in the user's language; a full-width `？` ends one
+    // just as surely as the ASCII mark — and a quoted riddle ends with the
+    // closing quote AFTER the question mark (`…請問這是什麼？」`). Missing
+    // that dropped the numbered run and the panel fell back to offering the
+    // user's own transcript echoes as options.
+    const questionTextLines = lines.slice(Math.max(0, runStart - 5), Math.max(0, runStart));
+    const isApproval = questionTextLines.some((line) => APPROVAL_PATTERN.test(withoutBox(line)));
+    const selectedCount = run.filter((opt) => opt.selected).length;
+    const isInteractiveMenu = selectedCount === 1;
+
+    const question = questionTextLines.some((line) => /[?？:：][」』"”'’)）\]】]*$/u.test(withoutBox(line)));
+
+    if (run.length >= 2 && (isApproval || isInteractiveMenu || (selectable && question))) {
       // The run IS the question's answer set. Marker rows collected before it
       // — the `>`-prefixed echo of the user's own prompt, the focused answer
       // row picked up a second time — are furniture around the card, and
@@ -273,8 +294,13 @@ function parseOptions(lines: readonly string[]): AgyScreenOption[] {
     if (isBottomInput) options.splice(index, 1);
   }
 
-  // Some TUIs only decorate the selected row. Collect its adjacent indented rows.
-  const selectedLine = options.find((option) => option.selected)?.lineIndex;
+  // Some TUIs only decorate the selected row. Collect its adjacent indented
+  // rows — but only for undecorated menus: a numbered/keyed card is already
+  // a complete answer set, and collecting its neighbours turned the card's
+  // own `Question` heading into a bogus option.
+  const selectedLine = options.some((option) => option.shortcut !== undefined)
+    ? undefined
+    : options.find((option) => option.selected)?.lineIndex;
   if (selectedLine !== undefined) {
     const collectPlainOption = (lineIndex: number): boolean => {
       const rawLine = lines[lineIndex];
@@ -312,7 +338,8 @@ function isChromeLine(line: string): boolean {
   // The logo sits on the same row as the version, so this cannot be anchored.
   if (BRAND_PATTERN.test(trimmed)) return true;
   if (FOOTER_PATTERN.test(trimmed) || SPINNER_PATTERN.test(trimmed)) return true;
-  if (KEY_HINT_PATTERN.test(trimmed)) return true;
+  if (KEY_HINT_ROW_PATTERN.test(trimmed)) return true;
+  if (STANDALONE_KEY_HINT_PATTERN.test(trimmed)) return true;
   return false;
 }
 
@@ -330,7 +357,7 @@ function findPromptLineIndex(lines: readonly string[], options: readonly AgyScre
     if (!INPUT_PATTERN.test(line)) continue;
     const onlyChromeBelow = lines
       .slice(index + 1)
-      .every((below, offset) => !optionLines.has(index + 1 + offset) && isChromeLine(below));
+      .every((below, offset) => optionLines.has(index + 1 + offset) || isChromeLine(below));
     if (onlyChromeBelow) return index;
   }
   return -1;
@@ -375,7 +402,9 @@ function titleFor(lines: readonly string[], mode: AgySurfaceMode): string {
     const question = [...lines]
       .reverse()
       .map(withoutBox)
-      .find((line) => /[?？]$/u.test(line) && line.length <= 120);
+      .find(
+        (line) => /[?？][」』"”'’)）\]】]*$/u.test(line) && line.length <= 120,
+      );
     return question ?? 'AGY asked a question';
   }
   if (mode === 'running') return 'AGY is working';
@@ -436,7 +465,31 @@ export function deriveAgyScreenModel(
   const hasActiveSpinner = lines.some((line) =>
     SPINNER_PATTERN.test(withoutBox(line)),
   );
-  const hasError = !hasSlashSuggestions && ERROR_PATTERN.test(stateText);
+  let errorLineIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (parsedOptionLines.has(index)) continue;
+    const line = lines[index]!;
+    const trimmed = withoutBox(line);
+    if (FOOTER_PATTERN.test(trimmed)) continue;
+    if (ERROR_PATTERN.test(
+      trimmed.replace(KEY_HINT_GLOBAL, ' ').replace(/\s+/gu, ' ').trim(),
+    )) {
+      errorLineIndex = index;
+      break;
+    }
+  }
+  // The terminal keeps old turns on screen. A later input row proves AGY has
+  // already recovered and is accepting work again, even when a modal panel
+  // below that row prevents findPromptLineIndex() from classifying it as the
+  // active composer. Without this tail check, one failed attachment/tool turn
+  // permanently poisoned Resume and made a healthy session look disconnected.
+  const recoveredAfterError =
+    errorLineIndex >= 0 &&
+    lines
+      .slice(errorLineIndex + 1)
+      .some((line) => INPUT_PATTERN.test(withoutBox(line)));
+  const hasError =
+    !hasSlashSuggestions && errorLineIndex >= 0 && !recoveredAfterError;
   const hasPanel = PANEL_PATTERN.test(joined);
   const hasAgyBrand = /\b(?:agy|antigravity cli)\b/iu.test(joined);
   const hasWelcomeHeader =
@@ -450,7 +503,8 @@ export function deriveAgyScreenModel(
   );
 
   let mode: AgySurfaceMode;
-  if (closed) mode = 'closed';
+  if (closed && hasError && !hasPrompt) mode = 'error';
+  else if (closed) mode = 'closed';
   else if (lines.length === 0) mode = 'booting';
   // An open autocomplete outranks activity: the user is mid-word, and taking
   // the composer away to show a "working" state is what made `/` unusable.
@@ -519,6 +573,20 @@ function comparablePromptLine(line: string): string {
   return withoutBox(line).replace(/^\s*(?:>|❯|›|→)\s*/u, '').trim();
 }
 
+/**
+ * Recover text that is still sitting in AGY's active input row.
+ *
+ * The PTY survives when the user switches sessions, but the React composer
+ * does not. Reading the bottom prompt on remount keeps an unsent remote draft
+ * visible and prevents the next local edit from being appended to hidden text.
+ */
+export function extractAgyPromptDraft(model: AgyScreenModel): string {
+  if (model.mode !== 'prompt' && model.mode !== 'suggestions') return '';
+  if (model.promptLineIndex < 0) return '';
+  const promptLine = model.rawLines[model.promptLineIndex];
+  return promptLine === undefined ? '' : comparablePromptLine(promptLine);
+}
+
 function cleanAssistantLine(line: string): string | null {
   const clean = withoutBox(line).replace(/^✓\s*/u, '').trimEnd();
   if (clean === '' || SEPARATOR_PATTERN.test(clean)) return '';
@@ -526,18 +594,12 @@ function cleanAssistantLine(line: string): string | null {
   // whole row before the generic key-hint filter sees that suffix; otherwise
   // the final tool in a multi-tool turn disappears from the chat transcript.
   if (TOOL_ROW_PATTERN.test(clean)) return clean;
-  if (isChromeLine(clean) || KEY_HINT_PATTERN.test(clean)) return null;
-  if (INPUT_PATTERN.test(clean)) return null;
+  if (isChromeLine(clean)) return null;
   if (/^selected\s*:/iu.test(clean)) return null;
   if (/^what would you like .*\?$/iu.test(clean)) return null;
   if (SPINNER_PATTERN.test(clean)) return null;
   if (/^(?:press esc|type \/)(?:…|\.{3})?$/iu.test(clean)) return null;
   if (SLASH_OPTION_PATTERN.test(clean)) return null;
-  // `•` is how AGY renders a markdown list item — reply content, not a
-  // selectable row. Dropping it with the radio glyphs ate whole explanation
-  // lists out of the middle of answers.
-  const generic = clean.match(GENERIC_OPTION_PATTERN);
-  if (generic !== null && generic[1] !== '•') return null;
   return clean;
 }
 
@@ -677,6 +739,31 @@ export function extractAgyAssistantText(
   if (previous !== '' && candidate.length < previous.length && previous.startsWith(candidate)) {
     return previous;
   }
+  if (previous !== '' && !candidate.startsWith(previous)) {
+    // A reply taller than the window scrolls its own beginning off the top:
+    // the frame now shows a suffix of what was accumulated plus new rows.
+    // Replacing the accumulation with that tail lost the opening lines
+    // permanently (turns persist to localStorage). Stitch on the largest
+    // whole-line overlap instead; only when no line overlaps at all is this
+    // a genuine redraw of something else and the frame wins as before.
+    const previousLines = previous.split('\n');
+    const candidateLines = candidate.split('\n');
+    const maxOverlap = Math.min(previousLines.length, candidateLines.length);
+    for (let overlap = maxOverlap; overlap >= 1; overlap -= 1) {
+      const tail = previousLines.slice(previousLines.length - overlap);
+      if (tail.some((line, index) => line !== candidateLines[index])) continue;
+      // A shared run of blank or rule lines proves nothing; require one
+      // substantive row before treating the frames as the same text.
+      if (
+        !tail.some(
+          (line) => line.trim() !== '' && !SEPARATOR_PATTERN.test(line),
+        )
+      ) {
+        break;
+      }
+      return [...previousLines, ...candidateLines.slice(overlap)].join('\n');
+    }
+  }
   return candidate;
 }
 
@@ -690,8 +777,35 @@ export function isAgyComposerEditable(
     return false;
   }
   // A full-screen redraw after `/`, `/m`, ... must never steal the composer.
-  if (draft !== '') return true;
-  return mode === 'prompt' || mode === 'suggestions' || mode === 'booting';
+  // An approval or question is different: the CLI is waiting for y/n or a
+  // choice, and typing would answer that prompt, not compose a message — a
+  // leftover draft must not reopen the field (SPEC 1358).
+  if (draft !== '' && mode !== 'approval' && mode !== 'question') return true;
+  return (
+    mode === 'prompt' ||
+    mode === 'suggestions' ||
+    mode === 'booting' ||
+    mode === 'error'
+  );
+}
+
+/**
+ * Convert terminal transport/session health into the Agents workspace status.
+ * A CLI turn-level error is deliberately `ready`: AGY remains connected and
+ * the error card is recoverable in place. Only a transport error may evict the
+ * entered surface and expose Resume again.
+ */
+export function agySurfaceSessionStatus(
+  connection: 'connecting' | 'connected' | 'closed' | 'error',
+  sessionStatus: AgentSessionStatus,
+  mode: AgySurfaceMode,
+): AgentSessionStatus {
+  if (connection === 'closed' || sessionStatus === 'exited') return 'exited';
+  if (connection === 'error') return 'error';
+  if (mode === 'running') return 'running';
+  if (mode === 'approval' || mode === 'question') return 'waiting_approval';
+  if (mode === 'booting') return 'starting';
+  return 'ready';
 }
 
 const KEY_SEQUENCES: Record<AgyNavigationKey, string> = {
@@ -887,4 +1001,16 @@ export function agyPromptSequence(text: string, bracketedPaste = true): string {
     return `\u001b[200~${normalized}\u001b[201~\r`;
   }
   return `${normalized}\r`;
+}
+
+/** Submit a prompt that may extend text already mirrored into AGY's input. */
+export function agyReconciledPromptSequence(
+  previousRemote: string,
+  submittedPrompt: string,
+): string {
+  if (submittedPrompt.startsWith(previousRemote)) {
+    return agyPromptSequence(submittedPrompt.slice(previousRemote.length));
+  }
+  const reconciled = mirrorAgyDraft(previousRemote, submittedPrompt, false);
+  return `${reconciled.send}\r`;
 }

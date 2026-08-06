@@ -57,32 +57,57 @@ function parseQuestions(toolCallId: string, input: unknown) {
   const rawQuestions = (input as { questions?: unknown }).questions;
   if (!Array.isArray(rawQuestions)) return [];
   return rawQuestions.flatMap((rawQuestion: RawQuestion, index) => {
-    if (typeof rawQuestion !== 'object' || rawQuestion === null) return [];
-    if (typeof rawQuestion.question !== 'string') return [];
-    if (!Array.isArray(rawQuestion.options)) return [];
-    const options = rawQuestion.options.flatMap((option: RawQuestionOption) => {
-      if (typeof option !== 'object' || option === null) return [];
-      if (typeof option.label !== 'string' || option.label.trim() === '') return [];
+    const questionId = `${toolCallId}:${index}`;
+    // The agent waits on this request whether or not the card can render it:
+    // a question CozyPad cannot represent still becomes a card — marked
+    // unrepresentable, raw content shown, decline offered (SPEC 3.4.6) —
+    // instead of being dropped while the control request hangs.
+    if (
+      typeof rawQuestion !== 'object' ||
+      rawQuestion === null ||
+      typeof rawQuestion.question !== 'string'
+    ) {
       return [
         {
-          label: option.label,
-          ...(typeof option.description === 'string'
-            ? { description: option.description }
-            : {}),
+          questionId,
+          prompt: summarizeInput(rawQuestion, 2000) || 'Unreadable question payload',
+          options: [],
+          unrepresentable: true as const,
         },
       ];
-    });
-    if (options.length < 2 || options.length > 6) return [];
-    return [
-      {
-        questionId: `${toolCallId}:${index}`,
-        prompt:
-          typeof rawQuestion.header === 'string' && rawQuestion.header.trim() !== ''
-            ? `${rawQuestion.header}: ${rawQuestion.question}`
-            : rawQuestion.question,
-        options,
-      },
-    ];
+    }
+    const prompt =
+      typeof rawQuestion.header === 'string' && rawQuestion.header.trim() !== ''
+        ? `${rawQuestion.header}: ${rawQuestion.question}`
+        : rawQuestion.question;
+    const options = Array.isArray(rawQuestion.options)
+      ? rawQuestion.options.flatMap((option: RawQuestionOption) => {
+          if (typeof option !== 'object' || option === null) return [];
+          if (typeof option.label !== 'string' || option.label.trim() === '') return [];
+          return [
+            {
+              label: option.label,
+              ...(typeof option.description === 'string'
+                ? { description: option.description }
+                : {}),
+            },
+          ];
+        })
+      : [];
+    if (options.length < 2 || options.length > 6) {
+      return [
+        {
+          questionId,
+          prompt:
+            rawQuestion.options == null
+              ? prompt
+              : `${prompt}\n${summarizeInput(rawQuestion.options, 2000)}`,
+          options: [],
+          unrepresentable: true as const,
+        },
+      ];
+    }
+    return [{ questionId, prompt, options }];
   });
 }
 

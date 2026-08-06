@@ -5,15 +5,33 @@ import type {
   AgentSessionStatus,
   AgentSessionSummary,
   ChatItem,
+  DeleteScopeResult,
   RemoteFileItem,
   SlashCommand,
 } from '@cozypad/contracts';
-import { MAX_AGENT_ATTACHMENT_BYTES } from '@cozypad/contracts';
+import { MAX_AGENT_ATTACHMENTS } from '@cozypad/contracts';
 import { ContextMenu, useLongPress } from '../../components/ContextMenu';
 import { getBridge } from '../../platform/bridge';
-import { AgyCliSurface, clearAgySessionCache } from './AgyCliSurface';
+import {
+  AgyCliSurface,
+  AgyTranscriptPreview,
+  clearAgyRuntimeCache,
+  clearAgySessionCache,
+} from './AgyCliSurface';
 import { ChatComposer } from './ChatComposer';
-import type { ComposerAttachment } from './ChatComposer';
+import {
+  attachmentFileToBase64,
+  bufferAttachmentFiles,
+} from './attachmentBuffer';
+import type { ComposerAttachment } from './attachmentBuffer';
+import {
+  createAgentSessionViewState,
+  enterSelectedSession,
+  forgetSessionView,
+  leaveEnteredSession,
+  reconcileSessionView,
+  selectSessionForPreview,
+} from './agentSessionViewState';
 import { ChatTimeline } from './ChatTimeline';
 
 const AGENTS: { kind: AgentKind; label: string }[] = [
@@ -32,20 +50,115 @@ const STATUS_LABEL: Record<AgentSessionStatus, string> = {
   error: 'error',
 };
 
-/** The three states a user actually reasons about when scanning the list. */
-type SessionBucket = 'running' | 'idle' | 'exited';
+/** SPEC 1136-1144: one bucket per 3.4.13 status family, none folded away. */
+type SessionBucket = 'running' | 'needsInput' | 'idle' | 'exited' | 'error';
 
 const BUCKET_LABEL: Record<SessionBucket, string> = {
   running: 'running',
+  needsInput: 'needs input',
   idle: 'idle',
   exited: 'exited',
+  error: 'error',
 };
 
-function sessionBucket(status: AgentSessionStatus): SessionBucket {
-  if (status === 'running' || status === 'waiting_approval' || status === 'starting') {
-    return 'running';
+/** SPEC 1496-1508: every delete scope names itself and its actual impact. */
+const DELETE_SCOPE_COPY: Record<
+  DeleteScopeResult['scope'],
+  { label: string; impact: string }
+> = {
+  localIndex: {
+    label: '本機索引與 Timeline',
+    impact: '從 CozyPad 移除，無法復原',
+  },
+  process: { label: 'Agent Process（tmux session）', impact: '立即終止' },
+  remoteEvents: {
+    label: '遠端事件記錄',
+    impact: '刪除主機上的事件與紀錄，無法復原',
+  },
+  remoteAttachments: {
+    label: '遠端附件暫存',
+    impact: '刪除主機上的附件暫存，無法復原',
+  },
+  nativeConversation: {
+    label: 'Agent 原生對話',
+    impact: 'Agent 不支援刪除；會保留在 Agent 自己的儲存中',
+  },
+};
+
+const DELETE_OUTCOME_LABEL: Record<DeleteScopeResult['outcome'], string> = {
+  done: '完成',
+  skipped: '未執行',
+  unsupported: '不支援',
+  failed: '失敗',
+};
+
+/**
+ * One switch produces both the composer's disabled flag and its reason
+ * (SPEC 1362-1364) so the two can never drift apart.
+ */
+function composerAvailability(
+  session: AgentSessionSummary,
+  uploading: boolean,
+): { disabled: boolean; reason?: { text: string; nextStep?: string } } {
+  if (uploading) {
+    return { disabled: true, reason: { text: '正在傳送 Prompt 與附件…' } };
   }
-  if (status === 'exited' || status === 'error') return 'exited';
+  switch (session.status) {
+    case 'running':
+      return {
+        disabled: true,
+        reason: {
+          text: 'Agent 正在執行上一個 Prompt',
+          nextStep: '等待完成，或按 Stop 中止',
+        },
+      };
+    case 'waiting_approval':
+      return {
+        disabled: true,
+        reason: {
+          text: 'Agent 正在等待你的回覆',
+          nextStep: '在上方的 Approval／Question 卡片作答',
+        },
+      };
+    case 'starting':
+      // SPEC 207-209: the first prompt is sent while the agent is still
+      // Starting. Claude reads stdin from launch; Codex has no thread yet.
+      return session.agentKind === 'claude'
+        ? { disabled: false }
+        : {
+            disabled: true,
+            reason: {
+              text: 'Agent 正在啟動',
+              nextStep: '取得對話 ID 後即可輸入',
+            },
+          };
+    case 'disconnected':
+      return {
+        disabled: true,
+        reason: { text: '主機連線已中斷', nextStep: '重新連線後按 Resume' },
+      };
+    case 'exited':
+      return {
+        disabled: true,
+        reason: { text: 'Agent process 已結束', nextStep: '按 Resume 重新啟動' },
+      };
+    case 'error':
+      return {
+        disabled: true,
+        reason: { text: 'Agent 發生錯誤', nextStep: '按 Resume 重新啟動' },
+      };
+    default:
+      return { disabled: false };
+  }
+}
+
+function sessionBucket(status: AgentSessionStatus): SessionBucket {
+  if (status === 'running' || status === 'starting') return 'running';
+  // A session waiting on an Approval/Question hid inside "running", and a
+  // disconnected one inside "idle" looked healthy — both unfindable.
+  if (status === 'waiting_approval') return 'needsInput';
+  if (status === 'exited') return 'exited';
+  if (status === 'error' || status === 'disconnected') return 'error';
   return 'idle';
 }
 
@@ -101,15 +214,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function fileToBase64(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
-}
-
 function environmentText(installation: AgentInstallation): string | null {
   const environment = installation.environment;
   if (environment === undefined) return null;
@@ -123,7 +227,7 @@ function SessionListItem({
   session,
   status,
   active,
-  waking,
+  resuming,
   menuOpen,
   onActivate,
   onOpenMenu,
@@ -131,15 +235,14 @@ function SessionListItem({
   session: AgentSessionSummary;
   status: AgentSessionStatus;
   active: boolean;
-  waking: boolean;
+  resuming: boolean;
   menuOpen: boolean;
   onActivate(): void;
   onOpenMenu(x: number, y: number): void;
 }) {
-  const lastPointerType = useRef('mouse');
   const longPressOpened = useRef(false);
-  const longPress = useLongPress((x, y) => {
-    longPressOpened.current = true;
+  const longPress = useLongPress((x, y, gesture) => {
+    longPressOpened.current = gesture === 'longpress';
     onOpenMenu(x, y);
   });
 
@@ -149,24 +252,12 @@ function SessionListItem({
       className={`session-item${active ? ' session-item-active' : ''}`}
       aria-haspopup="menu"
       aria-expanded={menuOpen}
-      onClick={(event) => {
-        const keyboardClick = event.detail === 0;
-        const desktopClick =
-          keyboardClick || lastPointerType.current === 'mouse';
-
+      onClick={() => {
         if (!longPressOpened.current) onActivate();
-        if (desktopClick) {
-          const bounds = event.currentTarget.getBoundingClientRect();
-          onOpenMenu(
-            keyboardClick ? bounds.left + bounds.width / 2 : event.clientX,
-            keyboardClick ? bounds.bottom : event.clientY,
-          );
-        }
         longPressOpened.current = false;
       }}
       onContextMenu={longPress.onContextMenu}
       onPointerDown={(event) => {
-        lastPointerType.current = event.pointerType;
         longPressOpened.current = false;
         longPress.onPointerDown(event);
       }}
@@ -180,7 +271,7 @@ function SessionListItem({
       </span>
       <span className="session-footer">
         <span className={`chip chip-${status}`}>
-          {waking ? 'waking…' : STATUS_LABEL[status]}
+          {resuming ? 'resuming…' : STATUS_LABEL[status]}
         </span>
         <span className="session-time">{formatTime(session.updatedAt)}</span>
       </span>
@@ -201,16 +292,18 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   const [installations, setInstallations] = useState<
     Partial<Record<AgentKind, AgentInstallation>>
   >({});
-  const [selected, setSelected] = useState<Record<AgentKind, string | null>>({
-    claude: null,
-    codex: null,
-    agy: null,
-  });
+  const [sessionView, setSessionView] = useState(createAgentSessionViewState);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<
     Record<string, ComposerAttachment[]>
   >({});
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
+  const attachmentSendInFlight = useRef(new Set<string>());
+  /** SPEC 318-331: prompts whose delivery outcome is overdue, per session. */
+  const [sendUnconfirmed, setSendUnconfirmed] = useState<
+    Record<string, { text: string }>
+  >({});
+  const sendTimersRef = useRef<Record<string, number>>({});
   const [interrupting, setInterrupting] = useState<Record<string, boolean>>({});
   const [filters, setFilters] = useState<Record<AgentKind, string>>({
     claude: '',
@@ -232,6 +325,10 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   const [renameSession, setRenameSession] = useState<AgentSessionSummary | null>(
     null,
   );
+  const [deleteOutcome, setDeleteOutcome] = useState<{
+    title: string;
+    scopes: DeleteScopeResult[];
+  } | null>(null);
   const [deleteSession, setDeleteSession] = useState<AgentSessionSummary | null>(
     null,
   );
@@ -248,7 +345,7 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   /** Live status for native AGY sessions, whose record status never changes. */
   const [agyActivity, setAgyActivity] = useState<Record<string, AgentSessionStatus>>({});
   const [bucketFilter, setBucketFilter] = useState<SessionBucket | 'all'>('all');
-  const [waking, setWaking] = useState<Record<string, boolean>>({});
+  const [resuming, setResuming] = useState<Record<string, boolean>>({});
   /**
    * Bumped when a session is revived. The AGY surface is keyed on it: the old
    * surface's terminal died with the old process, so the new process needs a
@@ -256,22 +353,68 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
    */
   const [reviveNonce, setReviveNonce] = useState<Record<string, number>>({});
 
+  /* ---- Sidebar drag-to-resize (VS Code style) ---- */
+  const SIDEBAR_MIN = 180;
+  const SIDEBAR_ABSOLUTE_MAX = 600;
+  const CHAT_MIN = 360;
+  const SIDEBAR_DEFAULT = 286;
+  const SIDEBAR_STORAGE_KEY = 'cozypad-agent-sidebar-width';
+  const panesRef = useRef<HTMLDivElement>(null);
+  /** Dynamic max: leave at least CHAT_MIN for the chat column. */
+  const sidebarMax = useCallback(() => {
+    const panes = panesRef.current;
+    if (panes === null) return SIDEBAR_ABSOLUTE_MAX;
+    // 4px for the drag handle itself
+    return Math.min(SIDEBAR_ABSOLUTE_MAX, panes.clientWidth - CHAT_MIN - 4);
+  }, []);
+  const clamp = useCallback(
+    (w: number) => Math.max(SIDEBAR_MIN, Math.min(sidebarMax(), w)),
+    [sidebarMax],
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+      if (stored !== null) {
+        const parsed = Number(stored);
+        if (Number.isFinite(parsed)) return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_ABSOLUTE_MAX, parsed));
+      }
+    } catch { /* ignore */ }
+    return SIDEBAR_DEFAULT;
+  });
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onResizePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    sidebarDragRef.current = { startX: e.clientX, startWidth: sidebarWidth };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, [sidebarWidth]);
+  const onResizePointerMove = useCallback((e: React.PointerEvent) => {
+    if (sidebarDragRef.current === null) return;
+    const delta = e.clientX - sidebarDragRef.current.startX;
+    setSidebarWidth(clamp(sidebarDragRef.current.startWidth + delta));
+  }, [clamp]);
+  const onResizePointerUp = useCallback(() => {
+    if (sidebarDragRef.current === null) return;
+    sidebarDragRef.current = null;
+    try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarWidth)); } catch { /* ignore */ }
+  }, [sidebarWidth]);
+  const onResizeDoubleClick = useCallback(() => {
+    setSidebarWidth(SIDEBAR_DEFAULT);
+    try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(SIDEBAR_DEFAULT)); } catch { /* ignore */ }
+  }, []);
+
   /**
    * Sessions the user removed. A late update for one — a follow stream ending,
    * a status settling — must not resurrect the row it was deleted from.
    */
   const forgotten = useRef(new Set<string>());
+  const loadedProfileId = useRef<string | null>(null);
 
   /** Drop every trace of a session from the UI. */
   const forgetSession = useCallback((sessionId: string, agentKind: AgentKind) => {
     forgotten.current.add(sessionId);
     clearAgySessionCache(sessionId);
     setSessions((current) => current.filter((session) => session.id !== sessionId));
-    setSelected((selection) =>
-      selection[agentKind] === sessionId
-        ? { ...selection, [agentKind]: null }
-        : selection,
-    );
+    setSessionView((current) => forgetSessionView(current, agentKind, sessionId));
     const drop = <T,>(current: Record<string, T>): Record<string, T> => {
       if (!(sessionId in current)) return current;
       const next = { ...current };
@@ -289,8 +432,17 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
       return drop(current);
     });
     setUploading(drop);
+    setResuming(drop);
     setInterrupting(drop);
     setAgyActivity(drop);
+    // A pending delivery timer must not write back a key that is gone.
+    const timer = sendTimersRef.current[sessionId];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete sendTimersRef.current[sessionId];
+    }
+    setSendUnconfirmed(drop);
+    attachmentSendInFlight.current.delete(sessionId);
     setRenameSession((current) => (current?.id === sessionId ? null : current));
     setDeleteSession((current) => (current?.id === sessionId ? null : current));
     setSessionMenu((current) =>
@@ -310,13 +462,16 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
             )
           : [session, ...current];
       });
-      setSelected((current) => ({
-        ...current,
-        [session.agentKind]: current[session.agentKind] ?? session.id,
-      }));
+      if (session.status === 'exited' || session.status === 'error') {
+        setSessionView((current) =>
+          leaveEnteredSession(current, session.agentKind, session.id),
+        );
+      }
     });
     const unsubscribeTimeline = bridge.onAgentTimelineChanged(
       ({ sessionId, items }) => {
+        // SPEC 1514-1515: late events must not resurrect a deleted session.
+        if (forgotten.current.has(sessionId)) return;
         setTimelines((current) => ({ ...current, [sessionId]: items }));
       },
     );
@@ -324,6 +479,10 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
       ({ sessionId, agentKind }) => forgetSession(sessionId, agentKind),
     );
     const unsubscribeError = bridge.onAgentCommunicationError((event) => {
+      // A deletion that succeeded locally must not re-surface as red text.
+      if (event.sessionId !== undefined && forgotten.current.has(event.sessionId)) {
+        return;
+      }
       setError(event.message);
     });
     return () => {
@@ -335,33 +494,45 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   }, [bridge, forgetSession]);
 
   useEffect(() => {
-    setSelected((current) => {
-      const next = { ...current };
-      let changed = false;
-      for (const { kind } of AGENTS) {
-        if (
-          next[kind] === null ||
-          !sessions.some(
-            (session) => session.id === next[kind] && session.agentKind === kind,
-          )
-        ) {
-          const fallback = sessions.find((session) => session.agentKind === kind)?.id ?? null;
-          if (next[kind] !== fallback) {
-            next[kind] = fallback;
-            changed = true;
-          }
-        }
-      }
-      return changed ? next : current;
-    });
+    setSessionView((current) => reconcileSessionView(current, sessions));
   }, [sessions]);
 
   useEffect(() => {
-    if (!connected || profileId === null) {
+    if (profileId === null) {
       setLoading(false);
       return;
     }
     let cancelled = false;
+    if (loadedProfileId.current !== profileId) {
+      loadedProfileId.current = profileId;
+      setSessions([]);
+      setTimelines({});
+      setSessionView(createAgentSessionViewState());
+    }
+    if (!connected) {
+      // SPEC 256-262/1512: saved sessions are previewable and manageable
+      // without a process — and without a connection. The store lives on
+      // this side; only agent detection needs the host.
+      setLoading(true);
+      void bridge
+        .listAgentSessions({ profileId })
+        .then((bundles) => {
+          if (cancelled) return;
+          setSessions(bundles.map((bundle) => bundle.session));
+          setTimelines(
+            Object.fromEntries(
+              bundles.map((bundle) => [bundle.session.id, bundle.items]),
+            ),
+          );
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     setLoading(true);
     setError(null);
     void Promise.all([
@@ -398,20 +569,6 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
             ]),
           ),
         );
-        setSelected((current) => {
-          const next = { ...current };
-          for (const { kind } of AGENTS) {
-            if (
-              next[kind] === null ||
-              !bundles.some((bundle) => bundle.session.id === next[kind])
-            ) {
-              next[kind] =
-                bundles.find((bundle) => bundle.session.agentKind === kind)?.session
-                  .id ?? null;
-            }
-          }
-          return next;
-        });
       })
       .catch((loadError: unknown) => {
         if (!cancelled) setError(errorText(loadError));
@@ -426,13 +583,23 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
 
   /**
    * A native AGY session's stored status is written once at launch, so the
-   * only thing that knows whether it is thinking right now is the live screen.
+   * only thing that knows whether it is thinking right now is the live
+   * screen. But the service is the authority on liveness: once it says the
+   * process is disconnected/exited/errored, a stale screen-derived guess —
+   * the surface unmounted long ago — must not resurrect it as "ready".
    */
   const liveStatus = useCallback(
-    (session: AgentSessionSummary): AgentSessionStatus =>
-      session.agentKind === 'agy'
-        ? (agyActivity[session.id] ?? session.status)
-        : session.status,
+    (session: AgentSessionSummary): AgentSessionStatus => {
+      if (session.agentKind !== 'agy') return session.status;
+      if (
+        session.status === 'disconnected' ||
+        session.status === 'exited' ||
+        session.status === 'error'
+      ) {
+        return session.status;
+      }
+      return agyActivity[session.id] ?? session.status;
+    },
     [agyActivity],
   );
 
@@ -453,7 +620,13 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   // Counted before the bucket filter narrows the list, so every chip shows
   // what it would reveal rather than what currently survives it.
   const bucketCounts = useMemo(() => {
-    const counts: Record<SessionBucket, number> = { running: 0, idle: 0, exited: 0 };
+    const counts: Record<SessionBucket, number> = {
+      running: 0,
+      needsInput: 0,
+      idle: 0,
+      exited: 0,
+      error: 0,
+    };
     for (const session of searchedSessions) {
       counts[sessionBucket(liveStatus(session))] += 1;
     }
@@ -469,9 +642,12 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     [searchedSessions, bucketFilter, liveStatus],
   );
 
-  const selectedSessionId = selected[agent];
+  const selectedSessionId = sessionView.selected[agent];
   const selectedSession =
     sessions.find((session) => session.id === selectedSessionId) ?? null;
+  const selectedSessionEntered =
+    selectedSession !== null &&
+    sessionView.entered[agent] === selectedSession.id;
   const timeline = selectedSessionId ? (timelines[selectedSessionId] ?? []) : [];
   const promptHistory = useMemo(
     () =>
@@ -483,6 +659,19 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
         .map((item) => item.text),
     [timeline],
   );
+  // SPEC 1225-1226 (display half): the header always states usage — a
+  // figure when the agent has reported one, 「用量未知」 otherwise, never
+  // silence. AGY has its own statusline for this.
+  const lastUsage = useMemo(
+    () =>
+      [...timeline]
+        .reverse()
+        .find(
+          (item): item is Extract<ChatItem, { kind: 'usage' }> =>
+            item.kind === 'usage',
+        ),
+    [timeline],
+  );
   const installation = installations[agent];
   const canCreate =
     connected &&
@@ -491,12 +680,38 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     installation.installationScope === 'user' &&
     (agent === 'agy' || installation.supportsStructuredOutput) &&
     installation.launchModes.length > 0;
+  const agentUnavailable =
+    installation !== undefined &&
+    (!installation.installed ||
+      (agent !== 'agy' && !installation.supportsStructuredOutput));
+
+  // The screen-derived AGY activity dies with the surface: keeping the last
+  // guess after leaving the session let it override every later status the
+  // service reported. A revive remount keeps the same entered id, so this
+  // only clears on a genuine leave.
+  const enteredAgySessionId =
+    agent === 'agy' && selectedSessionEntered ? (selectedSession?.id ?? null) : null;
+  const previousEnteredAgyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousEnteredAgyRef.current;
+    if (previous !== null && previous !== enteredAgySessionId) {
+      setAgyActivity((current) => {
+        if (!(previous in current)) return current;
+        const next = { ...current };
+        delete next[previous];
+        return next;
+      });
+    }
+    previousEnteredAgyRef.current = enteredAgySessionId;
+  }, [enteredAgySessionId]);
 
   const badge = (kind: AgentKind) => {
     const mine = sessions.filter((session) => session.agentKind === kind);
+    // Same source as the list rows; reading raw session.status here made the
+    // tab dot and the list disagree about the same session.
     return {
-      waiting: mine.some((session) => session.status === 'waiting_approval'),
-      running: mine.some((session) => session.status === 'running'),
+      waiting: mine.some((session) => liveStatus(session) === 'waiting_approval'),
+      running: mine.some((session) => liveStatus(session) === 'running'),
       unread: mine.reduce((sum, session) => sum + session.unread, 0),
     };
   };
@@ -559,10 +774,18 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
         ...current,
         [bundle.session.id]: bundle.items,
       }));
-      setSelected((current) => ({
-        ...current,
-        [bundle.session.agentKind]: bundle.session.id,
-      }));
+      setSessionView((current) => {
+        const selected = selectSessionForPreview(
+          current,
+          bundle.session.agentKind,
+          bundle.session.id,
+        );
+        return enterSelectedSession(
+          selected,
+          bundle.session.agentKind,
+          bundle.session.id,
+        );
+      });
       setCreateOpen(false);
     } catch (createError) {
       setError(errorText(createError));
@@ -592,15 +815,25 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     if (deleteSession === null) return;
     const sessionId = deleteSession.id;
     const agentKind = deleteSession.agentKind;
+    const title = deleteSession.title;
     setBusy(true);
     setError(null);
     try {
-      await bridge.deleteAgentSession({ sessionId });
+      const result = await bridge.deleteAgentSession({ sessionId });
       // Drop it from the UI here rather than waiting for the change event to
       // come back. Until the surface unmounts it keeps talking about a session
       // the host has already forgotten, which surfaced as "unknown agent
       // session" right after a delete that had in fact worked.
       forgetSession(sessionId, agentKind);
+      // SPEC 1509-1511: a partial failure must not present as complete —
+      // keep the per-scope report on screen when anything was left behind.
+      if (
+        result.scopes.some(
+          (scope) => scope.outcome === 'failed' || scope.outcome === 'skipped',
+        )
+      ) {
+        setDeleteOutcome({ title, scopes: result.scopes });
+      }
     } catch (deleteError) {
       setError(errorText(deleteError));
     } finally {
@@ -608,25 +841,271 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     }
   };
 
+  const setTrayItemStates = (
+    sessionId: string,
+    ids: ReadonlySet<string>,
+    state: ComposerAttachment['state'],
+    errorMessage?: string,
+  ) => {
+    setAttachments((current) => ({
+      ...current,
+      [sessionId]: (current[sessionId] ?? []).map((attachment) =>
+        ids.has(attachment.id)
+          ? {
+              ...attachment,
+              state,
+              ...(errorMessage === undefined ? {} : { errorMessage }),
+            }
+          : attachment,
+      ),
+    }));
+  };
+
   const sendMessage = async (text: string) => {
     if (selectedSessionId === null) return;
-    const pending = attachments[selectedSessionId] ?? [];
-    setDrafts((current) => ({ ...current, [selectedSessionId]: '' }));
+    const sessionId = selectedSessionId;
+    if (attachmentSendInFlight.current.has(sessionId)) return;
+    // SPEC 1360: a prompt whose delivery is still unconfirmed blocks new
+    // sends until the user queries or explicitly resends.
+    if (sendUnconfirmed[sessionId] !== undefined) {
+      setError(
+        '上一個 Prompt 的送達結果尚未確認——先用輸入區上方的「再次查詢」或「明確重送」。',
+      );
+      return;
+    }
+    const pending = attachments[sessionId] ?? [];
+    attachmentSendInFlight.current.add(sessionId);
+    // `uploading` now means exactly "attachments are being processed": a
+    // text-only send no longer flashes Packaging on the Attach button.
+    if (pending.length > 0) {
+      setUploading((current) => ({ ...current, [sessionId]: true }));
+    }
     setError(null);
+    // SPEC 318-323: when neither success nor failure comes back in time, the
+    // prompt becomes explicitly unconfirmed instead of leaving a composer
+    // locked forever on a hung IPC with no escape.
+    const unconfirmedTimer = window.setTimeout(() => {
+      setSendUnconfirmed((current) => ({ ...current, [sessionId]: { text } }));
+    }, 20_000);
+    sendTimersRef.current[sessionId] = unconfirmedTimer;
     try {
+      const buffered = pending.filter(
+        (attachment): attachment is ComposerAttachment & { file: File } =>
+          attachment.file !== undefined,
+      );
+      let ready = pending;
+      if (buffered.length > 0) {
+        const bufferedIds = new Set(buffered.map((attachment) => attachment.id));
+        setTrayItemStates(sessionId, bufferedIds, 'packaging');
+        const encoded = await Promise.all(
+          buffered.map(async (attachment) => ({
+            name: attachment.name,
+            mediaType: attachment.mediaType,
+            dataBase64: await attachmentFileToBase64(attachment.file),
+          })),
+        );
+        setTrayItemStates(sessionId, bufferedIds, 'transferring');
+        const uploaded = await bridge.uploadAgentAttachments({
+          sessionId,
+          attachments: encoded,
+        });
+        setTrayItemStates(sessionId, bufferedIds, 'verifying');
+        if (uploaded.length !== buffered.length) {
+          throw new Error('The attachment batch returned an incomplete result');
+        }
+        const replacements = new Map(
+          buffered.map((attachment, index) => [attachment.id, uploaded[index]!]),
+        );
+        ready = pending.map((attachment) => {
+          const uploadedAttachment = replacements.get(attachment.id);
+          if (uploadedAttachment === undefined) return attachment;
+          return {
+            id: uploadedAttachment.id,
+            name: uploadedAttachment.name,
+            mediaType: uploadedAttachment.mediaType,
+            sizeBytes: uploadedAttachment.sizeBytes,
+            state: 'ready' as const,
+            remotePath: uploadedAttachment.remotePath,
+            ...(attachment.previewUrl === undefined
+              ? {}
+              : { previewUrl: attachment.previewUrl }),
+          };
+        });
+        setAttachments((current) => {
+          const readyByBufferedId = new Map(
+            pending.map((attachment, index) => [attachment.id, ready[index]!]),
+          );
+          return {
+            ...current,
+            [sessionId]: (current[sessionId] ?? []).map(
+              (attachment) => readyByBufferedId.get(attachment.id) ?? attachment,
+            ),
+          };
+        });
+      }
       await bridge.sendAgentMessage({
-        sessionId: selectedSessionId,
+        sessionId,
         text,
-        attachmentIds: pending.map((attachment) => attachment.id),
+        attachmentIds: ready.map((attachment) => attachment.id),
       });
       pending.forEach((attachment) => {
         if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl);
       });
-      setAttachments((current) => ({ ...current, [selectedSessionId]: [] }));
+      const sentLocalIds = new Set(pending.map((attachment) => attachment.id));
+      const sentRemoteIds = new Set(ready.map((attachment) => attachment.id));
+      setAttachments((current) => ({
+        ...current,
+        [sessionId]: (current[sessionId] ?? []).filter(
+          (attachment) =>
+            !sentLocalIds.has(attachment.id) && !sentRemoteIds.has(attachment.id),
+        ),
+      }));
+      setDrafts((current) =>
+        (current[sessionId] ?? '').trim() === text
+          ? { ...current, [sessionId]: '' }
+          : current,
+      );
     } catch (sendError) {
-      setDrafts((current) => ({ ...current, [selectedSessionId]: text }));
+      // SPEC 1406/1415: failure is per item — whatever never reached the
+      // host is marked error (removable, retryable); draft and tray stay.
+      const failedIds = new Set(
+        (attachments[sessionId] ?? [])
+          .filter((attachment) => attachment.file !== undefined)
+          .map((attachment) => attachment.id),
+      );
+      if (failedIds.size > 0) {
+        setTrayItemStates(sessionId, failedIds, 'error', errorText(sendError));
+      }
       setError(errorText(sendError));
+    } finally {
+      attachmentSendInFlight.current.delete(sessionId);
+      window.clearTimeout(unconfirmedTimer);
+      delete sendTimersRef.current[sessionId];
+      setSendUnconfirmed((current) => {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      setUploading((current) =>
+        current[sessionId] === true ? { ...current, [sessionId]: false } : current,
+      );
     }
+  };
+
+  /** SPEC 1415: one failed item retries alone, without re-sending the rest. */
+  const retryAttachment = async (attachmentId: string) => {
+    if (selectedSessionId === null) return;
+    const sessionId = selectedSessionId;
+    const target = (attachments[sessionId] ?? []).find(
+      (attachment) => attachment.id === attachmentId,
+    );
+    if (target?.file === undefined) return;
+    setError(null);
+    setTrayItemStates(sessionId, new Set([attachmentId]), 'packaging');
+    try {
+      const dataBase64 = await attachmentFileToBase64(target.file);
+      setTrayItemStates(sessionId, new Set([attachmentId]), 'transferring');
+      const uploaded = await bridge.uploadAgentAttachments({
+        sessionId,
+        attachments: [
+          { name: target.name, mediaType: target.mediaType, dataBase64 },
+        ],
+      });
+      const remote = uploaded[0];
+      if (remote === undefined) {
+        throw new Error('The attachment upload returned no result');
+      }
+      setAttachments((current) => ({
+        ...current,
+        [sessionId]: (current[sessionId] ?? []).map((attachment) =>
+          attachment.id === attachmentId
+            ? {
+                id: remote.id,
+                name: remote.name,
+                mediaType: remote.mediaType,
+                sizeBytes: remote.sizeBytes,
+                state: 'ready' as const,
+                remotePath: remote.remotePath,
+                ...(attachment.previewUrl === undefined
+                  ? {}
+                  : { previewUrl: attachment.previewUrl }),
+              }
+            : attachment,
+        ),
+      }));
+    } catch (retryError) {
+      setTrayItemStates(
+        sessionId,
+        new Set([attachmentId]),
+        'error',
+        errorText(retryError),
+      );
+      setError(errorText(retryError));
+    }
+  };
+
+  /**
+   * SPEC 325-331: query the host for the actual outcome of an unconfirmed
+   * prompt. Delivered → adopt the host's timeline; not delivered → the
+   * draft and tray were never cleared, so they are simply usable again.
+   */
+  const verifyPendingSend = async (sessionId: string, text: string) => {
+    if (profileId === null) return;
+    setError(null);
+    try {
+      const bundles = await bridge.listAgentSessions({ profileId });
+      const bundle = bundles.find(
+        (candidate) => candidate.session.id === sessionId,
+      );
+      if (bundle !== undefined) {
+        setSessions((current) =>
+          current.map((candidate) =>
+            candidate.id === sessionId ? bundle.session : candidate,
+          ),
+        );
+        setTimelines((current) => ({ ...current, [sessionId]: bundle.items }));
+      }
+      const delivered =
+        bundle?.items.some(
+          (item) =>
+            item.kind === 'message' && item.role === 'user' && item.text === text,
+        ) === true;
+      setSendUnconfirmed((current) => {
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      attachmentSendInFlight.current.delete(sessionId);
+      setUploading((current) =>
+        current[sessionId] === true ? { ...current, [sessionId]: false } : current,
+      );
+      if (delivered) {
+        setDrafts((current) =>
+          (current[sessionId] ?? '').trim() === text
+            ? { ...current, [sessionId]: '' }
+            : current,
+        );
+      } else {
+        setError('查詢結果：這個 Prompt 未送達。草稿與附件已保留，可再次送出。');
+      }
+    } catch (queryError) {
+      setError(errorText(queryError));
+    }
+  };
+
+  /** SPEC 331: resending is always the user's explicit choice, never automatic. */
+  const resendPendingSend = (sessionId: string, text: string) => {
+    setSendUnconfirmed((current) => {
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+    attachmentSendInFlight.current.delete(sessionId);
+    setUploading((current) =>
+      current[sessionId] === true ? { ...current, [sessionId]: false } : current,
+    );
+    void sendMessage(text);
   };
 
   const stopSession = async (sessionId: string) => {
@@ -679,48 +1158,36 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     );
   };
 
-  const attachFiles = async (files: File[]) => {
-    if (selectedSessionId === null || files.length === 0) return;
-    const sessionId = selectedSessionId;
-    const remaining = Math.max(0, 10 - (attachments[sessionId]?.length ?? 0));
-    const selectedFiles = files.slice(0, remaining);
-    if (selectedFiles.length === 0) return;
-    setUploading((current) => ({ ...current, [sessionId]: true }));
-    setError(null);
-    try {
-      for (const file of selectedFiles) {
-        if (file.size > MAX_AGENT_ATTACHMENT_BYTES) {
-          throw new Error(
-            `${file.name} is too large (${file.size} bytes; limit ${MAX_AGENT_ATTACHMENT_BYTES} bytes)`,
-          );
-        }
-        const uploaded = await bridge.uploadAgentAttachment({
-          sessionId,
-          name: file.name,
-          mediaType: file.type || 'application/octet-stream',
-          dataBase64: await fileToBase64(file),
-        });
-        const previewUrl = file.type.startsWith('image/')
-          ? URL.createObjectURL(file)
-          : undefined;
-        setAttachments((current) => ({
-          ...current,
-          [sessionId]: [
-            ...(current[sessionId] ?? []),
-            {
-              id: uploaded.id,
-              name: uploaded.name,
-              mediaType: uploaded.mediaType,
-              sizeBytes: uploaded.sizeBytes,
-              ...(previewUrl === undefined ? {} : { previewUrl }),
-            },
-          ],
-        }));
-      }
-    } catch (attachmentError) {
-      setError(errorText(attachmentError));
-    } finally {
-      setUploading((current) => ({ ...current, [sessionId]: false }));
+  const attachFiles = (sessionId: string, files: File[]) => {
+    if (files.length === 0) return;
+    const buffered = bufferAttachmentFiles(
+      files,
+      attachments[sessionId]?.length ?? 0,
+    );
+    if (buffered.attachments.length === 0) {
+      setError(
+        buffered.oversizedCount > 0
+          ? `${buffered.oversizedCount} attachment(s) exceeded the 20 MB limit.`
+          : `This conversation already has ${MAX_AGENT_ATTACHMENTS} buffered attachments.`,
+      );
+      return;
+    }
+    setAttachments((current) => ({
+      ...current,
+      [sessionId]: [...(current[sessionId] ?? []), ...buffered.attachments],
+    }));
+    if (buffered.oversizedCount > 0 || buffered.limitCount > 0) {
+      const messages = [
+        buffered.oversizedCount > 0
+          ? `${buffered.oversizedCount} attachment(s) exceeded the 20 MB limit`
+          : '',
+        buffered.limitCount > 0
+          ? `${buffered.limitCount} attachment(s) exceeded the ${MAX_AGENT_ATTACHMENTS}-file limit`
+          : '',
+      ].filter(Boolean);
+      setError(`${messages.join('; ')}. The remaining files are buffered locally.`);
+    } else {
+      setError(null);
     }
   };
 
@@ -753,6 +1220,19 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     }
   };
 
+  const declineQuestion = async (itemId: string) => {
+    if (selectedSessionId === null) return;
+    setError(null);
+    try {
+      await bridge.declineAgentQuestion({
+        sessionId: selectedSessionId,
+        itemId,
+      });
+    } catch (declineError) {
+      setError(errorText(declineError));
+    }
+  };
+
   const resolveApproval = async (
     itemId: string,
     resolution: 'allowed' | 'denied',
@@ -770,31 +1250,63 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     }
   };
 
-  /**
-   * Selecting a dead session is the whole gesture: nobody clicks an exited
-   * conversation to admire it, so the click relaunches its agent in place.
-   */
-  const wakeSession = async (sessionId: string) => {
-    if (waking[sessionId] === true) return;
-    setWaking((current) => ({ ...current, [sessionId]: true }));
+  const resumeSession = async (session: AgentSessionSummary) => {
+    const sessionId = session.id;
+    if (resuming[sessionId] === true) return;
+    if (!connected) {
+      setError('尚未連線——連線到主機後才能進入這個 session；歷史內容仍可預覽。');
+      return;
+    }
+    // An unavailable agent cannot host a process; the session list and its
+    // previews stay usable, only entering is refused — with the reason.
+    const sessionInstallation = installations[session.agentKind];
+    if (
+      sessionInstallation === undefined ||
+      !sessionInstallation.installed ||
+      (session.agentKind !== 'agy' &&
+        !sessionInstallation.supportsStructuredOutput)
+    ) {
+      setError(
+        `${AGENTS.find((entry) => entry.kind === session.agentKind)?.label ?? session.agentKind} 尚不可用，無法進入這個 session；歷史內容仍可預覽與管理。`,
+      );
+      return;
+    }
+    const relaunching = session.status === 'exited' || session.status === 'error';
+    setResuming((current) => ({ ...current, [sessionId]: true }));
+    setError(null);
     try {
-      await bridge.reviveAgentSession({ sessionId });
-      // The AGY surface must remount to attach to the new process's console,
-      // and its cached "exited" reading belongs to the old one.
-      setAgyActivity((current) => {
-        if (!(sessionId in current)) return current;
-        const next = { ...current };
-        delete next[sessionId];
-        return next;
-      });
-      setReviveNonce((current) => ({
-        ...current,
-        [sessionId]: (current[sessionId] ?? 0) + 1,
-      }));
+      const bundle = await bridge.reviveAgentSession({ sessionId });
+      if (bundle.session.status === 'disconnected') {
+        throw new Error('This session is still disconnected; reconnect its machine first');
+      }
+      setSessions((current) =>
+        current.map((candidate) =>
+          candidate.id === sessionId ? bundle.session : candidate,
+        ),
+      );
+      setTimelines((current) => ({ ...current, [sessionId]: bundle.items }));
+      setSessionView((current) =>
+        enterSelectedSession(current, session.agentKind, sessionId),
+      );
+      if (relaunching) {
+        // A revived AGY process needs a fresh projected surface; cached screen
+        // state belongs to the process that exited.
+        clearAgyRuntimeCache(sessionId);
+        setAgyActivity((current) => {
+          if (!(sessionId in current)) return current;
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
+        setReviveNonce((current) => ({
+          ...current,
+          [sessionId]: (current[sessionId] ?? 0) + 1,
+        }));
+      }
     } catch (reviveError) {
       setError(errorText(reviveError));
     } finally {
-      setWaking((current) => {
+      setResuming((current) => {
         const next = { ...current };
         delete next[sessionId];
         return next;
@@ -841,12 +1353,7 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
         </div>
       ) : null}
 
-      {!connected ? (
-        <div className="agent-setup">
-          <h2>先連線到遠端主機</h2>
-          <p>Agent 對話會在遠端指定路徑建立 tmux session，並立刻啟動 Agent。</p>
-        </div>
-      ) : loading || installation === undefined ? (
+      {connected && (loading || installation === undefined) ? (
         <div className="agent-setup">
           <h2>正在偵測 {AGENTS.find((entry) => entry.kind === agent)?.label}</h2>
           <p>
@@ -855,23 +1362,83 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               : '確認遠端執行檔與 bidirectional stream-json 能力…'}
           </p>
         </div>
-      ) : !installation.installed ||
-        (agent !== 'agy' && !installation.supportsStructuredOutput) ? (
-        <div className="agent-setup">
-          <h2>{AGENTS.find((entry) => entry.kind === agent)?.label} 尚不可用</h2>
-          <p>{installation.detail ?? '遠端 Agent 或 structured protocol 不可用。'}</p>
-          {environmentText(installation) !== null ? (
-            <p className="hint">
-              Remote: {environmentText(installation)}
-              {installation.environment?.loginShell === undefined
-                ? ''
-                : ` · shell ${installation.environment.loginShell}`}
-            </p>
-          ) : null}
-        </div>
       ) : (
-        <div className="agent-panes">
-          <aside className="session-sidebar">
+        <div className="agent-panes" ref={panesRef}>
+          <aside className="session-sidebar" style={{ width: clamp(sidebarWidth) }}>
+            {/*
+              SPEC 1057/256-262: neither a missing connection nor an
+              unavailable agent may hide the workspace — saved sessions
+              preview without a process. The banner names the reason;
+              entering and creating stay gated elsewhere.
+            */}
+            {!connected ? (
+              <div className="agent-availability-banner" role="status">
+                <strong>尚未連線</strong>
+                <p>
+                  已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入
+                  或新建。Agent 對話會在遠端指定路徑建立 tmux session。
+                </p>
+              </div>
+            ) : agentUnavailable ? (
+              <div className="agent-availability-banner" role="status">
+                <strong>
+                  {AGENTS.find((entry) => entry.kind === agent)?.label} 尚不可用
+                </strong>
+                <p>
+                  {installation.detail ??
+                    '遠端 Agent 或 structured protocol 不可用。'}
+                </p>
+                {environmentText(installation) !== null ? (
+                  <p className="hint">
+                    Remote: {environmentText(installation)}
+                    {installation.environment?.loginShell === undefined
+                      ? ''
+                      : ` · shell ${installation.environment.loginShell}`}
+                  </p>
+                ) : null}
+                <dl className="agent-capabilities">
+                  <dt>安裝</dt>
+                  <dd>
+                    {installation.installed
+                      ? `已安裝 ${installation.version ?? '（版本未知）'}`
+                      : '未偵測到'}
+                  </dd>
+                  <dt>Structured Chat</dt>
+                  <dd>{installation.supportsStructuredOutput ? '可用' : '不可用'}</dd>
+                  <dt>Resume</dt>
+                  <dd>
+                    {installation.supportsResume
+                      ? '延續原生對話'
+                      : installation.resumeStartsNewConversation === true
+                        ? '以新原生對話重啟'
+                        : installation.installed
+                          ? '不可用'
+                          : '未知'}
+                  </dd>
+                  <dt>Approval</dt>
+                  <dd>
+                    {installation.supportsInteractiveApproval ? '可用' : '不可用'}
+                  </dd>
+                  <dt>Skip Permissions</dt>
+                  <dd>
+                    {installation.supportsDangerouslySkipPermissions === undefined
+                      ? '未知'
+                      : installation.supportsDangerouslySkipPermissions
+                        ? '可用'
+                        : '不可用'}
+                  </dd>
+                  <dt>Launch Modes</dt>
+                  <dd>
+                    {installation.launchModes.length > 0
+                      ? installation.launchModes.map((mode) => mode.label).join('、')
+                      : '無'}
+                  </dd>
+                </dl>
+                <p className="hint">
+                  既有 sessions 仍可瀏覽、預覽與管理；進入與新建已停用。
+                </p>
+              </div>
+            ) : null}
             <input
               className="session-filter"
               placeholder="搜尋 sessions…"
@@ -884,7 +1451,7 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               }
             />
             <div className="session-bucket-filter" role="radiogroup" aria-label="Session status filter">
-              {(['all', 'running', 'idle', 'exited'] as const).map((bucket) => (
+              {(['all', 'running', 'needsInput', 'idle', 'exited', 'error'] as const).map((bucket) => (
                 <button
                   key={bucket}
                   role="radio"
@@ -906,23 +1473,22 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
             <div className="session-list">
               {agentSessions.map((session) => {
                 const status = liveStatus(session);
-                const bucket = sessionBucket(status);
                 return (
                   <SessionListItem
                     key={session.id}
                     session={session}
                     status={status}
                     active={session.id === selectedSessionId}
-                    waking={waking[session.id] === true}
+                    resuming={resuming[session.id] === true}
                     menuOpen={sessionMenu?.session.id === session.id}
                     onActivate={() => {
-                      setSelected((current) => ({
-                        ...current,
-                        [agent]: session.id,
-                      }));
-                      if (bucket === 'exited' && connected) {
-                        void wakeSession(session.id);
-                      }
+                      setSessionView((current) =>
+                        selectSessionForPreview(
+                          current,
+                          session.agentKind,
+                          session.id,
+                        ),
+                      );
                     }}
                     onOpenMenu={(x, y) => setSessionMenu({ session, x, y })}
                   />
@@ -944,7 +1510,15 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               ＋ New session
             </button>
           </aside>
-
+          {/* VS Code-style drag handle */}
+          <div
+            className="pane-resize-handle"
+            onPointerDown={onResizePointerDown}
+            onPointerMove={onResizePointerMove}
+            onPointerUp={onResizePointerUp}
+            onDoubleClick={onResizeDoubleClick}
+            title="拖曳調整寬度，雙擊恢復預設"
+          />
           <div className="chat-column">
             {selectedSession ? (
               <>
@@ -957,24 +1531,95 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                       ) : null}
                     </span>
                     <span className="mono">{selectedSession.cwd}</span>
+                    {/* SPEC 3.4.5: version, binding, and whether the last
+                        Resume continued the native conversation. */}
+                    <span className="chat-session-meta">
+                      {installation?.version === undefined
+                        ? ''
+                        : `${AGENTS.find((entry) => entry.kind === selectedSession.agentKind)?.label ?? ''} ${installation.version} · `}
+                      {selectedSession.conversationBound === true
+                        ? '已綁定原生對話'
+                        : '未綁定原生對話'}
+                      {selectedSession.resumeContinuity === undefined
+                        ? ''
+                        : selectedSession.resumeContinuity === 'continued'
+                          ? ' · 本次 Resume 延續原生對話'
+                          : selectedSession.resumeContinuity === 'assumed'
+                            ? ' · 本次 Resume 接回的對話未經確認'
+                            : ' · 本次 Resume 開啟新原生對話'}
+                      {selectedSession.agentKind === 'agy'
+                        ? ''
+                        : lastUsage === undefined
+                          ? ' · 用量未知'
+                          : ` · 用量 in ${lastUsage.inputTokens.toLocaleString()} / out ${lastUsage.outputTokens.toLocaleString()} tokens`}
+                    </span>
                   </div>
-                  {selectedSession.agentKind !== 'agy' &&
-                  (selectedSession.status === 'running' ||
-                    selectedSession.status === 'waiting_approval') ? (
+                  {selectedSessionEntered ? (
                     <div className="chat-session-actions">
+                      {selectedSession.agentKind !== 'agy' &&
+                      (selectedSession.status === 'running' ||
+                        selectedSession.status === 'waiting_approval') ? (
+                        <button
+                          className="ghost"
+                          disabled={interrupting[selectedSession.id] === true}
+                          onClick={() => void stopSession(selectedSession.id)}
+                        >
+                          {interrupting[selectedSession.id] === true
+                            ? 'Stopping…'
+                            : 'Stop'}
+                        </button>
+                      ) : null}
                       <button
                         className="ghost"
-                        disabled={interrupting[selectedSession.id] === true}
-                        onClick={() => void stopSession(selectedSession.id)}
+                        onClick={() =>
+                          setSessionView((current) =>
+                            leaveEnteredSession(
+                              current,
+                              selectedSession.agentKind,
+                              selectedSession.id,
+                            )
+                          )
+                        }
                       >
-                        {interrupting[selectedSession.id] === true
-                          ? 'Stopping…'
-                          : 'Stop'}
+                        Leave
                       </button>
                     </div>
                   ) : null}
                 </div>
-                {selectedSession.agentKind === 'agy' ? (
+                {!selectedSessionEntered ? (
+                  <>
+                    {selectedSession.agentKind === 'agy' ? (
+                      <AgyTranscriptPreview
+                        key={selectedSession.id}
+                        sessionId={selectedSession.id}
+                        cwd={selectedSession.cwd}
+                      />
+                    ) : (
+                      <ChatTimeline
+                        sessionId={selectedSession.id}
+                        items={timeline}
+                        interactive={false}
+                        onResolveApproval={() => undefined}
+                        onAnswerQuestion={() => undefined}
+                      />
+                    )}
+                    <div className="session-resume-bar">
+                      <span>
+                        已選取但尚未進入。按 Resume 後才會連回這個 session，並顯示訊息與附件輸入區。
+                      </span>
+                      <span className={`chip chip-${liveStatus(selectedSession)}`}>
+                        {STATUS_LABEL[liveStatus(selectedSession)]}
+                      </span>
+                      <button
+                        className="composer-send"
+                        disabled={!connected || resuming[selectedSession.id] === true}
+                        onClick={() => void resumeSession(selectedSession)}
+                      >
+                        {resuming[selectedSession.id] === true ? 'Resuming…' : 'Resume'}
+                      </button>
+                    </div>
+                  </>
+                ) : selectedSession.agentKind === 'agy' ? (
                   <AgyCliSurface
                     key={`${selectedSession.id}:${reviveNonce[selectedSession.id] ?? 0}`}
                     sessionId={selectedSession.id}
@@ -982,27 +1627,72 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                     sessionStatus={selectedSession.status}
                     stopping={interrupting[selectedSession.id] === true}
                     onInterrupt={() => stopSession(selectedSession.id)}
-                    onNotify={(message) => setError(message)}
-                    onStatusChange={(status) =>
+                    onNotify={(message) => {
+                      // A surface unmounting after its session was deleted
+                      // must not resurface as an error (SPEC 1515).
+                      if (forgotten.current.has(selectedSession.id)) return;
+                      setError(message);
+                    }}
+                    onStatusChange={(status) => {
                       setAgyActivity((current) =>
                         current[selectedSession.id] === status
                           ? current
                           : { ...current, [selectedSession.id]: status },
-                      )
-                    }
+                      );
+                      if (status === 'exited' || status === 'error') {
+                        setSessionView((current) =>
+                          leaveEnteredSession(
+                            current,
+                            selectedSession.agentKind,
+                            selectedSession.id,
+                          ),
+                        );
+                      }
+                    }}
                   />
                 ) : (
                   <>
                     <ChatTimeline
                       sessionId={selectedSession.id}
                       items={timeline}
+                      interactive
                       onResolveApproval={(itemId, resolution) =>
                         void resolveApproval(itemId, resolution)
                       }
                       onAnswerQuestion={(itemId, optionIndex) =>
                         void answerQuestion(itemId, optionIndex)
                       }
+                      onDeclineQuestion={(itemId) => void declineQuestion(itemId)}
                     />
+                    {sendUnconfirmed[selectedSession.id] !== undefined ? (
+                      // SPEC 325-331: an overdue prompt is a question, not a
+                      // spinner — query the real outcome or resend on purpose.
+                      <div className="send-unconfirmed" role="status">
+                        <span>
+                          Prompt 已送出但遲未確認送達；可查詢實際結果，或明確重送。
+                        </span>
+                        <button
+                          onClick={() =>
+                            void verifyPendingSend(
+                              selectedSession.id,
+                              sendUnconfirmed[selectedSession.id]!.text,
+                            )
+                          }
+                        >
+                          再次查詢
+                        </button>
+                        <button
+                          onClick={() =>
+                            resendPendingSend(
+                              selectedSession.id,
+                              sendUnconfirmed[selectedSession.id]!.text,
+                            )
+                          }
+                        >
+                          明確重送
+                        </button>
+                      </div>
+                    ) : null}
                     <ChatComposer
                       key={selectedSession.id}
                       agentLabel={
@@ -1021,6 +1711,10 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                           selectedSession.slashCommandBehaviors?.[
                             name.replace(/^\/+/, '').toLowerCase()
                           ],
+                        owner:
+                          selectedSession.slashCommandOwners?.[
+                            name.replace(/^\/+/, '').toLowerCase()
+                          ],
                       }))}
                       attachments={attachments[selectedSession.id] ?? []}
                       uploading={uploading[selectedSession.id] === true}
@@ -1030,10 +1724,16 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                       }
                       stopping={interrupting[selectedSession.id] === true}
                       disabled={
-                        selectedSession.status === 'running' ||
-                        selectedSession.status === 'waiting_approval' ||
-                        selectedSession.status === 'starting' ||
-                        selectedSession.status === 'exited'
+                        composerAvailability(
+                          selectedSession,
+                          uploading[selectedSession.id] === true,
+                        ).disabled
+                      }
+                      disabledReason={
+                        composerAvailability(
+                          selectedSession,
+                          uploading[selectedSession.id] === true,
+                        ).reason
                       }
                       onChange={(value) =>
                         setDrafts((current) => ({
@@ -1041,7 +1741,8 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                           [selectedSession.id]: value,
                         }))
                       }
-                      onAttach={(files) => void attachFiles(files)}
+                      onAttach={(files) => attachFiles(selectedSession.id, files)}
+                      onRetryAttachment={(id) => void retryAttachment(id)}
                       onRemoveAttachment={(attachmentId) =>
                         removeAttachment(selectedSession.id, attachmentId)
                       }
@@ -1054,7 +1755,7 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               </>
             ) : (
               <div className="placeholder">
-                <p>新增或選擇一個對話。</p>
+                <p>選擇一個對話查看內容，或建立新對話。</p>
               </div>
             )}
           </div>
@@ -1271,9 +1972,32 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               </button>
             </div>
             <p>
-              This stops the tmux session and removes CozyPad's local and remote
-              metadata for <strong>{deleteSession.title}</strong>.
+              <strong>{deleteSession.title}</strong>
+              <span className="delete-session-meta">
+                {AGENTS.find((entry) => entry.kind === deleteSession.agentKind)
+                  ?.label ?? deleteSession.agentKind}
+                {' · '}
+                {deleteSession.host}
+                {' · '}
+                <span className="mono">{deleteSession.cwd}</span>
+              </span>
             </p>
+            <ul className="delete-scope-list">
+              {(
+                [
+                  'localIndex',
+                  'process',
+                  'remoteEvents',
+                  'remoteAttachments',
+                  'nativeConversation',
+                ] as const
+              ).map((scope) => (
+                <li key={scope}>
+                  <strong>{DELETE_SCOPE_COPY[scope].label}</strong>
+                  <span>{DELETE_SCOPE_COPY[scope].impact}</span>
+                </li>
+              ))}
+            </ul>
             <p className="hint">
               Files in <span className="mono">{deleteSession.cwd}</span> are not
               deleted. This action cannot be undone.
@@ -1289,6 +2013,41 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               >
                 {busy ? 'Deleting…' : 'Delete session'}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteOutcome !== null ? (
+        <div className="modal-overlay" role="presentation">
+          <div className="modal modal-narrow" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <h2>刪除結果：{deleteOutcome.title}</h2>
+              <button className="modal-close" onClick={() => setDeleteOutcome(null)}>
+                ×
+              </button>
+            </div>
+            <p className="hint">
+              本機索引已移除，但部分範圍未完成；殘留項目如下。
+            </p>
+            <ul className="delete-scope-list">
+              {deleteOutcome.scopes.map((scope) => (
+                <li key={scope.scope} className={`delete-scope-${scope.outcome}`}>
+                  <strong>
+                    {DELETE_SCOPE_COPY[scope.scope].label} —{' '}
+                    {DELETE_OUTCOME_LABEL[scope.outcome]}
+                  </strong>
+                  <span>
+                    {scope.detail ?? ''}
+                    {scope.residualPath === undefined ? null : (
+                      <span className="mono"> · {scope.residualPath}</span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="modal-actions">
+              <button onClick={() => setDeleteOutcome(null)}>關閉</button>
             </div>
           </div>
         </div>

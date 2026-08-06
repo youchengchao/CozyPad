@@ -91,11 +91,14 @@ export function ContextMenu({
 
 const LONG_PRESS_MS = 480;
 const MOVE_TOLERANCE_PX = 10;
+export type ContextMenuGesture = 'contextmenu' | 'longpress';
 
 /**
  * 產生同時支援滑鼠右鍵與觸控長按的 handler（手機沒有右鍵）。
  */
-export function useLongPress(open: (x: number, y: number) => void): {
+export function useLongPress(
+  open: (x: number, y: number, gesture: ContextMenuGesture) => void,
+): {
   onContextMenu(event: React.MouseEvent): void;
   onPointerDown(event: React.PointerEvent): void;
   onPointerUp(): void;
@@ -115,13 +118,16 @@ export function useLongPress(open: (x: number, y: number) => void): {
     onContextMenu(event) {
       event.preventDefault();
       event.stopPropagation();
-      open(event.clientX, event.clientY);
+      open(event.clientX, event.clientY, 'contextmenu');
     },
     onPointerDown(event) {
       if (event.pointerType === 'mouse') return;
       const { clientX, clientY } = event;
       origin.current = { x: clientX, y: clientY };
-      timer.current = setTimeout(() => open(clientX, clientY), LONG_PRESS_MS);
+      timer.current = setTimeout(
+        () => open(clientX, clientY, 'longpress'),
+        LONG_PRESS_MS,
+      );
     },
     onPointerMove(event) {
       const start = origin.current;

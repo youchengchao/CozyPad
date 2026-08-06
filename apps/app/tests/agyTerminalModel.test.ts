@@ -3,8 +3,11 @@ import {
   agyKeySequence,
   agyOptionSelectionSequence,
   agyPromptSequence,
+  agyReconciledPromptSequence,
+  agySurfaceSessionStatus,
   deriveAgyScreenModel,
   extractAgyAssistantText,
+  extractAgyPromptDraft,
   isAgyComposerEditable,
   isStaleAgyReplyCandidate,
   mayScrapeAgyReply,
@@ -63,6 +66,64 @@ describe('isStaleAgyReplyCandidate', () => {
 });
 
 describe('AGY terminal-to-UI model', () => {
+  it('does not let a historical failed turn poison a resumed live screen', () => {
+    const model = deriveAgyScreenModel([
+      '> inspect the attachment',
+      '',
+      '  Agent execution terminated due to error.',
+      '  Error ID: 4a5a8ab2-a167-41c6-8d50-a40c15c36434-16',
+      '',
+      '------------------------------------------------------------',
+      '> ',
+      '',
+      'Context Usage',
+      '  Gemini 3.5 Flash - high',
+    ]);
+
+    expect(model.mode).not.toBe('error');
+    expect(agySurfaceSessionStatus('connected', 'ready', model.mode)).toBe(
+      'ready',
+    );
+  });
+
+  it('keeps a recoverable CLI error in the entered session', () => {
+    const model = deriveAgyScreenModel([
+      'Agent execution terminated due to error.',
+      'Error ID: current-turn',
+    ]);
+
+    expect(model.mode).toBe('error');
+    expect(agySurfaceSessionStatus('connected', 'ready', model.mode)).toBe(
+      'ready',
+    );
+    expect(agySurfaceSessionStatus('error', 'ready', model.mode)).toBe('error');
+    expect(isAgyComposerEditable('connected', 'ready', model.mode, '')).toBe(true);
+  });
+
+  it('recovers an unsent draft from the active prompt after a session remount', () => {
+    const model = deriveAgyScreenModel([
+      '> already sent',
+      '',
+      '  Previous answer',
+      '',
+      '> unfinished local thought',
+      '? for shortcuts',
+    ]);
+
+    expect(extractAgyPromptDraft(model)).toBe('unfinished local thought');
+    expect(extractAgyPromptDraft(deriveAgyScreenModel(['> ']))).toBe('');
+    expect(
+      extractAgyPromptDraft(
+        deriveAgyScreenModel([
+          '> already submitted',
+          'ListDir(/workspace)',
+          'Generating...',
+          'esc to cancel',
+        ]),
+      ),
+    ).toBe('');
+  });
+
   it('turns the native AGY welcome selection into clickable options', () => {
     const model = deriveAgyScreenModel([
       '\u001b[38;5;141mAGY 1.1.9\u001b[0m  Native CLI · /workspace',
@@ -365,10 +426,32 @@ describe('AGY terminal-to-UI model', () => {
     expect(agyPromptSequence('/usage', false)).toBe('/usage\r');
   });
 
+  it('appends attachment instructions without duplicating a mirrored prompt', () => {
+    const sequence = agyReconciledPromptSequence(
+      'can you see it?',
+      'can you see it?\n\nInspect /tmp/notes.txt',
+    );
+    expect(sequence).toBe(
+      '\u001b[200~\n\nInspect /tmp/notes.txt\u001b[201~\r',
+    );
+    expect(sequence).not.toContain('can you see it?');
+  });
+
   it('keeps the composer editable while a slash redraw temporarily looks blocking', () => {
     expect(isAgyComposerEditable('connected', 'ready', 'viewer', '/')).toBe(true);
     expect(isAgyComposerEditable('connected', 'ready', 'running', '/mo')).toBe(true);
     expect(isAgyComposerEditable('connected', 'ready', 'viewer', '')).toBe(false);
+  });
+
+  it('locks the composer during approvals and questions even with a leftover draft', () => {
+    // A draft can refill itself from the terminal's input row on remount, and
+    // typing while the CLI waits for y/n would answer the approval, not
+    // compose a message (SPEC 1358).
+    expect(isAgyComposerEditable('connected', 'ready', 'approval', 'left over')).toBe(false);
+    expect(isAgyComposerEditable('connected', 'ready', 'question', 'left over')).toBe(false);
+    expect(isAgyComposerEditable('connected', 'ready', 'approval', '')).toBe(false);
+    expect(isAgyComposerEditable('connected', 'ready', 'question', '')).toBe(false);
+    expect(isAgyComposerEditable('connected', 'ready', 'prompt', 'left over')).toBe(true);
   });
 
   it('extracts only the answer and never exposes terminal navigation chrome', () => {
@@ -386,5 +469,91 @@ describe('AGY terminal-to-UI model', () => {
     const text = extractAgyAssistantText(model, 'explain the change');
     expect(text).toBe('The change is complete.\nIt now keeps the PTY hidden.');
     expect(text).not.toMatch(/↑|↓|Ctrl\+C|Enter select/u);
+  });
+
+  it('recognises a quoted riddle question and never offers transcript echoes', () => {
+    // Captured live 2026-08-06: the riddle ends with `？」` — question mark
+    // then closing quote. The old `/[?？]$/` check missed it, the numbered
+    // run was discarded, and the panel offered the user's own past prompts
+    // as clickable options.
+    const model = deriveAgyScreenModel([
+      '> 出一個單選題謎題讓我作答，提供編號選項讓我選。',
+      '',
+      '> Reply with exactly PING_OK and nothing else.',
+      '',
+      '  PING_OK',
+      '',
+      '> 出一個單選題謎題讓我作答，用 1. 2. 3. 編號選項讓我選一個。',
+      '',
+      '? 謎題：「你走它也走，你停它也停；陽光下它緊緊跟隨你，黑夜裡它卻悄悄消失。請問這是什麼？」',
+      '',
+      '  Question',
+      '> 1. 太陽',
+      '  2. 影子',
+      '  3. 聲音',
+      '  4. Write-in...',
+      '',
+      '  ↑/↓ Navigate · enter Select',
+    ]);
+
+    expect(model.mode).toBe('question');
+    expect(model.options.map((option) => option.label)).toEqual([
+      '太陽',
+      '影子',
+      '聲音',
+      'Write-in...',
+    ]);
+    expect(
+      model.options.some((option) => option.label.includes('謎題讓我作答')),
+    ).toBe(false);
+  });
+
+  it('keeps a reply that contains an arrow instead of deleting it', () => {
+    // `→` in prose used to flip the whole screen selectable: the user's own
+    // prompt echo became a chosen option and the answer line was dropped.
+    const model = deriveAgyScreenModel([
+      '> summarise the migration',
+      '',
+      '  Renamed userId → user_id across the schema.',
+    ]);
+
+    expect(model.options).toEqual([]);
+    expect(extractAgyAssistantText(model, 'summarise the migration')).toBe(
+      'Renamed userId → user_id across the schema.',
+    );
+  });
+
+  it('keeps key-guidance prose inside a real answer', () => {
+    const model = deriveAgyScreenModel([
+      '> how do i move the cursor',
+      '',
+      '  Use the arrow keys, or hjkl.',
+      '  Press esc to cancel insert mode.',
+    ]);
+
+    expect(model.options).toEqual([]);
+    expect(extractAgyAssistantText(model, 'how do i move the cursor')).toBe(
+      'Use the arrow keys, or hjkl.\nPress esc to cancel insert mode.',
+    );
+  });
+
+  it('stitches a scrolled long reply instead of replacing it with its tail', () => {
+    // The reply grew past the window: the prompt echo and Line A are gone,
+    // the frame shows the accumulated tail plus one new row. The previous
+    // behaviour returned only the visible tail, losing Line A from storage.
+    const model = deriveAgyScreenModel([
+      '  Line B',
+      '  Line C',
+      '  Line D',
+      '',
+      '────────────────────────────────────────────────────────────',
+      '>',
+      '────────────────────────────────────────────────────────────',
+      '? for shortcuts                          Gemini 3.6 Flash · hig',
+    ]);
+
+    expect(
+      extractAgyAssistantText(model, 'long question', 'Line A\nLine B\nLine C'),
+    ).toBe('Line A\nLine B\nLine C\nLine D');
   });
 });
