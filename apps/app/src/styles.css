@@ -2223,6 +2223,66 @@ button.danger:hover {
   color: var(--text-dim);
 }
 
+.markdown .katex-display {
+  max-width: 100%;
+  margin: 10px 0;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown .katex {
+  color: var(--text);
+}
+
+.mermaid-diagram {
+  margin: 10px 0;
+  padding: 12px;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.mermaid-diagram-canvas {
+  min-height: 1px;
+}
+
+.mermaid-diagram-canvas svg {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.mermaid-diagram-status,
+.mermaid-diagram-error {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.mermaid-diagram-error {
+  margin-bottom: 8px;
+  color: var(--danger);
+}
+
+.markdown .mermaid-diagram-source {
+  margin: 0;
+  border: none;
+}
+
+.markdown .mermaid-diagram-source code {
+  display: block;
+  padding: 0;
+  white-space: pre;
+}
+
+.markdown code.hljs {
+  display: block;
+  overflow-x: auto;
+}
+
 .composer-wrap {
   position: relative;
   flex-shrink: 0;

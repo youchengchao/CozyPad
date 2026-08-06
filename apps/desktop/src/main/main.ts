@@ -10,12 +10,9 @@ import {
 } from 'electron';
 import { IpcChannels } from '@cozypad/contracts';
 import { TmuxRuntime } from '@cozypad/tmux-runtime';
-import {
-  MemoryRemoteSettings,
-  TmuxRemoteSettings,
-} from '@cozypad/remote-services';
+import { TmuxRemoteSettings } from '@cozypad/remote-services';
 import type { RemoteSettingsPort } from '@cozypad/remote-services';
-import { MockTmuxProvisioner, ShellTmuxProvisioner } from '@cozypad/remote-services';
+import { ShellTmuxProvisioner } from '@cozypad/remote-services';
 import type { TmuxProvisionerPort } from '@cozypad/remote-services';
 import { TmuxSessionWatcher } from './tmuxWatcher';
 import type { RemoteFilesPort } from '@cozypad/remote-services';
@@ -24,7 +21,7 @@ import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { AgentCommunicationService } from './agentCommunicationService';
 import type { AgentCommunicationPort } from './agentCommunicationService';
 import { registerIpc } from './ipc';
-import { MemoryProfileStore, ProfileStore, ProfileStoreWithLocal } from './profileStore';
+import { ProfileStore, ProfileStoreWithLocal } from './profileStore';
 import type { ProfileCrypto, ProfileStorePort } from './profileStore';
 import { ShellTelemetry } from '@cozypad/remote-services';
 import type { TelemetrySource } from '@cozypad/remote-services';

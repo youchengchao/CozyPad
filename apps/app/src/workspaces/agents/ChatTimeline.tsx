@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { ChatItem } from '@cozypad/contracts';
+import { AssistantMarkdown } from './AssistantMarkdown';
 import { MessageAttachments } from './MessageAttachments';
 
 interface ChatTimelineProps {
@@ -79,7 +78,9 @@ export function ChatTimeline({
                 >
                   {item.role === 'assistant' ? (
                     <div className="markdown">
-                      <Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown>
+                      <AssistantMarkdown streaming={item.streaming}>
+                        {item.text}
+                      </AssistantMarkdown>
                     </div>
                   ) : item.text === '' ? null : (
                     <div className="msg-text">{item.text}</div>

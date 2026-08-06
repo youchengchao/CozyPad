@@ -796,3 +796,28 @@ smoke green first try. The sweep keeps yielding — next candidates: AGY
 interactive card click-through (still unluckily untriggered — AGY keeps
 choosing prose), long-reply scroll during streaming, reconnect-reconcile
 behaviour after offline deletes.
+
+## 2026-08-06 (cont.) ? KaTeX equations and Mermaid diagrams
+
+Assistant responses now share one Markdown renderer across the ordinary
+ChatTimeline and AGY transcript surfaces. The shared renderer adds inline and
+display KaTeX, fenced Mermaid diagrams, and syntax highlighting while leaving
+AGY terminal recognition and reply extraction in their existing modules.
+
+Mermaid is dynamically imported only when a completed response contains a
+diagram. Streaming fences remain readable source until the turn finishes;
+invalid diagrams fall back to their source instead of breaking the timeline.
+Mermaid runs with strict security and suppressed built-in error injection.
+AGY diff and git-log code blocks continue through the existing purpose-built
+card renderer.
+
+Verification:
+
+- Renderer suite: 15 files and 121 tests passed, including KaTeX, completed and
+  streaming Mermaid fences, and the AGY fallback boundary.
+- Every workspace test script passed.
+- Full TypeScript typecheck and ESLint passed.
+- Renderer and Electron production builds passed. Build output confirms KaTeX
+  fonts/styles are packaged and Mermaid remains split into lazy chunks.
+- Browser screenshot verification could not run because the browser-control
+  backend exposed no available browser. No substitute UI automation was used;

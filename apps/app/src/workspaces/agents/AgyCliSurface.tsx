@@ -9,8 +9,6 @@ import {
   type ReactNode,
 } from 'react';
 import { Terminal } from '@xterm/xterm';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import {
   ChatAttachmentSchema,
   MAX_AGENT_ATTACHMENTS,
@@ -22,6 +20,7 @@ import {
   type TerminalOutputEvent,
 } from '@cozypad/contracts';
 import { getBridge } from '../../platform/bridge';
+import { AssistantMarkdown } from './AssistantMarkdown';
 import {
   agyKeySequence,
   agyOptionSelectionSequence,
@@ -698,12 +697,12 @@ function AgyReply({
         return (
           <div className="msg msg-assistant" key={index}>
             <div className="msg-body markdown">
-              <Markdown
-                components={{ pre: MarkdownPre }}
-                remarkPlugins={[remarkGfm]}
+              <AssistantMarkdown
+                fallbackPre={MarkdownPre}
+                streaming={streaming && last}
               >
                 {block.text}
-              </Markdown>
+              </AssistantMarkdown>
               {streaming && last ? <span className="caret" /> : null}
             </div>
           </div>
