@@ -1,0 +1,16 @@
+{
+  // Regression guard for M2.
+  //
+  // package.json points `main`/`types` at raw `.ts`, so consumers compile these
+  // sources under *their* compilerOptions — and apps/desktop sets
+  // `lib: ["ES2022", "DOM"]`. The package's own tsconfig has no DOM, which is
+  // exactly why a node-vs-DOM stream mismatch in src/serve.ts typechecked clean
+  // here and failed in apps/desktop.
+  //
+  // `include` is src only: a consumer never compiles our tests.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["src"]
+}

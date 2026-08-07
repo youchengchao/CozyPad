@@ -5,14 +5,91 @@ import {
 } from '@cozypad/contracts';
 import type { AgentAttachment } from '@cozypad/contracts';
 
-/** SPEC 1401-1408: the six states a tray item moves through. */
 export type ComposerAttachmentState =
   | 'buffered'
+  | 'uploading'
   | 'packaging'
   | 'transferring'
   | 'verifying'
   | 'ready'
   | 'error';
+
+/**
+ * Returns a clean 3-4 letter icon badge text for non-image file attachment previews.
+ */
+export function getAttachmentFileTypeBadge(
+  mediaType: string,
+  filename?: string,
+): string {
+  const normalized = mediaType.toLowerCase().split(';')[0]?.trim() ?? '';
+  const ext = filename ? (filename.split('.').pop()?.toLowerCase() ?? '') : '';
+
+  if (ext === 'md' || ext === 'markdown') return 'MD';
+
+  if (
+    normalized.includes('javascript') ||
+    normalized.includes('typescript') ||
+    normalized.includes('json') ||
+    normalized.includes('xml') ||
+    normalized.includes('yaml') ||
+    ['js', 'jsx', 'ts', 'tsx', 'py', 'json', 'yaml', 'yml', 'rs', 'go', 'cpp', 'c', 'h', 'html', 'css', 'sh', 'sql', 'toml'].includes(ext)
+  ) {
+    return 'CODE';
+  }
+
+  if (
+    normalized.startsWith('text/') ||
+    ['txt', 'log', 'env', 'doc'].includes(ext)
+  ) {
+    return 'TXT';
+  }
+
+  if (
+    normalized.includes('zip') ||
+    normalized.includes('tar') ||
+    normalized.includes('archive') ||
+    normalized.includes('compressed') ||
+    ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'].includes(ext)
+  ) {
+    return 'ZIP';
+  }
+
+  if (normalized === 'application/pdf' || ext === 'pdf') {
+    return 'PDF';
+  }
+
+  if (
+    normalized.startsWith('audio/') ||
+    normalized.startsWith('video/') ||
+    ['mp3', 'mp4', 'wav', 'mov', 'webm'].includes(ext)
+  ) {
+    return 'MEDIA';
+  }
+
+  if (normalized.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg'].includes(ext)) {
+    return 'IMG';
+  }
+
+  return 'FILE';
+}
+
+/**
+ * Formats a user-facing validation notice banner when file uploads exceed size or count limits.
+ */
+export function formatAttachmentValidationNotice(
+  oversizedCount: number,
+  limitCount: number,
+): string | null {
+  if (oversizedCount <= 0 && limitCount <= 0) return null;
+  const parts: string[] = [];
+  if (oversizedCount > 0) {
+    parts.push(`${oversizedCount} attachment(s) exceeded the 20 MB limit`);
+  }
+  if (limitCount > 0) {
+    parts.push(`${limitCount} attachment(s) exceeded the ${MAX_AGENT_ATTACHMENTS}-file limit`);
+  }
+  return `${parts.join('; ')}. The remaining eligible files were buffered locally.`;
+}
 
 export interface ComposerAttachment {
   id: string;

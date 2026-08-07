@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   agyOptionSelectionSequence,
+  agySurfaceSessionStatus,
   deriveAgyScreenModel,
   extractAgyAssistantText,
   isAgyComposerEditable,
+  isAgyFooterRow,
+  mayScrapeAgyReply,
   mirrorAgyDraft,
   nextSuggestionIndex,
   segmentAgyReply,
@@ -112,9 +115,9 @@ const TOOLS_RUNNING = [
   '────────────────────────────────────────────────────────────',
   '> Inspect this directory carefully and keep working',
   '',
-  '● ListDir(/home/ycchao)',
+  '● ListDir(/home/devbox)',
   '○ Schedule(32s: Timer finished. 30 seconds have passed.)',
-  '● ListDir(/home/ycchao/attendance-remote)',
+  '● ListDir(/home/devbox/attendance-remote)',
   '',
   '  I am inspecting the directory and waiting.',
   '',
@@ -134,6 +137,54 @@ const ANSWERED = [
   '>',
   '────────────────────────────────────────────────────────────',
   '? for shortcuts                                            G',
+];
+
+/**
+ * AGY 1.1.10 answering `hi` on Claude Opus 4.6, captured after the reply had
+ * finished. Claude models spell their reasoning effort as `(Thinking)` inside
+ * the model name instead of after a `·`, so this footer looks unlike every
+ * Gemini frame above — and that one difference was enough to leave the surface
+ * stuck in `running` with the Stop button lit and a caret blinking.
+ */
+const CLAUDE_ANSWERED = [
+  '────────────────────────────────────────────────────────────────────────────',
+  '> Hi',
+  '',
+  '▸ Thought for 2s',
+  "The user is just saying hi. I'll respond with a friendly greeting.",
+  '',
+  '  Hey! 👋 How can I help you today?',
+  '',
+  '  Tip: Use /context to see what files are in the conversation.',
+  '',
+  '────────────────────────────────────────────────────────────────────────────',
+  '>',
+  '────────────────────────────────────────────────────────────────────────────',
+  'esc to cancel                                     Claude Opus 4.6 (Thinking)',
+];
+
+/**
+ * An ordinary answer that outgrew the 40-row window: by the time this frame
+ * was painted, the `> 我回應你…` echo had scrolled off the top and only the
+ * live, empty input row remains. Captured from the user's session on
+ * 2026-08-07, where this turn rendered as no reply at all.
+ */
+const OUTGREW_WINDOW_PROMPT =
+  '我回應你"我回應你"OK, fair""是正確的嗎? 還是有道地的講法';
+const OUTGREW_WINDOW = [
+  '  #### 3. 覺得真的很好笑',
+  '',
+  '  • "That\'s a good one!" （這個有笑點／這句好笑！）',
+  '  • "LOL" / "Haha, good one."',
+  '  ──────',
+  '  總結：',
+  '  你原本說的 "OK, fair" 完全沒有問題！如果想讓句型更完整一點，下次也可以',
+  '  直接說 "Fair enough!" 或 "I\'ll give you that." 哦！',
+  '',
+  '────────────────────────────────────────────────────────────────────────────',
+  '>',
+  '────────────────────────────────────────────────────────────────────────────',
+  '? for shortcuts                                   Claude Opus 4.6 (Thinking)',
 ];
 
 /** A `/usage` reply long enough that its own `> /usage` echo scrolled away. */
@@ -159,6 +210,141 @@ const LONG_REPLY = [
 ];
 
 describe('real AGY 1.1.9 screens', () => {
+  describe("a Claude model's footer, whose effort has no `·` separator", () => {
+    const model = deriveAgyScreenModel(CLAUDE_ANSWERED);
+
+    it('reads as an idle prompt, not as work still in flight', () => {
+      // `running` is what put the Stop button beside an untouched composer and
+      // kept the streaming caret blinking under a finished answer.
+      expect(model.mode).toBe('prompt');
+      expect(agySurfaceSessionStatus('connected', 'ready', model.mode)).toBe('ready');
+    });
+
+    it('keeps the footer out of the reply', () => {
+      const reply = extractAgyAssistantText(model, 'Hi');
+
+      expect(reply).toContain('How can I help you today?');
+      expect(reply).toContain('Tip: Use /context');
+      expect(reply).not.toContain('esc to cancel');
+      expect(reply).not.toContain('Claude Opus 4.6');
+    });
+
+    it('names the footer for what it is, whichever column survives', () => {
+      expect(isAgyFooterRow('esc to cancel      Claude Opus 4.6 (Thinking)')).toBe(true);
+      expect(isAgyFooterRow('? for shortcuts    Gemini 3.6 Flash · low')).toBe(true);
+      expect(isAgyFooterRow('esc to cancel')).toBe(true);
+      expect(isAgyFooterRow('Gemini 3.6 Flash · low')).toBe(true);
+      // A model name on its own is a row of the model picker, not the footer.
+      expect(isAgyFooterRow('  Claude Opus 4.6 (Thinking)')).toBe(false);
+      // And prose that merely mentions the key stays in the answer.
+      expect(isAgyFooterRow('Press esc to cancel insert mode.')).toBe(false);
+    });
+
+    it('collapses the reasoning behind its duration', () => {
+      const blocks = segmentAgyReply(extractAgyAssistantText(model, 'Hi'));
+
+      expect(blocks[0]).toMatchObject({
+        kind: 'thinking',
+        meta: '2s',
+        title: "The user is just saying hi. I'll respond with a friendly greeting.",
+      });
+      expect(blocks[1]?.kind).toBe('text');
+    });
+  });
+
+  describe('an answer that outgrew the window before its first scrape', () => {
+    const model = deriveAgyScreenModel(OUTGREW_WINDOW);
+
+    it('is scrapeable even though nothing has accumulated yet', () => {
+      // `previous` is empty here — this is the first frame the turn would
+      // accept. Refusing it because the echo had scrolled away is what left
+      // the turn permanently blank while AGY had answered in full.
+      expect(mayScrapeAgyReply(OUTGREW_WINDOW_PROMPT, model.rawLines, '')).toBe(
+        true,
+      );
+    });
+
+    it('still refuses a frame that is showing somebody else\'s turn', () => {
+      // The protection that mattered: another prompt's echo on screen means
+      // the visible answer belongs to that turn, not this one.
+      expect(
+        mayScrapeAgyReply('second request', [
+          '> first request',
+          '  The first answer.',
+          '',
+          '>',
+        ]),
+      ).toBe(false);
+    });
+
+    it('recovers the whole visible answer', () => {
+      const reply = extractAgyAssistantText(model, OUTGREW_WINDOW_PROMPT);
+
+      expect(reply).toContain('覺得真的很好笑');
+      expect(reply).toContain('Fair enough!');
+      expect(reply).not.toContain('for shortcuts');
+      expect(reply).not.toContain('Claude Opus 4.6');
+    });
+
+    it('does not turn the answer\'s numbered headings into clickable options', () => {
+      expect(model.options).toEqual([]);
+      expect(model.mode).toBe('prompt');
+    });
+  });
+
+  describe("AGY's own session notices", () => {
+    // Printed by the CLI when the same conversation is opened twice. It is
+    // never the model speaking, and as prose it read as the agent volunteering
+    // a warning nobody asked for.
+    const blocks = segmentAgyReply(
+      [
+        'Here is the answer you asked for.',
+        '',
+        '⚠ Conversation already open',
+        '⎿  When you opened this conversation it was already open in another CLI',
+        'instance on this machine. Sending messages from both may cause',
+        'conflicts. Use /fork to continue here separately.',
+        '',
+      ].join('\n'),
+    );
+
+    it('becomes its own block instead of reply prose', () => {
+      expect(blocks.map((block) => block.kind)).toEqual(['text', 'notice']);
+      expect(blocks[0]).toMatchObject({
+        kind: 'text',
+        text: 'Here is the answer you asked for.',
+      });
+      expect(blocks[1]).toMatchObject({
+        kind: 'notice',
+        title: 'Conversation already open',
+      });
+    });
+
+    it('keeps the wrapped detail together', () => {
+      const notice = blocks[1];
+      expect(notice?.kind === 'notice' && notice.detail).toContain(
+        'already open in another CLI instance on this machine',
+      );
+      expect(notice?.kind === 'notice' && notice.detail).toContain(
+        'Use /fork to continue here separately.',
+      );
+    });
+
+    it("does not claim a reply's own warning sign", () => {
+      // No `⎿` row under it, so this is the model writing, not the CLI.
+      expect(
+        segmentAgyReply(
+          ['⚠ 注意：這個指令會刪除檔案', '請先確認備份存在。'].join('\n'),
+        ),
+      ).toEqual([
+        {
+          kind: 'text',
+          text: '⚠ 注意：這個指令會刪除檔案\n請先確認備份存在。',
+        },
+      ]);
+    });
+  });
+
   it('still shows a reply whose prompt echo scrolled off the screen', () => {
     const model = deriveAgyScreenModel(LONG_REPLY);
     const text = extractAgyAssistantText(model, '/usage');
@@ -365,9 +551,9 @@ describe('real AGY 1.1.9 screens', () => {
         '▸ Thought for 3s, 740 tokens',
         'Designing the Quiz Interface',
         '',
-        '● ListDir(/home/ycchao)',
+        '● ListDir(/home/devbox)',
         '○ Schedule(32s: Timer finished. 30 seconds have passed.)',
-        '● Read(/home/ycchao/README.md) (ctrl+o to expand)',
+        '● Read(/home/devbox/README.md) (ctrl+o to expand)',
         '',
         '好的，以下是我的規劃：',
         '',
@@ -390,7 +576,7 @@ describe('real AGY 1.1.9 screens', () => {
     expect(blocks[1]).toMatchObject({
       kind: 'tool',
       name: 'ListDir',
-      detail: '/home/ycchao',
+      detail: '/home/devbox',
       status: 'completed',
     });
     // An unfinished call keeps its running state so the card can show it.
@@ -398,7 +584,7 @@ describe('real AGY 1.1.9 screens', () => {
     // The keyboard hint belongs to the terminal, not to the card.
     expect(blocks[3]).toMatchObject({
       name: 'Read',
-      detail: '/home/ycchao/README.md',
+      detail: '/home/devbox/README.md',
     });
     expect(blocks[4]).toMatchObject({
       kind: 'text',

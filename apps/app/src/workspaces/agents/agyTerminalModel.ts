@@ -115,12 +115,37 @@ const KEY_HINT_ROW_PATTERN =
 const STANDALONE_KEY_HINT_PATTERN =
   /^\s*(?:esc|enter|tab|ctrl\+\w+|shift\+\w+)\s+(?:to\s+)?(?:cancel|close|stop|interrupt|quit|exit|select|complete|confirm|toggle|expand|send|clear|undo|dismiss|(?:go\s+)?back)\s*$/iu;
 /**
- * AGY's persistent footer. Depending on width it renders as
- * `? for shortcuts                    Gemini 3.6 Flash · high` or, once the
- * hint scrolls away, as the bare model/effort tag. Neither is ever a reply.
+ * AGY's persistent footer is a two-column row: a key hint on the left and the
+ * model tag right-aligned across the window.
+ *
+ *   `? for shortcuts                       Gemini 3.6 Flash · low`
+ *   `esc to cancel                         Claude Opus 4.6 (Thinking)`
+ *
+ * Either column can stand alone depending on width, so each is recognised on
+ * its own — and the left column is recognised whatever trails it, because only
+ * AGY's footer starts a row that way.
+ *
+ * Anchoring the whole row on the `·` was the bug behind three visible symptoms
+ * at once. Claude models spell their effort as `(Thinking)` inside the name
+ * rather than after a separator, so their footer matched nothing: it was
+ * copied into the answer as `esc to cancel Claude Opus 4.6 (Thinking)`, its
+ * `Thinking` read as live work, and the input row above it no longer had
+ * "nothing but chrome below" — so the surface stayed in `running`, which lit
+ * the Stop button and left the streaming caret blinking after the reply ended.
  */
-const FOOTER_PATTERN =
-  /^\?\s*for shortcuts\b|^(?:gemini|claude|gpt|grok|llama|antigravity)[\w.\s()+-]*·\s*\w+$/iu;
+const FOOTER_HINT_COLUMN = /^(?:\?\s*for shortcuts|esc\s+to\s+cancel)\b/iu;
+const FOOTER_MODEL_COLUMN =
+  /^(?:gemini|claude|gpt|grok|llama|antigravity)[\w.\s()+-]*·\s*\w+$/iu;
+
+/**
+ * Whether a row is AGY's persistent footer rather than conversation content.
+ * Exported because it is the single definition three separate passes rely on:
+ * chrome filtering, mode detection, and finding the live input row.
+ */
+export function isAgyFooterRow(line: string): boolean {
+  const trimmed = withoutBox(line);
+  return FOOTER_HINT_COLUMN.test(trimmed) || FOOTER_MODEL_COLUMN.test(trimmed);
+}
 /** The start-screen banner: `▄▀▀▄  Antigravity CLI 1.1.9` and its account rows. */
 const BRAND_PATTERN = /\b(?:agy|antigravity cli)\b\s*v?\d+(?:\.\d+)*\s*$/iu;
 const KEY_HINT_GLOBAL =
@@ -337,7 +362,7 @@ function isChromeLine(line: string): boolean {
   }
   // The logo sits on the same row as the version, so this cannot be anchored.
   if (BRAND_PATTERN.test(trimmed)) return true;
-  if (FOOTER_PATTERN.test(trimmed) || SPINNER_PATTERN.test(trimmed)) return true;
+  if (isAgyFooterRow(trimmed) || SPINNER_PATTERN.test(trimmed)) return true;
   if (KEY_HINT_ROW_PATTERN.test(trimmed)) return true;
   if (STANDALONE_KEY_HINT_PATTERN.test(trimmed)) return true;
   return false;
@@ -441,7 +466,7 @@ export function deriveAgyScreenModel(
     .filter((_line, index) => !parsedOptionLines.has(index))
     .map((line) => {
       const trimmed = withoutBox(line);
-      if (FOOTER_PATTERN.test(trimmed)) return '';
+      if (isAgyFooterRow(trimmed)) return '';
       return trimmed.replace(KEY_HINT_GLOBAL, ' ').replace(/\s+/gu, ' ').trim();
     })
     .join('\n');
@@ -470,7 +495,7 @@ export function deriveAgyScreenModel(
     if (parsedOptionLines.has(index)) continue;
     const line = lines[index]!;
     const trimmed = withoutBox(line);
-    if (FOOTER_PATTERN.test(trimmed)) continue;
+    if (isAgyFooterRow(trimmed)) continue;
     if (ERROR_PATTERN.test(
       trimmed.replace(KEY_HINT_GLOBAL, ' ').replace(/\s+/gu, ' ').trim(),
     )) {
@@ -627,16 +652,30 @@ export function mayScrapeAgyReply(
   // their prompt has scrolled above the 40-row viewport.
   if (previous !== '') return true;
   const wanted = prompt.replace(/\s+/gu, '');
-  return lines.some((line) => {
-    if (!INPUT_PATTERN.test(withoutBox(line))) return false;
+  let sawAnotherEcho = false;
+  for (const line of lines) {
+    if (!INPUT_PATTERN.test(withoutBox(line))) continue;
     const comparable = comparablePromptLine(line);
+    // The live input row is empty and belongs to no turn.
+    if (comparable === '') continue;
     const seen = comparable.replace(/\s+/gu, '');
-    return (
+    if (
       comparable === prompt ||
       comparable.endsWith(prompt) ||
       (seen.length >= 4 && wanted.startsWith(seen))
-    );
-  });
+    ) {
+      return true;
+    }
+    sawAnotherEcho = true;
+  }
+  // An answer taller than the 40-row window scrolls its own prompt echo off
+  // the top before the first frame is ever accepted, and `previous` is still
+  // empty at that point — so demanding the echo meant the turn never started
+  // accumulating and the whole reply was lost. What the echo actually proves
+  // is "this screen is not still showing an earlier turn", and the absence of
+  // any *other* prompt echo proves the same thing: with nothing but the live
+  // input row on screen, the visible text can only be this turn's answer.
+  return !sawAnotherEcho;
 }
 
 /**
@@ -863,10 +902,30 @@ export type AgyReplyBlock =
   | { kind: 'thinking'; meta: string; title: string }
   | { kind: 'tool'; name: string; detail: string; status: 'running' | 'completed' }
   | { kind: 'diff'; diff: string }
-  | { kind: 'gitHistory'; entries: string[] };
+  | { kind: 'gitHistory'; entries: string[] }
+  /** AGY speaking about the session, not the model answering. */
+  | { kind: 'notice'; title: string; detail: string };
 
 const GIT_DIFF_HEADER_PATTERN = /^diff --git\s+\S+\s+\S+\s*$/u;
 const GIT_HISTORY_ENTRY_PATTERN = /^[0-9a-f]{7,40}\s+\S/iu;
+/**
+ * AGY's own notices, e.g.
+ *
+ *   ⚠ Conversation already open
+ *     ⎿  When you opened this conversation it was already open in another CLI
+ *        instance on this machine. Sending messages from both may cause
+ *        conflicts. Use /fork to continue here separately.
+ *
+ * The CLI prints these itself; they are never the model's reply, and rendering
+ * them as prose made CozyPad look like the agent had volunteered a warning
+ * nobody asked for.
+ *
+ * The `⎿` row is required before a `⚠` heading counts as one of these. A reply
+ * may legitimately open a paragraph with a warning sign, and without that
+ * second marker this would swallow the paragraph under it.
+ */
+const NOTICE_HEADING_PATTERN = /^\s*⚠\s*(\S.*?)\s*$/u;
+const NOTICE_DETAIL_PATTERN = /^\s*⎿\s*(\S.*?)\s*$/u;
 
 /**
  * Split a reply into the pieces a chat UI can render distinctly: prose, the
@@ -933,6 +992,35 @@ export function segmentAgyReply(text: string): AgyReplyBlock[] {
         name: tool[2]!,
         detail,
         status: tool[1] === '●' ? 'completed' : 'running',
+      });
+      continue;
+    }
+    const notice = line.match(NOTICE_HEADING_PATTERN);
+    if (notice !== null && NOTICE_DETAIL_PATTERN.test(lines[index + 1] ?? '')) {
+      flush();
+      const detail: string[] = [NOTICE_DETAIL_PATTERN.exec(lines[index + 1]!)![1]!];
+      index += 1;
+      // The detail wraps across rows, and only its first row carries `⎿` —
+      // the indentation that would identify the rest was already stripped
+      // upstream. AGY closes the block with a blank line, so that is the end.
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1]!;
+        if (
+          next.trim() === '' ||
+          TOOL_ROW_PATTERN.test(next) ||
+          THINKING_PATTERN.test(next) ||
+          NOTICE_HEADING_PATTERN.test(next) ||
+          SEPARATOR_PATTERN.test(next)
+        ) {
+          break;
+        }
+        detail.push(next.trim());
+        index += 1;
+      }
+      blocks.push({
+        kind: 'notice',
+        title: notice[1]!,
+        detail: detail.join(' ').replace(/\s+/gu, ' ').trim(),
       });
       continue;
     }

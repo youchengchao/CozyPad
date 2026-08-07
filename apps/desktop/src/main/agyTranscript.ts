@@ -25,7 +25,7 @@ const CONVERSATIONS_DIR = () =>
 const USER_STEP = 14;
 const ASSISTANT_STEP = 15;
 const MAX_TURNS = 200;
-const MAX_TEXT = 40_000;
+export const MAX_AGY_TRANSCRIPT_TEXT = 512 * 1024;
 
 interface ProtoField {
   field: number;
@@ -84,10 +84,10 @@ function asText(bytes: Buffer): string | null {
   // Printable + common whitespace only; control bytes mean nested protobuf.
   if (!/^[\t\n\r\x20-\x7e -￿]*$/u.test(text)) return null;
   const trimmed = text.trim();
-  return trimmed === '' ? null : trimmed.slice(0, MAX_TEXT);
+  return trimmed === '' ? null : trimmed.slice(0, MAX_AGY_TRANSCRIPT_TEXT);
 }
 
-function textOfField(payload: Buffer, wanted: number): string | null {
+function directTextOfField(payload: Buffer, wanted: number): string | null {
   const parts: string[] = [];
   for (const entry of protoFields(payload)) {
     if (entry.field !== wanted || entry.bytes === undefined) continue;
@@ -96,7 +96,7 @@ function textOfField(payload: Buffer, wanted: number): string | null {
       parts.push(direct);
       continue;
     }
-    // The value may be one level of message around the string.
+    // Older AGY builds sometimes wrapped the string in message field 1.
     for (const inner of protoFields(entry.bytes)) {
       if (inner.field !== 1 || inner.bytes === undefined) continue;
       const nested = asText(inner.bytes);
@@ -104,6 +104,23 @@ function textOfField(payload: Buffer, wanted: number): string | null {
     }
   }
   return parts.length === 0 ? null : parts.join('\n\n');
+}
+
+function textOfField(
+  payload: Buffer,
+  wanted: number,
+  containerFields: readonly number[] = [],
+): string | null {
+  const topLevel = directTextOfField(payload, wanted);
+  if (topLevel !== null) return topLevel;
+  for (const containerField of containerFields) {
+    for (const entry of protoFields(payload)) {
+      if (entry.field !== containerField || entry.bytes === undefined) continue;
+      const wrapped = directTextOfField(entry.bytes, wanted);
+      if (wrapped !== null) return wrapped;
+    }
+  }
+  return null;
 }
 
 export interface AgyConversationWindow {
@@ -164,10 +181,13 @@ export function decodeAgySteps(
     if (row.step_payload === null) continue;
     const payload = Buffer.from(row.step_payload);
     if (row.step_type === USER_STEP) {
-      const prompt = textOfField(payload, 2);
+      // AGY 1.1.10 wraps the user payload in field 19; older stores expose
+      // field 2 directly. Prefer the old path, then unwrap the new envelope.
+      const prompt = textOfField(payload, 2, [19]);
       if (prompt !== null) turns.push({ prompt, assistantText: '' });
     } else if (row.step_type === ASSISTANT_STEP) {
-      const text = textOfField(payload, 1);
+      // AGY 1.1.10 wraps the assistant payload in field 20.
+      const text = textOfField(payload, 1, [20]);
       if (text === null) continue;
       const current = turns.at(-1);
       if (current === undefined) {

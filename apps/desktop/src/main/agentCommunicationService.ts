@@ -19,6 +19,7 @@ import type {
   AgentLaunchMode,
   AgyRecoveredTurn,
   AgyTranscript,
+  AgyTranscriptRequest,
   AgentSessionBundle,
   AgentSessionChangedEvent,
   AgentSessionDeletedEvent,
@@ -143,7 +144,7 @@ export interface AgentCommunicationPort {
   list(request: AgentSessionListRequest): AgentSessionBundle[];
   create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle>;
   revive(request: AgentSessionRequest): Promise<AgentSessionBundle>;
-  readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript>;
+  readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript>;
   openTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
   rename(request: RenameAgentSessionRequest): Promise<void>;
   delete(request: AgentSessionRequest): Promise<DeleteAgentSessionResult>;
@@ -203,6 +204,11 @@ function markerValue(output: string, marker: string): string | undefined {
     }
   }
   return undefined;
+}
+
+function sameAgyPrompt(actual: string, expected: string): boolean {
+  const normalize = (value: string) => value.replace(/\r\n?/gu, '\n').trim();
+  return normalize(actual) === normalize(expected);
 }
 
 function markerBlock(output: string, marker: string): string {
@@ -1647,34 +1653,82 @@ exit "$agent_status"`;
   }
 
   /**
-   * The transcript of a revived AGY session, from AGY's own store. Guarded to
-   * revived sessions on the local host: a fresh conversation showing someone
-   * else's history would be far worse than showing none.
+   * Reads canonical Markdown from AGY's own local store. A revived or already
+   * bound session can read directly. A fresh session must supply its exact
+   * submitted prompt; only a newly written conversation whose latest prompt
+   * matches is accepted and bound. This keeps unrelated AGY history private.
    */
-  async readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript> {
+  async readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript> {
     const stored = this.requireSession(request.sessionId);
     const profileId = stored.record.provisionalIdentity.connectionProfileId;
     const isLocal = this.options.isLocalHost?.(profileId) === true;
-    const hasBoundId =
-      stored.record.identity?.agentConversationId !== undefined &&
-      stored.record.identity.agentConversationId !== null;
+    const conversationId = stored.record.identity?.agentConversationId ?? undefined;
     const isActiveRevived =
       stored.revived === true && this.activeProfileId === profileId;
 
     if (
       stored.record.provisionalIdentity.agentKind !== 'agy' ||
       !isLocal ||
-      (!hasBoundId && !isActiveRevived) ||
       this.options.readLocalAgyTranscript === undefined
     ) {
       return { turns: [] };
     }
+
     try {
-      return {
-        turns: await this.options.readLocalAgyTranscript(
-          stored.record.identity?.agentConversationId ?? undefined,
-        ),
-      };
+      let resolvedConversationId = conversationId;
+      let turns: AgyRecoveredTurn[];
+      if (resolvedConversationId !== undefined) {
+        turns = await this.options.readLocalAgyTranscript(resolvedConversationId);
+      } else if (isActiveRevived) {
+        // Preserve restart recovery: revive() already scopes the native store
+        // to the conversation selected for this session.
+        turns = await this.options.readLocalAgyTranscript();
+      } else {
+        if (
+          request.expectedPrompt === undefined ||
+          this.activeProfileId !== profileId ||
+          this.options.getLatestLocalAgyConversationId === undefined
+        ) {
+          return { turns: [] };
+        }
+        const launchMs =
+          stored.record.tmuxCreatedEpoch == null
+            ? Date.parse(stored.record.createdAt)
+            : stored.record.tmuxCreatedEpoch * 1000;
+        const now = Date.now();
+        resolvedConversationId = await this.options.getLatestLocalAgyConversationId({
+          notBefore: (Number.isFinite(launchMs) ? launchMs : now) - 5_000,
+          notAfter: now + 5_000,
+        });
+        if (resolvedConversationId === undefined) return { turns: [] };
+        turns = await this.options.readLocalAgyTranscript(resolvedConversationId);
+      }
+
+      const latest = turns.at(-1);
+      if (
+        request.expectedPrompt !== undefined &&
+        (latest === undefined || !sameAgyPrompt(latest.prompt, request.expectedPrompt))
+      ) {
+        return { turns: [] };
+      }
+
+      if (conversationId === undefined && resolvedConversationId !== undefined) {
+        const fingerprint = this.options.getHostFingerprint(profileId);
+        if (fingerprint !== undefined) {
+          const now = new Date().toISOString();
+          stored.record = bindAgentIdentity(stored.record, {
+            agentConversationId: resolvedConversationId,
+            remoteHostFingerprint: fingerprint,
+            tmuxPaneId: stored.paneId,
+            now,
+          });
+          await this.persist();
+          this.emitSession(stored);
+          await this.writeRemoteMetadata(stored).catch(() => undefined);
+        }
+      }
+
+      return { turns };
     } catch {
       return { turns: [] };
     }

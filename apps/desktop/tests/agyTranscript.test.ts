@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_AGY_TRANSCRIPT_TEXT,
   decodeAgySteps,
   latestAgyConversationId,
   readLatestAgyTranscript,
@@ -49,17 +50,24 @@ describe('latestAgyConversationId time window', () => {
 });
 
 /** Encode one length-delimited protobuf field. */
-function lengthDelimited(field: number, payload: Buffer): Buffer {
-  const tag = Buffer.from([(field << 3) | 2]);
+function protoVarint(value: number): Buffer {
   const bytes: number[] = [];
-  let remaining = payload.length;
+  let remaining = value;
   do {
     let byte = remaining & 0x7f;
     remaining >>= 7;
     if (remaining > 0) byte |= 0x80;
     bytes.push(byte);
   } while (remaining > 0);
-  return Buffer.concat([tag, Buffer.from(bytes), payload]);
+  return Buffer.from(bytes);
+}
+
+function lengthDelimited(field: number, payload: Buffer): Buffer {
+  return Buffer.concat([
+    protoVarint((field << 3) | 2),
+    protoVarint(payload.length),
+    payload,
+  ]);
 }
 
 const text = (field: number, value: string) =>
@@ -96,6 +104,56 @@ describe('AGY conversation decoding', () => {
     ]);
   });
 
+  it('unwraps the AGY 1.1.10 user and assistant payload envelopes', () => {
+    const markdown = '```mermaid\ngraph TD\nA-->B\n```';
+    const turns = decodeAgySteps([
+      {
+        step_type: 14,
+        step_payload: lengthDelimited(
+          19,
+          Buffer.concat([text(2, 'render a diagram'), text(3, 'duplicate display data')]),
+        ),
+      },
+      {
+        step_type: 15,
+        step_payload: lengthDelimited(
+          20,
+          Buffer.concat([text(1, markdown), text(8, 'duplicate display data')]),
+        ),
+      },
+    ]);
+
+    expect(turns).toEqual([
+      { prompt: 'render a diagram', assistantText: markdown },
+    ]);
+  });
+
+  it('preserves Markdown well beyond the former 40,000 character clamp', () => {
+    const markdown = [
+      '# Diagram',
+      '',
+      '```mermaid',
+      ...Array<string>(8_000).fill('A-->B'),
+      '```',
+    ].join('\n');
+    const turns = decodeAgySteps([
+      { step_type: 14, step_payload: text(2, 'render this') },
+      { step_type: 15, step_payload: text(1, markdown) },
+    ]);
+
+    expect(markdown.length).toBeGreaterThan(40_000);
+    expect(turns[0]?.assistantText).toBe(markdown);
+  });
+
+  it('still clamps pathological transcript fields at 512 KiB', () => {
+    const oversized = 'x'.repeat(MAX_AGY_TRANSCRIPT_TEXT + 100);
+    const turns = decodeAgySteps([
+      { step_type: 14, step_payload: text(2, 'large reply') },
+      { step_type: 15, step_payload: text(1, oversized) },
+    ]);
+
+    expect(turns[0]?.assistantText).toHaveLength(MAX_AGY_TRANSCRIPT_TEXT);
+  });
   it('reads the user text when it is nested one message deep', () => {
     const turns = decodeAgySteps([
       {

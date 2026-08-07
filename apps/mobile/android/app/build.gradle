@@ -35,7 +35,6 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 208
         versionName "0.2.8-alpha"
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -85,8 +84,6 @@ dependencies {
     // Compatibility reader only; new SSH secrets use AndroidKeyStore directly.
     implementation 'androidx.security:security-crypto:1.1.0'
     testImplementation "junit:junit:$junitVersion"
-    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
-    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
 }
 

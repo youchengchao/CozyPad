@@ -128,7 +128,7 @@ machine-wide latest conversation.
   while the live CLI stays ready for feedback or another prompt; it no longer
   changes a healthy runtime into an exited workspace session — passed.
 - Isolation control: the same smoke under the restricted test user failed at
-  `cd /c/Users/ycchao` with `Permission denied`; rerunning in the real Windows
+  `cd /c/Users/devbox` with `Permission denied`; rerunning in the real Windows
   user context passed. This distinguishes sandbox access from a corrupt AGY
   conversation.
 - Process hygiene: after smoke cleanup, no new `agy.exe` remained — passed.
@@ -705,7 +705,7 @@ behaviour, codex approval card via a sandbox-restricted command).
 
 Triggered a real approval through the UI (Workspace + approvals policy,
 untrusted `python -V`): the card rendered with the risk summary, the full
-command, and the machine row (`ycchao@localhost · cwd: …`); the session
+command, and the machine row (`devbox@localhost · cwd: …`); the session
 chip and filter moved to **needs input**; the composer disabled itself
 with 「Agent 正在等待你的回覆——在上方的 Approval／Question 卡片作答」.
 Allow once → green Allowed chip with content preserved → command executed
@@ -821,3 +821,107 @@ Verification:
   fonts/styles are packaged and Mermaid remains split into lazy chunks.
 - Browser screenshot verification could not run because the browser-control
   backend exposed no available browser. No substitute UI automation was used;
+
+## 2026-08-07 — Claude-model footer, collapsed reasoning, one chat theme
+
+Four reports from the user's own AGY session (Claude Opus 4.6, prompt `hi`),
+three of which turned out to be one bug.
+
+**The AGY footer is two columns, and only the Gemini shape was recognised.**
+AGY paints `esc to cancel` (or `? for shortcuts`) on the left and the model tag
+right-aligned on the right. Gemini writes `Gemini 3.5 Flash · low`; Claude
+writes `Claude Opus 4.6 (Thinking)` — no `·`. `FOOTER_PATTERN` anchored on that
+separator, so the whole Claude row fell through every chrome filter and caused
+three separate symptoms at once:
+
+- it was copied into the answer as `esc to cancel Claude Opus 4.6 (Thinking)`;
+- `RUNNING_PATTERN` matched its `Thinking`, so the surface stayed `running` —
+  which is why Stop was lit beside an untouched composer;
+- `findPromptLineIndex` no longer saw "only chrome below" the input row, so
+  `hasPrompt` was false and the mode never fell back to `prompt`; the streaming
+  caret kept blinking under a finished reply and read as an input cursor.
+
+Replaced with `isAgyFooterRow()` (exported, one definition for the three passes
+that need it): the left column is recognised whatever trails it, the bare model
+column keeps its original `·`-anchored rule so model-picker rows are not
+swallowed. `readAgyStatus` learned the same parenthesised form, so the header
+shows the model without waiting for someone to open `/context`.
+
+**Reasoning is now a disclosure.** `AgyThinkingCard` puts `Thought for 2s` in
+the `<summary>` and AGY's one-line reasoning summary in the body, closed by
+default. Previously the summary itself was the reasoning, so the `<details>`
+had nothing to disclose.
+
+**One chat theme, one accent.** `--agy-accent` was declared on
+`.agy-chat-surface`, so it existed only after Resume; before Resume every
+`color-mix()` referencing it was invalid and the browser dropped those
+declarations — the same markup rendered two ways, which is exactly what the
+user saw. The accent now lives on `:root` and the whole chat presentation layer
+moved into `src/styles/chat.css`, loaded after `styles.css`: neutral surface,
+one accent, hairline borders, no page gradients or glass, agent prose as an
+820px reading column instead of a bubble, small user bubble, hairline caret.
+`AgyReply`/`AgyDiffCard`/`MarkdownPre` split out of `AgyCliSurface.tsx` into
+`AgyReply.tsx` so the live surface and the transcript preview provably share
+one renderer.
+
+Verification:
+
+- Suite 690 passed / 1 skipped across the monorepo; 9 new tests
+  (`agyRealScreens` Claude-footer frame, `agyReply` disclosure/streaming).
+  The 10,000-line markdown perf test trips its 1000 ms budget when the machine
+  is loaded — it is a wall-clock threshold, green on a quiet run.
+- `tsc --noEmit` reports no new errors; the pre-existing failures in the
+  working tree (ChatItem `timestamp`, `'reconnecting'` connection state,
+  `MessageAttachments` nullable bridge) are untouched and predate this work.
+- Renderer + Electron builds pass.
+- Real app: AGY UI smoke green on the first run of the session — Stop absent
+  after the reply, no purple wash, flat welcome card before Resume matching the
+  live surface after it.
+- Later smoke runs fail at `Timed out waiting for live /model suggestion`.
+  **This is not caused by the change**: a control build with `chat.css` removed
+  entirely fails identically. AGY redraws its start banner after the `/usage`
+  pager closes and then swallows the typed `/mo`. Worth its own investigation.
+- Rendered the built stylesheet against the real markup at 1600 px and 375 px
+  through Electron `capturePage` to check the disclosure, statusline overflow
+  (the quota chips were being clipped by an inset statusline — now full bleed)
+  and the composer.
+
+### 2026-08-07 (cont.) — a reply that outgrew the window was thrown away
+
+User report: in a live Claude Opus 4.6 session every turn rendered except the
+last, whose answer AGY had clearly produced (visible from a second CLI attached
+to the same conversation).
+
+`mayScrapeAgyReply` refused the frame. With nothing accumulated yet
+(`previous === ''`) it demanded the turn's own prompt echo be visible — but an
+answer taller than the 40-row window scrolls that echo off the top before the
+first frame is ever accepted. Reconstructing the frame shows the extractor
+recovering the answer in full (312 chars, no footer leak) while the gate
+returned `false`, so the turn stayed permanently blank. Every earlier turn in
+that session had a short enough reply to keep its echo on screen, which is why
+only the last one vanished.
+
+The echo's real job is to prove "this screen is not still showing an earlier
+turn". The absence of any *other* prompt echo proves the same thing, so that is
+what the gate now checks. The original protection is unchanged and still
+tested: a frame carrying another prompt's echo is still refused.
+
+Compounding it in that particular session: it was running the pre-footer-fix
+build, where a Claude `esc to cancel … (Thinking)` row kept the surface in
+`running` forever. The transcript backfill that reads AGY's own store — the one
+thing that would have recovered the answer anyway — is gated on
+`screen.mode === 'prompt'`, so it never ran for the whole session. The footer
+fix restores that safety net; this change means the live scrape no longer needs
+it.
+
+Also observed, not yet handled: AGY's `⚠ Conversation already open` notice
+(printed when a conversation is opened in a second CLI instance) currently
+falls through `cleanAssistantLine` and renders as ordinary agent prose. It
+deserves its own card — it is a warning that messages sent from both sides may
+conflict.
+
+Verification: app package 411 passed; 4 new tests on the captured frame. The
+monorepo run reports 693 passed with one failure in the uncommitted challenger
+suite — a 1000 ms wall-clock budget for a 10,000-line markdown payload that
+trips under 63-file parallel load and passes three times out of three in
+isolation. Lint clean. Renderer and Electron rebuilt.

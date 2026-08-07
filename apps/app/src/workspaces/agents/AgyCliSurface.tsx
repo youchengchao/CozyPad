@@ -1,13 +1,4 @@
-import {
-  Children,
-  isValidElement,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ComponentPropsWithoutRef,
-  type ReactNode,
-} from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import {
   ChatAttachmentSchema,
@@ -20,7 +11,7 @@ import {
   type TerminalOutputEvent,
 } from '@cozypad/contracts';
 import { getBridge } from '../../platform/bridge';
-import { AssistantMarkdown } from './AssistantMarkdown';
+import { AgyReply } from './AgyReply';
 import {
   agyKeySequence,
   agyOptionSelectionSequence,
@@ -35,10 +26,13 @@ import {
   mayScrapeAgyReply,
   mirrorAgyDraft,
   nextSuggestionIndex,
-  segmentAgyReply,
   type AgyNavigationKey,
   type AgyScreenModel,
 } from './agyTerminalModel';
+import {
+  AGY_TRANSCRIPT_SYNC_DELAYS_MS,
+  canonicalAgyAssistantText,
+} from './agyTranscriptSync';
 import {
   ATTACHMENT_STATE_LABEL,
   caretIsOnHistoryEdge,
@@ -290,81 +284,6 @@ function agyComposerUnavailableHint(
   return '目前無法輸入';
 }
 
-function DiffLines({ diff }: { diff: string }) {
-  // Kept line-for-line identical to ChatTimeline's DiffBody: every agent's
-  // diff must render the same way (SPEC 1055), and the Claude path cannot be
-  // re-verified on this machine, so AGY aligns to it rather than the reverse.
-  return (
-    <pre className="diff-body">
-      {diff.split('\n').map((line, index) => {
-        const className = line.startsWith('+')
-          ? 'diff-add'
-          : line.startsWith('-')
-            ? 'diff-del'
-            : line.startsWith('@@')
-              ? 'diff-hunk'
-              : '';
-        return (
-          <span className={className} key={index}>
-            {line}
-            {'\n'}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}
-
-function AgyDiffCard({ diff }: { diff: string }) {
-  const lines = diff.split('\n');
-  const path =
-    lines
-      .find((line) => line.startsWith('+++ '))
-      ?.replace(/^\+\+\+\s+(?:b\/)?/u, '') ?? 'File changes';
-  const additions = lines.filter(
-    (line) => line.startsWith('+') && !line.startsWith('+++'),
-  ).length;
-  const deletions = lines.filter(
-    (line) => line.startsWith('-') && !line.startsWith('---'),
-  ).length;
-  return (
-    <details className="card diff-card agy-diff-card" open>
-      <summary>
-        <span className="mono diff-path">{path}</span>
-        <span className="diff-stat">
-          <span className="diff-add">+{additions}</span>{' '}
-          <span className="diff-del">-{deletions}</span>
-        </span>
-      </summary>
-      <DiffLines diff={diff} />
-    </details>
-  );
-}
-
-function MarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) {
-  const child = Children.count(children) === 1 ? Children.only(children) : null;
-  if (
-    isValidElement<{
-      className?: string;
-      children?: ReactNode;
-    }>(child)
-  ) {
-    const language = child.props.className ?? '';
-    const text = String(child.props.children ?? '').replace(/\n$/u, '');
-    if (/\blanguage-(?:diff|patch)\b/u.test(language)) {
-      return <AgyDiffCard diff={text} />;
-    }
-    if (/\blanguage-(?:gitlog|git-log)\b/u.test(language)) {
-      return (
-        <section className="card agy-git-history">
-          <strong>Git history</strong>
-          <pre>{text}</pre>
-        </section>
-      );
-    }
-  }
-  return <pre>{children}</pre>;
-}
 
 /**
  * The overlays AGY draws get purpose-built controls rather than a flat list of
@@ -624,93 +543,6 @@ function AgyOverlay({
   );
 }
 
-/**
- * Render one reply the way the rest of the product renders a turn: prose in a
- * bubble, each tool run as its own card, and the agent's reasoning collapsed
- * behind a disclosure — rather than one block of terminal text.
- */
-function AgyReply({
-  text,
-  streaming,
-  onToggleToolDetails,
-  showNativeToolControl = true,
-}: {
-  text: string;
-  streaming: boolean;
-  onToggleToolDetails(): void;
-  showNativeToolControl?: boolean;
-}) {
-  const blocks = useMemo(() => segmentAgyReply(text), [text]);
-  return (
-    <>
-      {blocks.map((block, index) => {
-        const last = index === blocks.length - 1;
-        if (block.kind === 'tool') {
-          return (
-            <details className={`card tool-card tool-${block.status}`} key={index}>
-              <summary>
-                <span className={`tool-status tool-status-${block.status}`} />
-                <span className="tool-name">{block.name}</span>
-                <span className="tool-summary mono">{block.detail}</span>
-              </summary>
-              {/* The summary row already shows a single-line detail in full;
-                  repeating it as output printed the same text twice. */}
-              {block.detail.includes('\n') ? (
-                <pre className="tool-output">{block.detail}</pre>
-              ) : null}
-              {showNativeToolControl ? (
-                <button
-                  type="button"
-                  className="agy-tool-native-view"
-                  data-testid="agy-tool-native-view"
-                  onClick={onToggleToolDetails}
-                >
-                  View in AGY
-                </button>
-              ) : null}
-            </details>
-          );
-        }
-        if (block.kind === 'thinking') {
-          return (
-            <details className="card agy-thinking-card" key={index}>
-              <summary>
-                <span className="agy-thinking-title">
-                  {block.title === '' ? 'Thinking' : block.title}
-                </span>
-                <span className="agy-thinking-meta">{block.meta}</span>
-              </summary>
-            </details>
-          );
-        }
-        if (block.kind === 'diff') {
-          return <AgyDiffCard diff={block.diff} key={index} />;
-        }
-        if (block.kind === 'gitHistory') {
-          return (
-            <section className="card agy-git-history" key={index}>
-              <strong>Git history</strong>
-              <pre>{block.entries.join('\n')}</pre>
-            </section>
-          );
-        }
-        return (
-          <div className="msg msg-assistant" key={index}>
-            <div className="msg-body markdown">
-              <AssistantMarkdown
-                fallbackPre={MarkdownPre}
-                streaming={streaming && last}
-              >
-                {block.text}
-              </AssistantMarkdown>
-              {streaming && last ? <span className="caret" /> : null}
-            </div>
-          </div>
-        );
-      })}
-    </>
-  );
-}
 
 /**
  * Read-only AGY history for a selected session. This intentionally never
@@ -835,6 +667,8 @@ export function AgyCliSurface({
   const inputFingerprintRef = useRef('');
   const draftTouchedRef = useRef(false);
   const activeTurnIdRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const transcriptSyncingTurnIdsRef = useRef(new Set<string>());
   const composingRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const stopFingerprintRef = useRef('');
@@ -854,6 +688,8 @@ export function AgyCliSurface({
   const [turns, setTurns] = useState<AgyLocalTurn[]>(() => [
     ...(AGY_TURN_CACHE.get(sessionId) ?? readPersistedTurns(sessionId)),
   ]);
+  const turnsRef = useRef(turns);
+  const previousScreenModeRef = useRef(screen.mode);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const historyDraftRef = useRef('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(
@@ -871,6 +707,11 @@ export function AgyCliSurface({
       ? 'done'
       : 'waiting',
   );
+  /** Readable from the terminal-event callbacks, which outlive any one render. */
+  const statusSyncPhaseRef = useRef<StatusSyncPhase>(statusSyncPhase);
+  statusSyncPhaseRef.current = statusSyncPhase;
+  /** Whether this mount's sync ever typed into AGY's input row. */
+  const statusSyncTypedRef = useRef(false);
   const [stopVerification, setStopVerification] =
     useState<StopVerification>('idle');
   const activeSlashItemRef = useRef<HTMLButtonElement>(null);
@@ -878,11 +719,23 @@ export function AgyCliSurface({
   const updateTurns = (updater: (current: AgyLocalTurn[]) => AgyLocalTurn[]) => {
     setTurns((current) => {
       const next = updater(current);
+      turnsRef.current = next;
       AGY_TURN_CACHE.set(sessionId, next);
       persistTurns(sessionId, next);
       return next;
     });
   };
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
@@ -915,7 +768,15 @@ export function AgyCliSurface({
       const next = deriveAgyScreenModel(readTerminalScreen(terminal));
       setScreen(next);
       setConnection('connected');
-      if (!draftTouchedRef.current) {
+      // Only mirror AGY's input row back once nobody but the user is driving
+      // it. The startup sync types `/context` and `/usage` into that same row,
+      // and mirroring mid-keystroke planted `/c`, `/usa`, `/mo` — whatever the
+      // frame caught — in the composer. Because the mirror only ever writes
+      // into an empty draft, that fragment then stayed for the whole session.
+      const syncing =
+        statusSyncPhaseRef.current !== 'done' &&
+        statusSyncPhaseRef.current !== 'failed';
+      if (!draftTouchedRef.current && !syncing) {
         const recoveredDraft = extractAgyPromptDraft(next);
         if (recoveredDraft !== '') {
           remoteDraftRef.current = recoveredDraft;
@@ -1134,6 +995,54 @@ export function AgyCliSurface({
     };
     // Deliberately keyed on the session alone: this is a mount-time recovery.
   }, [bridge, sessionId]);
+
+  useEffect(() => {
+    const previousMode = previousScreenModeRef.current;
+    previousScreenModeRef.current = screen.mode;
+    if (screen.mode !== 'prompt') return;
+
+    const turnId = activeTurnIdRef.current;
+    if (turnId === null || transcriptSyncingTurnIdsRef.current.has(turnId)) return;
+    const turn = turnsRef.current.find((candidate) => candidate.id === turnId);
+    if (turn === undefined) return;
+    // A very short answer can redraw from prompt to prompt between animation
+    // frames. In that case scraped reply text is the completion signal; the
+    // normal running -> prompt transition remains the primary signal.
+    if (previousMode !== 'running' && turn.assistantText.trim() === '') return;
+
+    const expectedPrompt = turn.submittedPrompt ?? turn.prompt;
+    transcriptSyncingTurnIdsRef.current.add(turnId);
+    void (async () => {
+      try {
+        for (const delayMs of AGY_TRANSCRIPT_SYNC_DELAYS_MS) {
+          if (delayMs > 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+          }
+          if (!mountedRef.current) return;
+          const recovered = await bridge
+            .readAgyTranscript({ sessionId, expectedPrompt })
+            .catch(() => ({ turns: [] }));
+          const assistantText = canonicalAgyAssistantText(
+            recovered.turns,
+            expectedPrompt,
+          );
+          if (assistantText === null) continue;
+          updateTurns((current) => {
+            const index = current.findIndex((candidate) => candidate.id === turnId);
+            if (index < 0 || current[index]!.assistantText === assistantText) return current;
+            const next = [...current];
+            next[index] = { ...next[index]!, assistantText };
+            return next;
+          });
+          return;
+        }
+      } finally {
+        transcriptSyncingTurnIdsRef.current.delete(turnId);
+        // Never clear a newer turn that began while this transcript was read.
+        if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
+      }
+    })();
+  }, [bridge, screen.fingerprint, screen.mode, sessionId, turns]);
 
   useEffect(() => {
     // Cancelling can take longer than any fixed timeout — AGY finishes the tool
@@ -1840,6 +1749,7 @@ export function AgyCliSurface({
       draft === ''
     ) {
       setStatusSyncPhase('context');
+      statusSyncTypedRef.current = true;
       // Keep startup commands as ordinary keystrokes. The Windows pseudo-
       // console can receive the first frame before AGY enables bracketed
       // paste, in which case the wrapper bytes become literal input.
@@ -1873,6 +1783,21 @@ export function AgyCliSurface({
       setStatusSyncPhase('settling');
     }
   }, [connection, draft, overlay, screen.fingerprint, screen.mode, statusSyncPhase]);
+
+  useEffect(() => {
+    if (statusSyncPhase !== 'done' && statusSyncPhase !== 'failed') return;
+    if (!statusSyncTypedRef.current || draftTouchedRef.current) return;
+    if (draft === '') return;
+    // Whatever the sync left in the composer is its own `/context` or `/usage`
+    // echoed back, never the user's: the composer is disabled for the whole
+    // sync (see `canCompose`). Gated on the sync having actually typed, so a
+    // genuine unsent remote draft recovered on remount (SPEC 1349) survives.
+    const { remote, send } = mirrorAgyDraft(remoteDraftRef.current, '', false);
+    remoteDraftRef.current = remote;
+    inputFingerprintRef.current = '';
+    if (send !== '') sendRaw(send);
+    setDraft('');
+  }, [draft, statusSyncPhase]);
 
   useEffect(() => {
     if (statusSyncPhase !== 'settling') return;

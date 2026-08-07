@@ -378,6 +378,8 @@ export function App() {
           <section className="workspace-page" hidden={workspace !== 'agents'}>
             <AgentsWorkspace
               connected={state === 'connected'}
+              connectionState={state}
+              reconnect={reconnect}
               profileId={selectedId}
             />
           </section>

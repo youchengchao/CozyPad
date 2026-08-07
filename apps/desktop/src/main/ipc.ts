@@ -5,6 +5,7 @@ import {
   AgentAttachmentUploadSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
+  AgyTranscriptRequestSchema,
   AgentTerminalOpenRequestSchema,
   AnswerAgentQuestionRequestSchema,
   DeclineAgentQuestionRequestSchema,
@@ -425,7 +426,7 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     assertSender(event);
     if (agentCommunication === null) return { turns: [] };
     return agentCommunication.readAgyTranscript(
-      AgentSessionRequestSchema.parse(raw),
+      AgyTranscriptRequestSchema.parse(raw),
     );
   });
 

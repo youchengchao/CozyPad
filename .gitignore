@@ -42,3 +42,6 @@ lib/graphify-out/
 .scratch/
 *_diff.txt
 .claude/
+
+# Agent orchestration notes: local working record, not product.
+.agents/

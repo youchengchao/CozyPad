@@ -1114,7 +1114,7 @@ describe('AgentCommunicationService', () => {
     expect(tmux.created[1]?.argv[2]).toContain("'--sandbox'");
   });
 
-  it('restores a revived AGY session transcript from the local store only', async () => {
+  it('safely binds and restores an AGY session transcript from the local store', async () => {
     let transcriptConversationId: string | undefined;
     const localService = new AgentCommunicationService({
       transport: transport as unknown as TransportPort,
@@ -1147,10 +1147,30 @@ describe('AgentCommunicationService', () => {
       cwd: 'D:/work',
     });
 
-    // A fresh conversation must never present someone else's history.
+    // A fresh conversation must never present history without proof that the
+    // native conversation belongs to this CozyPad turn.
     await expect(
       localService.readAgyTranscript({ sessionId: bundle.session.id }),
     ).resolves.toEqual({ turns: [] });
+    await expect(
+      localService.readAgyTranscript({
+        sessionId: bundle.session.id,
+        expectedPrompt: 'not this conversation',
+      }),
+    ).resolves.toEqual({ turns: [] });
+    const beforeMatch = JSON.parse(
+      await fs.readFile(path.join(tempDirectory, 'local-agy-sessions.json'), 'utf8'),
+    ) as { sessions: Array<{ record: { identity: unknown } }> };
+    expect(beforeMatch.sessions[0]?.record.identity).toBeNull();
+
+    await expect(
+      localService.readAgyTranscript({
+        sessionId: bundle.session.id,
+        expectedPrompt: '出個謎題',
+      }),
+    ).resolves.toEqual({
+      turns: [{ prompt: '出個謎題', assistantText: '好的……' }],
+    });
 
     transport.onStreamLine?.('__COZYPAD_AGENT_EXIT__');
     transport.endStream?.();

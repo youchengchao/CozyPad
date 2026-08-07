@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { MAX_AGENT_ATTACHMENTS } from '@cozypad/contracts';
 import type { SlashCommand } from '@cozypad/contracts';
-import { clipboardAttachmentFiles, formatAttachmentSize } from './attachmentBuffer';
+import { clipboardAttachmentFiles, formatAttachmentSize, getAttachmentFileTypeBadge } from './attachmentBuffer';
 import type { ComposerAttachment } from './attachmentBuffer';
 export type { ComposerAttachment } from './attachmentBuffer';
 
@@ -15,6 +15,8 @@ interface ChatComposerProps {
   disabled?: boolean;
   /** SPEC 1362-1364: why the composer is unavailable, and what to do next. */
   disabledReason?: { text: string; nextStep?: string };
+  /** Optional banner message for attachment validation (e.g. limit or size exceeded). */
+  attachmentNotice?: string;
   running?: boolean;
   stopping?: boolean;
   onChange(value: string): void;
@@ -46,6 +48,7 @@ export function slashCommandSelectionBehavior(
 
 export const ATTACHMENT_STATE_LABEL: Record<ComposerAttachment['state'], string> = {
   buffered: 'Buffered',
+  uploading: 'Uploading',
   packaging: 'Packaging',
   transferring: 'Transferring',
   verifying: 'Verifying',
@@ -96,6 +99,7 @@ export function ChatComposer({
   uploading = false,
   disabled = false,
   disabledReason,
+  attachmentNotice,
   running = false,
   stopping = false,
   onChange,
@@ -113,6 +117,9 @@ export function ChatComposer({
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const historyDraftRef = useRef('');
+  const isSubmittingRef = useRef(false);
+  const lastSendTimeRef = useRef(0);
+  const retryingAttachmentRef = useRef<Set<string>>(new Set());
 
   const slashQuery =
     value.startsWith('/') && !value.includes(' ') && !value.includes('\n')
@@ -144,7 +151,19 @@ export function ChatComposer({
     if (slashQuery === null) setSlashDismissed(false);
   }, [slashQuery]);
 
+  const handleRetryAttachment = (id: string) => {
+    if (retryingAttachmentRef.current.has(id)) return;
+    retryingAttachmentRef.current.add(id);
+    onRetryAttachment?.(id);
+    window.setTimeout(() => {
+      retryingAttachmentRef.current.delete(id);
+    }, 300);
+  };
+
   const accept = (command: SlashCommand) => {
+    const now = Date.now();
+    if (disabled || uploading || isSubmittingRef.current) return;
+    if (now - lastSendTimeRef.current < 300) return;
     const commandText = `/${normalizeSlashCommandName(command.name)}`;
     const behavior = slashCommandSelectionBehavior(command);
     if (behavior === 'picker' && onCommand !== undefined) {
@@ -152,10 +171,18 @@ export function ChatComposer({
       onChange('');
       onCommand(command);
     } else if (behavior === 'submit') {
+      isSubmittingRef.current = true;
+      lastSendTimeRef.current = now;
       setSlashDismissed(true);
       onChange('');
-      if (onCommand === undefined) onSend(commandText);
-      else onCommand(command);
+      try {
+        if (onCommand === undefined) onSend(commandText);
+        else onCommand(command);
+      } finally {
+        window.setTimeout(() => {
+          isSubmittingRef.current = false;
+        }, 300);
+      }
     } else {
       onChange(commandText);
     }
@@ -190,11 +217,24 @@ export function ChatComposer({
   };
 
   const send = () => {
-    if (disabled || uploading) return;
+    const now = Date.now();
+    if (disabled || uploading || isSubmittingRef.current) return;
+    if (now - lastSendTimeRef.current < 300) return;
+
     const text = value.trim();
     if (text === '' && attachments.length === 0) return;
+
+    isSubmittingRef.current = true;
+    lastSendTimeRef.current = now;
     resetHistoryNavigation();
-    onSend(text);
+
+    try {
+      onSend(text);
+    } finally {
+      window.setTimeout(() => {
+        isSubmittingRef.current = false;
+      }, 300);
+    }
     textareaRef.current?.focus();
   };
 
@@ -255,60 +295,84 @@ export function ChatComposer({
           )}
         </div>
       ) : null}
+      {attachmentNotice ? (
+        <div className="attachment-notice-banner" role="alert">
+          {attachmentNotice}
+        </div>
+      ) : null}
       <div
         className={`composer${attachments.length > 0 ? ' composer-with-attachments' : ''}`}
       >
         {attachments.length > 0 ? (
           <div className="composer-attachments">
-            {attachments.map((attachment) => (
-              <div className="composer-attachment" key={attachment.id}>
-                {attachment.previewUrl === undefined ? (
-                  <span className="composer-file-icon">FILE</span>
-                ) : (
-                  <img src={attachment.previewUrl} alt="" />
-                )}
-                <span>
-                  <strong>{attachment.name}</strong>
-                  <small
-                    className={
-                      attachment.state === 'error' ? 'attachment-state-error' : ''
-                    }
-                    title={attachment.errorMessage}
-                  >
-                    {ATTACHMENT_STATE_LABEL[attachment.state]}
-                    {' · '}
-                    {attachment.mediaType}
-                    {' · '}
-                    {formatAttachmentSize(attachment.sizeBytes)}
-                  </small>
-                </span>
-                {attachment.state === 'error' && onRetryAttachment !== undefined ? (
+            {attachments.map((attachment) => {
+              const fileBadgeText = getAttachmentFileTypeBadge(attachment.mediaType, attachment.name);
+              const isUploading =
+                attachment.state === 'uploading' ||
+                attachment.state === 'packaging' ||
+                attachment.state === 'transferring' ||
+                attachment.state === 'verifying';
+              return (
+                <div
+                  className={`composer-attachment composer-attachment-${attachment.state}`}
+                  key={attachment.id}
+                >
+                  {attachment.previewUrl === undefined ? (
+                    <span className="composer-file-icon">{fileBadgeText}</span>
+                  ) : (
+                    <img src={attachment.previewUrl} alt="" />
+                  )}
+                  <span>
+                    <strong>{attachment.name}</strong>
+                    <small
+                      className={
+                        attachment.state === 'error' ? 'attachment-state-error' : ''
+                      }
+                      title={attachment.errorMessage}
+                    >
+                      <span className={`attachment-badge attachment-badge-${attachment.state}`}>
+                        {attachment.state === 'ready' ? (
+                          '✓'
+                        ) : attachment.state === 'error' ? (
+                          '!'
+                        ) : isUploading ? (
+                          <span className="attachment-spinner" aria-hidden="true" />
+                        ) : (
+                          '•'
+                        )}
+                      </span>
+                      {' '}
+                      {ATTACHMENT_STATE_LABEL[attachment.state]}
+                      {' · '}
+                      {attachment.mediaType}
+                      {' · '}
+                      {formatAttachmentSize(attachment.sizeBytes)}
+                    </small>
+                  </span>
+                  {attachment.state === 'error' && onRetryAttachment !== undefined ? (
+                    <button
+                      type="button"
+                      className="attachment-retry"
+                      title={`Retry ${attachment.name}`}
+                      onClick={() => handleRetryAttachment(attachment.id)}
+                    >
+                      重試
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    className="attachment-retry"
-                    title={`Retry ${attachment.name}`}
-                    onClick={() => onRetryAttachment(attachment.id)}
+                    title="Remove attachment"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() => onRemoveAttachment(attachment.id)}
+                    // SPEC 1414: only Processing forbids removal — a buffered
+                    // or failed file stays removable while the agent runs.
+                    disabled={isUploading}
                   >
-                    重試
+                    ×
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  title="Remove attachment"
-                  aria-label={`Remove ${attachment.name}`}
-                  onClick={() => onRemoveAttachment(attachment.id)}
-                  // SPEC 1414: only Processing forbids removal — a buffered
-                  // or failed file stays removable while the agent runs.
-                  disabled={
-                    attachment.state === 'packaging' ||
-                    attachment.state === 'transferring' ||
-                    attachment.state === 'verifying'
-                  }
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         ) : null}
         <textarea
@@ -322,6 +386,7 @@ export function ChatComposer({
             onChange(event.target.value);
           }}
           onPaste={(event) => {
+            if (disabled || uploading) return;
             const files = clipboardAttachmentFiles(
               event.clipboardData.items,
               event.clipboardData.files,

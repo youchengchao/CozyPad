@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   AgentInstallation,
   AgentKind,
   AgentSessionStatus,
   AgentSessionSummary,
   ChatItem,
+  ConnectionState,
   DeleteScopeResult,
   RemoteFileItem,
   SlashCommand,
@@ -32,7 +33,62 @@ import {
   reconcileSessionView,
   selectSessionForPreview,
 } from './agentSessionViewState';
-import { ChatTimeline } from './ChatTimeline';
+import { ChatTimeline, TimelineErrorBoundary } from './ChatTimeline';
+
+export interface AgentsWorkspaceErrorBoundaryProps {
+  children: ReactNode;
+  fallback?: ReactNode;
+}
+
+export interface AgentsWorkspaceErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+export class AgentsWorkspaceErrorBoundary extends Component<
+  AgentsWorkspaceErrorBoundaryProps,
+  AgentsWorkspaceErrorBoundaryState
+> {
+  constructor(props: AgentsWorkspaceErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): AgentsWorkspaceErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    console.error('AgentsWorkspaceErrorBoundary caught an error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return (
+        <div className="agent-workspace-error-fallback" role="alert">
+          <div className="error-fallback-head">
+            <h2>⚠️ Agents Workspace Encountered an Error</h2>
+          </div>
+          <p className="error-fallback-message">
+            {this.state.error?.message ?? 'An unexpected error occurred in the agent workspace.'}
+          </p>
+          <div className="error-fallback-actions">
+            <button
+              className="composer-send"
+              onClick={() => this.setState({ hasError: false, error: null })}
+            >
+              Reload Workspace
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const AGENTS: { kind: AgentKind; label: string }[] = [
   { kind: 'claude', label: 'Claude' },
@@ -279,12 +335,76 @@ function SessionListItem({
   );
 }
 
+function ZeroMessageState({
+  sessionTitle,
+  agentKind,
+  onSelectSuggestion,
+}: {
+  sessionTitle: string;
+  agentKind: AgentKind;
+  onSelectSuggestion?: (text: string) => void;
+}) {
+  const agentLabel = AGENTS.find((a) => a.kind === agentKind)?.label ?? agentKind;
+  const icon = agentKind === 'claude' ? '✦' : agentKind === 'codex' ? '⚙' : '⚡';
+
+  return (
+    <div className="zero-message-state">
+      <div className="zero-message-card">
+        <div className="zero-message-header">
+          <div className="zero-message-avatar">{icon}</div>
+          <div>
+            <h3>{sessionTitle}</h3>
+            <span className="hint">{agentLabel} Agent Workspace</span>
+          </div>
+        </div>
+        <p className="zero-message-description">
+          This session has no messages yet. Send a message or select a slash command below to start working with {agentLabel}.
+        </p>
+        <div className="zero-message-suggestions">
+          <span className="suggestions-label">Suggested actions</span>
+          <div className="suggestion-chips">
+            <button
+              className="suggestion-chip"
+              onClick={() => onSelectSuggestion?.('/help')}
+            >
+              <code>/help</code> — Show commands
+            </button>
+            <button
+              className="suggestion-chip"
+              onClick={() => onSelectSuggestion?.('/status')}
+            >
+              <code>/status</code> — Session status
+            </button>
+            <button
+              className="suggestion-chip"
+              onClick={() =>
+                onSelectSuggestion?.(
+                  'What can you help me with in this project?',
+                )
+              }
+            >
+              Overview project
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface AgentsWorkspaceProps {
   connected: boolean;
+  connectionState?: ConnectionState;
+  reconnect?: { attempt: number; secondsLeft: number } | null;
   profileId: string | null;
 }
 
-export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) {
+export function AgentsWorkspace({
+  connected,
+  connectionState,
+  reconnect,
+  profileId,
+}: AgentsWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [agent, setAgent] = useState<AgentKind>('claude');
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
@@ -299,6 +419,50 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   >({});
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
   const attachmentSendInFlight = useRef(new Set<string>());
+  const retryInFlightRef = useRef(new Set<string>());
+
+  const prevConnectedRef = useRef(connected);
+  useEffect(() => {
+    if (prevConnectedRef.current && !connected) {
+      setTimelines((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const [sId, items] of Object.entries(next)) {
+          let itemChanged = false;
+          const updatedItems = items.map((item) => {
+            if (item.kind === 'message' && item.streaming) {
+              itemChanged = true;
+              return { ...item, streaming: false, interrupted: true };
+            }
+            if (item.kind === 'tool_call' && item.status === 'running') {
+              itemChanged = true;
+              return {
+                ...item,
+                status: 'error' as const,
+                output:
+                  (item.output ? item.output + '\n' : '') +
+                  '[連線中斷 — Agent 執行已中斷]',
+              };
+            }
+            return item;
+          });
+          if (itemChanged) {
+            changed = true;
+            next[sId] = [
+              ...updatedItems,
+              {
+                kind: 'notice',
+                id: `notice-disrupt-${Date.now()}`,
+                text: '⚡ 連線中斷 — Agent 執行已中斷',
+              },
+            ];
+          }
+        }
+        return changed ? next : current;
+      });
+    }
+    prevConnectedRef.current = connected;
+  }, [connected]);
   /** SPEC 318-331: prompts whose delivery outcome is overdue, per session. */
   const [sendUnconfirmed, setSendUnconfirmed] = useState<
     Record<string, { text: string }>
@@ -360,17 +524,20 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   const SIDEBAR_DEFAULT = 286;
   const SIDEBAR_STORAGE_KEY = 'cozypad-agent-sidebar-width';
   const panesRef = useRef<HTMLDivElement>(null);
-  /** Dynamic max: leave at least CHAT_MIN for the chat column. */
+
+  /** Dynamic max: leave at least CHAT_MIN for the chat column, strictly <= 600px. */
   const sidebarMax = useCallback(() => {
     const panes = panesRef.current;
     if (panes === null) return SIDEBAR_ABSOLUTE_MAX;
-    // 4px for the drag handle itself
-    return Math.min(SIDEBAR_ABSOLUTE_MAX, panes.clientWidth - CHAT_MIN - 4);
+    const available = panes.clientWidth - CHAT_MIN - 4;
+    return Math.min(SIDEBAR_ABSOLUTE_MAX, Math.max(SIDEBAR_MIN, available));
   }, []);
+
   const clamp = useCallback(
     (w: number) => Math.max(SIDEBAR_MIN, Math.min(sidebarMax(), w)),
     [sidebarMax],
   );
+
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     try {
       const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
@@ -381,22 +548,32 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
     } catch { /* ignore */ }
     return SIDEBAR_DEFAULT;
   });
+
   const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
   const onResizePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     sidebarDragRef.current = { startX: e.clientX, startWidth: sidebarWidth };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }, [sidebarWidth]);
+
   const onResizePointerMove = useCallback((e: React.PointerEvent) => {
     if (sidebarDragRef.current === null) return;
     const delta = e.clientX - sidebarDragRef.current.startX;
-    setSidebarWidth(clamp(sidebarDragRef.current.startWidth + delta));
+    const nextW = clamp(sidebarDragRef.current.startWidth + delta);
+    setSidebarWidth(nextW);
+    try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(nextW)); } catch { /* ignore */ }
   }, [clamp]);
-  const onResizePointerUp = useCallback(() => {
+
+  const onResizePointerUp = useCallback((e: React.PointerEvent) => {
     if (sidebarDragRef.current === null) return;
+    const delta = e.clientX - sidebarDragRef.current.startX;
+    const finalW = clamp(sidebarDragRef.current.startWidth + delta);
     sidebarDragRef.current = null;
-    try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarWidth)); } catch { /* ignore */ }
-  }, [sidebarWidth]);
+    setSidebarWidth(finalW);
+    try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(finalW)); } catch { /* ignore */ }
+  }, [clamp]);
+
   const onResizeDoubleClick = useCallback(() => {
     setSidebarWidth(SIDEBAR_DEFAULT);
     try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(SIDEBAR_DEFAULT)); } catch { /* ignore */ }
@@ -996,11 +1173,16 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
   /** SPEC 1415: one failed item retries alone, without re-sending the rest. */
   const retryAttachment = async (attachmentId: string) => {
     if (selectedSessionId === null) return;
+    if (retryInFlightRef.current.has(attachmentId)) return;
+    retryInFlightRef.current.add(attachmentId);
     const sessionId = selectedSessionId;
     const target = (attachments[sessionId] ?? []).find(
       (attachment) => attachment.id === attachmentId,
     );
-    if (target?.file === undefined) return;
+    if (target?.file === undefined) {
+      retryInFlightRef.current.delete(attachmentId);
+      return;
+    }
     setError(null);
     setTrayItemStates(sessionId, new Set([attachmentId]), 'packaging');
     try {
@@ -1042,6 +1224,8 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
         errorText(retryError),
       );
       setError(errorText(retryError));
+    } finally {
+      retryInFlightRef.current.delete(attachmentId);
     }
   };
 
@@ -1372,11 +1556,23 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
               entering and creating stay gated elsewhere.
             */}
             {!connected ? (
-              <div className="agent-availability-banner" role="status">
-                <strong>尚未連線</strong>
+              <div
+                className={`agent-availability-banner${
+                  connectionState === 'reconnecting' || reconnect
+                    ? ' agent-availability-reconnecting'
+                    : ''
+                }`}
+                role="status"
+              >
+                <strong>
+                  {connectionState === 'reconnecting' || reconnect
+                    ? '連線中斷 — 正在重連中'
+                    : '尚未連線'}
+                </strong>
                 <p>
-                  已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入
-                  或新建。Agent 對話會在遠端指定路徑建立 tmux session。
+                  {reconnect
+                    ? `${reconnect.secondsLeft}s 後進行第 ${reconnect.attempt} 次重連嘗試`
+                    : '已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入或新建。Agent 對話會在遠端指定路徑建立 tmux session。'}
                 </p>
               </div>
             ) : agentUnavailable ? (
@@ -1439,17 +1635,25 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                 </p>
               </div>
             ) : null}
-            <input
-              className="session-filter"
-              placeholder="搜尋 sessions…"
-              value={filters[agent]}
-              onChange={(event) =>
-                setFilters((current) => ({
-                  ...current,
-                  [agent]: event.target.value,
-                }))
-              }
-            />
+            <div className="session-filter-wrapper">
+              <span className="session-filter-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </span>
+              <input
+                className="session-filter"
+                placeholder="Filter sessions..."
+                value={filters[agent]}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    [agent]: event.target.value,
+                  }))
+                }
+              />
+            </div>
             <div className="session-bucket-filter" role="radiogroup" aria-label="Session status filter">
               {(['all', 'running', 'needsInput', 'idle', 'exited', 'error'] as const).map((bucket) => (
                 <button
@@ -1494,11 +1698,29 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                   />
                 );
               })}
-              {agentSessions.length === 0 ? (
+              {searchedSessions.length === 0 && filters[agent] === '' ? (
+                <div className="zero-session-state">
+                  <div className="zero-session-icon" aria-hidden="true">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                  </div>
+                  <p className="zero-session-text">
+                    No active sessions. Create a new session to get started.
+                  </p>
+                  <button
+                    className="zero-session-cta"
+                    disabled={!canCreate || busy}
+                    onClick={openCreate}
+                  >
+                    ＋ New session
+                  </button>
+                </div>
+              ) : agentSessions.length === 0 ? (
                 <p className="hint session-empty">
                   {bucketFilter === 'all'
-                    ? '還沒有對話。'
-                    : `沒有${BUCKET_LABEL[bucketFilter]} 狀態的對話。`}
+                    ? '沒有符合搜尋的對話。'
+                    : `沒有 ${BUCKET_LABEL[bucketFilter]} 狀態的對話。`}
                 </p>
               ) : null}
             </div>
@@ -1517,7 +1739,12 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
             onPointerMove={onResizePointerMove}
             onPointerUp={onResizePointerUp}
             onDoubleClick={onResizeDoubleClick}
-            title="拖曳調整寬度，雙擊恢復預設"
+            role="separator"
+            aria-orientation="vertical"
+            aria-valuenow={clamp(sidebarWidth)}
+            aria-valuemin={SIDEBAR_MIN}
+            aria-valuemax={SIDEBAR_ABSOLUTE_MAX}
+            title="Drag to resize sidebar (180px - 600px), double-click to reset"
           />
           <div className="chat-column">
             {selectedSession ? (
@@ -1528,6 +1755,11 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                       <strong>{selectedSession.title}</strong>
                       {selectedSession.agentKind === 'agy' ? (
                         <span className="agent-surface-chip">AGY CLI</span>
+                      ) : null}
+                      {reconnect || connectionState === 'reconnecting' ? (
+                        <span className="reconnect-pill mono">
+                          Reconnecting {reconnect ? `(${reconnect.secondsLeft}s)` : ''}...
+                        </span>
                       ) : null}
                     </span>
                     <span className="mono">{selectedSession.cwd}</span>
@@ -1594,14 +1826,24 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                         sessionId={selectedSession.id}
                         cwd={selectedSession.cwd}
                       />
-                    ) : (
-                      <ChatTimeline
-                        sessionId={selectedSession.id}
-                        items={timeline}
-                        interactive={false}
-                        onResolveApproval={() => undefined}
-                        onAnswerQuestion={() => undefined}
+                    ) : timeline.length === 0 ? (
+                      <ZeroMessageState
+                        sessionTitle={selectedSession.title}
+                        agentKind={selectedSession.agentKind}
                       />
+                    ) : (
+                      <TimelineErrorBoundary>
+                        <ChatTimeline
+                          sessionId={selectedSession.id}
+                          items={timeline}
+                          interactive={false}
+                          sessionStatus={selectedSession.status}
+                          sessionError={error ?? undefined}
+                          onResolveApproval={() => undefined}
+                          onAnswerQuestion={() => undefined}
+                          onRetrySession={() => void resumeSession(selectedSession)}
+                        />
+                      </TimelineErrorBoundary>
                     )}
                     <div className="session-resume-bar">
                       <span>
@@ -1652,18 +1894,36 @@ export function AgentsWorkspace({ connected, profileId }: AgentsWorkspaceProps) 
                   />
                 ) : (
                   <>
-                    <ChatTimeline
-                      sessionId={selectedSession.id}
-                      items={timeline}
-                      interactive
-                      onResolveApproval={(itemId, resolution) =>
-                        void resolveApproval(itemId, resolution)
-                      }
-                      onAnswerQuestion={(itemId, optionIndex) =>
-                        void answerQuestion(itemId, optionIndex)
-                      }
-                      onDeclineQuestion={(itemId) => void declineQuestion(itemId)}
-                    />
+                    {timeline.length === 0 ? (
+                      <ZeroMessageState
+                        sessionTitle={selectedSession.title}
+                        agentKind={selectedSession.agentKind}
+                        onSelectSuggestion={(text) =>
+                          setDrafts((current) => ({
+                            ...current,
+                            [selectedSession.id]: text,
+                          }))
+                        }
+                      />
+                    ) : (
+                      <TimelineErrorBoundary>
+                        <ChatTimeline
+                          sessionId={selectedSession.id}
+                          items={timeline}
+                          interactive
+                          sessionStatus={selectedSession.status}
+                          sessionError={error ?? undefined}
+                          onResolveApproval={(itemId, resolution) =>
+                            void resolveApproval(itemId, resolution)
+                          }
+                          onAnswerQuestion={(itemId, optionIndex) =>
+                            void answerQuestion(itemId, optionIndex)
+                          }
+                          onDeclineQuestion={(itemId) => void declineQuestion(itemId)}
+                          onRetrySession={() => void resumeSession(selectedSession)}
+                        />
+                      </TimelineErrorBoundary>
+                    )}
                     {sendUnconfirmed[selectedSession.id] !== undefined ? (
                       // SPEC 325-331: an overdue prompt is a question, not a
                       // spinner — query the real outcome or resend on purpose.

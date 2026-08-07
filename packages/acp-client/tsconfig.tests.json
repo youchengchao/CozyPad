@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    // The tests spawn real child processes, so they — and only they — get the
+    // Node types. `src` is included as well so the tests are checked against
+    // the same sources tsconfig.json checks, not a stale build.
+    "types": ["node"]
+  },
+  "include": ["src", "tests"]
+}
