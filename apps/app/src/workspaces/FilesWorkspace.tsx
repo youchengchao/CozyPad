@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { RemoteFileItem } from '@cozypad/contracts';
 import { textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
+import { AssistantMarkdown } from './agents/AssistantMarkdown';
 import { CodeEditor } from '../components/CodeEditor';
 import { ContextMenu, useLongPress } from '../components/ContextMenu';
 import type { MenuAction } from '../components/ContextMenu';
@@ -11,6 +10,13 @@ import { FileIcon, fileKindOf } from '../components/FileIcons';
 import { PdfViewer } from '../components/PdfViewer';
 import { mimeTypeForFileName, saveWithBrowserDownload } from '../fileDownload';
 import { buildFileBreadcrumbs, directoryItems } from './fileNavigation';
+import {
+  MAX_EDITABLE_TEXT_BYTES,
+  extensionOf,
+  imagePreviewMimeType,
+  isMarkdownPreviewFile,
+  isTextPreviewFile,
+} from './filePreview';
 
 interface FilesWorkspaceProps {
   connected: boolean;
@@ -25,30 +31,6 @@ type DialogState =
   | { kind: 'copy-to'; item: RemoteFileItem }
   | { kind: 'delete'; item: RemoteFileItem };
 
-const TEXT_EXTENSIONS = new Set([
-  'txt', 'md', 'markdown', 'py', 'ts', 'tsx', 'js', 'jsx', 'json', 'yaml', 'yml',
-  'toml', 'cfg', 'ini', 'sh', 'bash', 'zsh', 'log', 'csv', 'tsv', 'xml', 'html',
-  'css', 'sql', 'rs', 'go', 'c', 'h', 'cpp', 'hpp', 'java', 'rb', 'dart', 'gitignore',
-]);
-
-function extensionOf(name: string): string {
-  const dot = name.lastIndexOf('.');
-  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
-}
-
-function isTextFile(item: RemoteFileItem): boolean {
-  if (item.name.startsWith('.') && !item.name.includes('.', 1)) return true;
-  const ext = extensionOf(item.name);
-  // 無副檔名的檔案（README、Makefile、syslog…）在大小合理時當文字處理。
-  if (ext === '' && item.sizeBytes <= MAX_EDITOR_BYTES) return true;
-  return TEXT_EXTENSIONS.has(ext);
-}
-
-function isMarkdown(item: RemoteFileItem): boolean {
-  const ext = extensionOf(item.name);
-  return ext === 'md' || ext === 'markdown';
-}
-
 function isPdf(item: RemoteFileItem): boolean {
   return extensionOf(item.name) === 'pdf';
 }
@@ -57,8 +39,6 @@ function parentOf(path: string): string {
   const index = path.lastIndexOf('/');
   return index <= 0 ? '/' : path.slice(0, index);
 }
-
-const MAX_EDITOR_BYTES = 262144;
 
 /** 單列檔案項目：右鍵與長按都會開動作選單。 */
 function TreeRow({
@@ -119,6 +99,11 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     null,
   );
   const [pdfData, setPdfData] = useState<{ path: string; dataBase64: string } | null>(null);
+  const [imageData, setImageData] = useState<{
+    path: string;
+    dataBase64: string;
+    mimeType: string;
+  } | null>(null);
   const [mdPreview, setMdPreview] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -167,6 +152,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       setSelected(null);
       setDraft(null);
       setPdfData(null);
+      setImageData(null);
     },
     [loadDir],
   );
@@ -177,6 +163,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       setChildren({});
       setSelected(null);
       setDraft(null);
+      setPdfData(null);
+      setImageData(null);
       setPwd(null);
       return;
     }
@@ -228,12 +216,27 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       setSelected(item);
       setDraft(null);
       setPdfData(null);
+      setImageData(null);
       return;
     }
     setSelected(item);
     setDraft(null);
     setPdfData(null);
+    setImageData(null);
     setMdPreview(false);
+
+    const imageMimeType = imagePreviewMimeType(item);
+    if (imageMimeType !== null) {
+      setBusy(true);
+      void bridge
+        .fsReadBytes({ path: item.path })
+        .then(({ dataBase64 }) =>
+          setImageData({ path: item.path, dataBase64, mimeType: imageMimeType }),
+        )
+        .catch(report)
+        .finally(() => setBusy(false));
+      return;
+    }
 
     if (isPdf(item)) {
       setBusy(true);
@@ -245,12 +248,12 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       return;
     }
 
-    if (!isTextFile(item) || item.sizeBytes > MAX_EDITOR_BYTES) return;
+    if (!isTextPreviewFile(item) || item.sizeBytes > MAX_EDITABLE_TEXT_BYTES) return;
     void bridge
-      .fsRead({ path: item.path, maxBytes: MAX_EDITOR_BYTES, offset: 0 })
+      .fsRead({ path: item.path, maxBytes: MAX_EDITABLE_TEXT_BYTES, offset: 0 })
       .then(({ content }) => {
         setDraft({ path: item.path, text: content, saved: content });
-        if (isMarkdown(item)) setMdPreview(true);
+        if (isMarkdownPreviewFile(item)) setMdPreview(true);
       })
       .catch(report);
   };
@@ -692,7 +695,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                     儲存{dirty ? ' •' : ''}
                   </button>
                 ) : null}
-                {draft && isMarkdown(selected) ? (
+                {draft && isMarkdownPreviewFile(selected) ? (
                   <button onClick={() => setMdPreview((preview) => !preview)}>
                     {mdPreview ? '編輯' : '預覽'}
                   </button>
@@ -751,6 +754,22 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 <p>{children[selected.path]?.length ?? '…'} 個項目</p>
                 <p className="hint">pwd: {pwd ?? '—'}</p>
               </div>
+            ) : imagePreviewMimeType(selected) !== null ? (
+              imageData && imageData.path === selected.path ? (
+                <div className="image-preview" data-testid="file-image-preview">
+                  <img
+                    src={`data:${imageData.mimeType};base64,${imageData.dataBase64}`}
+                    alt={selected.name}
+                  />
+                  <span>
+                    {(selected.sizeBytes / 1024).toFixed(1)} KB · {imageData.mimeType}
+                  </span>
+                </div>
+              ) : (
+                <div className="placeholder">
+                  <p>載入圖片…</p>
+                </div>
+              )
             ) : isPdf(selected) ? (
               pdfData && pdfData.path === selected.path ? (
                 <PdfViewer dataBase64={pdfData.dataBase64} fileName={selected.name} />
@@ -759,9 +778,9 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                   <p>載入 PDF…</p>
                 </div>
               )
-            ) : draft && isMarkdown(selected) && mdPreview ? (
+            ) : draft && isMarkdownPreviewFile(selected) && mdPreview ? (
               <div className="md-preview markdown markdown-doc">
-                <Markdown remarkPlugins={[remarkGfm]}>{draft.text}</Markdown>
+                <AssistantMarkdown>{draft.text}</AssistantMarkdown>
               </div>
             ) : draft ? (
               <CodeEditor
@@ -777,7 +796,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 <p>{selected.name}</p>
                 <p className="hint">
                   {(selected.sizeBytes / 1024).toFixed(1)} KB · {selected.modified} ·
-                  {isTextFile(selected)
+                  {isTextPreviewFile(selected)
                     ? ' 檔案過大，僅供 Download'
                     : ' 二進位格式不做文字預覽（SPEC FR-04）'}
                 </p>

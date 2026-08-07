@@ -725,12 +725,17 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             throw new Error('AGY did not advertise a launch mode');
           }
           const home = await bridge.fsList({ path: ${JSON.stringify(AGY_SMOKE_CWD)} });
+          const launchMode =
+            ${JSON.stringify(AGY_INTERACTION_CASE)} === 'approval'
+              ? installation.launchModes.find((mode) => mode.id === 'sandbox') ||
+                installation.launchModes[0]
+              : installation.launchModes[0];
           const bundle = await bridge.createAgentSession({
             profileId,
             agentKind: 'agy',
             cwd: home.path,
             interactionMode: 'terminal',
-            launchMode: installation.launchModes[0].id,
+            launchMode: launchMode.id,
             title: 'CozyPad AGY UI smoke ' + new Date().toISOString(),
           });
           sessionId = bundle.session.id;
@@ -758,6 +763,25 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             5_000,
             'new AGY session selection',
           );
+          if (document.querySelector('.context-menu') !== null) {
+            throw new Error('Primary session click opened the desktop action menu');
+          }
+          const sessionRow = document.querySelector(
+            '[data-session-id="' + CSS.escape(sessionId) + '"]',
+          );
+          if (!(sessionRow instanceof HTMLElement)) {
+            throw new Error('New AGY session row is unavailable for context menu testing');
+          }
+          sessionRow.dispatchEvent(
+            new MouseEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              button: 2,
+              buttons: 2,
+              clientX: 150,
+              clientY: 220,
+            }),
+          );
           await waitFor(
             () =>
               JSON.stringify(
@@ -773,9 +797,6 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             () => document.querySelector('.context-menu') === null,
             5_000,
             'desktop session action menu dismissal',
-          );
-          const sessionRow = document.querySelector(
-            '[data-session-id="' + CSS.escape(sessionId) + '"]',
           );
           sessionRow.dispatchEvent(
             new PointerEvent('pointerdown', {
@@ -805,6 +826,11 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
             () => document.querySelector('.context-menu') === null,
             5_000,
             'touch session action menu dismissal',
+          );
+          await markStage('02-session-selected');
+          click(
+            document.querySelector('.session-resume-bar .composer-send'),
+            'AGY Resume button',
           );
           await waitFor(
             () => document.querySelector('[data-testid="agy-surface"]') !== null,
@@ -901,6 +927,47 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
           }
           await markStage('03-ready');
 
+          if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'markdown') {
+            const completionToken = 'COZYPAD_AGY_MARKDOWN_' + Date.now();
+            const markdownPrompt = [
+              'Reply with exactly the Markdown below. Do not add explanations.',
+              completionToken,
+              'Inline equation: $E = mc^2$',
+              'Display equation:',
+              '$$\\\\int_0^1 x^2 \\\\, dx = \\\\frac{1}{3}$$',
+              '~~~mermaid',
+              'graph TD',
+              '  A[Start] --> B[Done]',
+              '~~~',
+            ].join('\\n');
+            await submitFromUi(markdownPrompt);
+            await waitFor(
+              () => {
+                const reply = Array.from(
+                  document.querySelectorAll('.agy-chat-turn .msg-assistant'),
+                ).find((element) => element.textContent.includes(completionToken));
+                return (
+                  reply !== undefined &&
+                  reply.querySelector('.katex') !== null &&
+                  reply.querySelector('.katex-display') !== null &&
+                  reply.querySelector('.mermaid-diagram svg') !== null
+                );
+              },
+              120_000,
+              'AGY KaTeX and Mermaid response',
+            );
+            await markStage('04-markdown-rendered');
+            return {
+              profile: profile.name,
+              version: installation.version || 'unknown',
+              uiDriven: true,
+              interactionCase: 'markdown',
+              completionToken,
+              katexVerified: true,
+              mermaidVerified: true,
+              observations,
+            };
+          }
           if (${JSON.stringify(AGY_INTERACTION_CASE)} === 'question') {
             const completionToken = 'COZYPAD_AGY_QUESTION_' + Date.now();
             const questionPrompt = [
@@ -1467,6 +1534,13 @@ async function runAgyUiSmokeTest(win: BrowserWindow): Promise<void> {
       };
       console.log('[agy-ui-smoke] observations:', observationFile);
     }
+    const resultFile = path.join(visualDir, 'result.json');
+    await fs.writeFile(
+      resultFile,
+      JSON.stringify(result, null, 2),
+      'utf8',
+    );
+    console.log('[agy-ui-smoke] result:', resultFile);
 
     if (
       typeof result === 'object' &&

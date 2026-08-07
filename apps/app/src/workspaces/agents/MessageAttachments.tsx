@@ -23,11 +23,8 @@ export function attachmentDataUrl(mediaType: string, dataBase64: string): string
   return `data:${mediaType.toLowerCase()};base64,${dataBase64}`;
 }
 
-// Lives in attachmentBuffer so the composer trays can share it without
-// pulling this file's bridge dependency into their graph; re-exported to
-// keep existing import paths working.
-import { formatAttachmentSize } from './attachmentBuffer';
-export { formatAttachmentSize };
+import { formatAttachmentSize, getAttachmentFileTypeBadge } from './attachmentBuffer';
+export { formatAttachmentSize, getAttachmentFileTypeBadge };
 
 export function isTextPreviewAttachment(mediaType: string): boolean {
   const normalized = mediaType.toLowerCase().split(';')[0]?.trim() ?? '';
@@ -38,7 +35,11 @@ export function isTextPreviewAttachment(mediaType: string): boolean {
     normalized === 'application/xml' ||
     normalized === 'application/yaml' ||
     normalized === 'application/x-yaml' ||
-    normalized === 'image/svg+xml'
+    normalized === 'image/svg+xml' ||
+    normalized === 'application/javascript' ||
+    normalized === 'application/typescript' ||
+    normalized === 'application/x-sh' ||
+    normalized === 'application/x-python'
   );
 }
 
@@ -242,9 +243,15 @@ export function MessageAttachments({
 }: {
   attachments: ChatAttachment[];
 }) {
-  const bridge = useMemo(() => getBridge(), []);
-  const [selected, setSelected] = useState<ChatAttachment | null>(null);
   if (attachments.length === 0) return null;
+  const bridge = useMemo(() => {
+    try {
+      return getBridge();
+    } catch {
+      return null;
+    }
+  }, []);
+  const [selected, setSelected] = useState<ChatAttachment | null>(null);
 
   return (
     <>
@@ -264,7 +271,7 @@ export function MessageAttachments({
                 <AttachmentImage attachment={attachment} bridge={bridge} />
               ) : (
                 <span className="message-attachment-placeholder" aria-hidden="true">
-                  FILE
+                  {getAttachmentFileTypeBadge(attachment.mediaType, attachment.name)}
                 </span>
               )}
               <span className="message-attachment-meta">

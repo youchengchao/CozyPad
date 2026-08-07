@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ShellRemoteFiles, quoteShellArg } from '../src/shellRemoteFiles';
+import {
+  MAX_INLINE_FILE_WRITE_BYTES,
+  MAX_REMOTE_FILE_BYTES,
+  ShellRemoteFiles,
+  quoteShellArg,
+} from '../src/shellRemoteFiles';
 
 function fakeExec(outputs: string[]): {
   exec: (command: string, timeoutMs?: number) => Promise<string>;
@@ -29,7 +34,7 @@ describe('quoteShellArg', () => {
 describe('ShellRemoteFiles.list', () => {
   it('parses __PWD__, entries, and sorts directories first', async () => {
     const listing = [
-      '__PWD__\t/home/ycchao/projects',
+      '__PWD__\t/home/devbox/projects',
       'f\tnotes.md\t1234\t2026-07-29 10:00',
       'd\tsrc\t4096\t2026-07-28 09:00',
       'f\tzeta.txt\t10\t2026-07-29 10:00',
@@ -39,7 +44,7 @@ describe('ShellRemoteFiles.list', () => {
     const files = new ShellRemoteFiles(exec);
 
     const result = await files.list('~/projects');
-    expect(result.path).toBe('/home/ycchao/projects');
+    expect(result.path).toBe('/home/devbox/projects');
     expect(result.items.map((item) => item.name)).toEqual([
       'configs',
       'src',
@@ -47,7 +52,7 @@ describe('ShellRemoteFiles.list', () => {
       'zeta.txt',
     ]);
     expect(result.items[2]).toMatchObject({
-      path: '/home/ycchao/projects/notes.md',
+      path: '/home/devbox/projects/notes.md',
       type: 'f',
       sizeBytes: 1234,
     });
@@ -88,7 +93,8 @@ describe('ShellRemoteFiles.write', () => {
   it('rejects oversized payloads locally', async () => {
     const { exec, commands } = fakeExec(['']);
     const files = new ShellRemoteFiles(exec);
-    const big = 'A'.repeat(2 * 1024 * 1024);
+    const big = 'A'.repeat(6 * 1024 * 1024);
+    expect(MAX_INLINE_FILE_WRITE_BYTES).toBe(4 * 1024 * 1024);
     await expect(files.write('~/x', big)).rejects.toThrow('too large');
     expect(commands).toHaveLength(0);
   });
@@ -125,9 +131,11 @@ describe('ShellRemoteFiles operations', () => {
   });
 
   it('readBytes maps __TOO_LARGE__ into a friendly error', async () => {
-    const { exec } = fakeExec(['__TOO_LARGE__\t99999999\t12582912']);
+    const { exec, commands } = fakeExec(['__TOO_LARGE__\t99999999\t33554432']);
     const files = new ShellRemoteFiles(exec);
+    expect(MAX_REMOTE_FILE_BYTES).toBe(32 * 1024 * 1024);
     await expect(files.readBytes('/big.bin')).rejects.toThrow('too large for download');
+    expect(commands[0]).toContain('33554432');
   });
 
   it('create builds mkdir vs touch variants', async () => {

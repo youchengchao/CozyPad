@@ -1,7 +1,10 @@
 import type { ComponentPropsWithoutRef } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { AssistantMarkdown } from '../src/workspaces/agents/AssistantMarkdown';
+import {
+  AssistantMarkdown,
+  normalizeHackmdDisplayMath,
+} from '../src/workspaces/agents/AssistantMarkdown';
 
 describe('AssistantMarkdown', () => {
   it('renders inline and display equations through KaTeX', () => {
@@ -16,6 +19,20 @@ describe('AssistantMarkdown', () => {
     expect(html).toContain('aria-hidden="true"');
   });
 
+  it('renders an AGY reply with adjacent display math and a Mermaid fence', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMarkdown>
+        {'Inline: $E = mc^2$\nDisplay:\n$$\\int_0^1 x^2 \\, dx = \\frac{1}{3}$$\n~~~mermaid\ngraph TD\nA-->B\n~~~'}
+      </AssistantMarkdown>,
+    );
+
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain('mermaid-diagram-loading');
+  });
+  it('does not rewrite math-looking text inside fenced code', () => {
+    const source = '~~~text\n$$not display math$$\n~~~\nInline $$also inline$$';
+    expect(normalizeHackmdDisplayMath(source)).toBe(source);
+  });
   it('recognises a completed Mermaid fence without rendering source as code', () => {
     const html = renderToStaticMarkup(
       <AssistantMarkdown>

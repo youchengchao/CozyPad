@@ -169,6 +169,15 @@ export interface AgyStatus {
 /** `? for shortcuts        Gemini 3.6 Flash · hig` — the trailing tag is the state. */
 const STATUS_FOOTER =
   /(?:^|\s{2,})((?:gemini|claude|gpt|grok|llama)[\w.\s()+-]*?)\s*·\s*(\w+)\s*$/iu;
+/**
+ * `esc to cancel        Claude Opus 4.6 (Thinking)` — Claude models carry the
+ * effort inside the name rather than after a `·`, so the header sat on a bare
+ * "AGY" until the user happened to open /context. Anchored on the footer's own
+ * left column so a model-picker row, which has the same shape, is not mistaken
+ * for the active model.
+ */
+const STATUS_FOOTER_QUALIFIED =
+  /^(?:\?\s*for shortcuts|esc\s+to\s+cancel)\s{2,}((?:gemini|claude|gpt|grok|llama)[\w.\s+-]*?)\s*\(\s*([\w\s-]+?)\s*\)\s*$/iu;
 /** `Gemini 3.6 Flash (High) · 0/1.0M tokens` on the context screen. */
 const CONTEXT_SUMMARY = /^(.+?)\s+·\s+(\S+)\s+tokens\s*$/u;
 /**
@@ -196,6 +205,12 @@ export function readAgyStatus(lines: readonly string[]): AgyStatus {
     if (footer !== null) {
       status.model = condense(footer[1]!);
       status.effort = footer[2]!;
+      continue;
+    }
+    const qualified = STATUS_FOOTER_QUALIFIED.exec(line);
+    if (qualified !== null) {
+      status.model = condense(qualified[1]!);
+      status.effort = qualified[2]!.toLowerCase();
     }
   }
 

@@ -107,6 +107,12 @@ export const AgentSessionRequestSchema = z.object({
 });
 export type AgentSessionRequest = z.infer<typeof AgentSessionRequestSchema>;
 
+export const AgyTranscriptRequestSchema = AgentSessionRequestSchema.extend({
+  /** Exact submitted prompt used to safely identify a fresh local conversation. */
+  expectedPrompt: z.string().min(1).optional(),
+});
+export type AgyTranscriptRequest = z.infer<typeof AgyTranscriptRequestSchema>;
+
 export const AgentTerminalOpenRequestSchema = AgentSessionRequestSchema.extend({
   cols: z.number().int().min(1).max(1000),
   rows: z.number().int().min(1).max(1000),

@@ -36,6 +36,7 @@ import type {
   AgentInstallation,
   AgentSessionBundle,
   AgyTranscript,
+  AgyTranscriptRequest,
   AgentSessionChangedEvent,
   AgentSessionDeletedEvent,
   AgentSessionListRequest,
@@ -156,12 +157,11 @@ export interface PlatformBridge {
    */
   reviveAgentSession(request: AgentSessionRequest): Promise<AgentSessionBundle>;
   /**
-   * The transcript of a revived AGY session, recovered from AGY's own
-   * conversation store so an app restart does not lose the visible history.
-   * Empty for sessions that were never revived, and on hosts whose store
-   * cannot be read.
+   * Canonical Markdown recovered from AGY's own local conversation store.
+   * Fresh sessions must include their exact submitted prompt so the backend
+   * can bind the correct native conversation without exposing other history.
    */
-  readAgyTranscript(request: AgentSessionRequest): Promise<AgyTranscript>;
+  readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript>;
   openAgentTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
   renameAgentSession(request: RenameAgentSessionRequest): Promise<void>;
   deleteAgentSession(

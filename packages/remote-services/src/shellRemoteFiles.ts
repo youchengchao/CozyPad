@@ -6,6 +6,9 @@ export type RemoteExec = (command: string, timeoutMs?: number) => Promise<string
 
 export { quoteShellArg };
 
+export const MAX_REMOTE_FILE_BYTES = 32 * 1024 * 1024;
+export const MAX_INLINE_FILE_WRITE_BYTES = 4 * 1024 * 1024;
+
 function throwOnErrorMarker(output: string, fallback: string): string {
   if (output.startsWith('__ERROR__')) {
     const parts = output.split('\t');
@@ -103,7 +106,7 @@ fi
     return this.exec(command, 8000);
   }
 
-  async readBytes(path: string, maxBytes = 12 * 1024 * 1024): Promise<string> {
+  async readBytes(path: string, maxBytes = MAX_REMOTE_FILE_BYTES): Promise<string> {
     const command = `target=${quoteShellArg(path)}
 if [ ! -f "$target" ]; then
   echo "__ERROR__\tNot a regular file: $target"
@@ -131,7 +134,11 @@ fi
     return output;
   }
 
-  async write(path: string, contentBase64: string, maxBytes = 1024 * 1024): Promise<void> {
+  async write(
+    path: string,
+    contentBase64: string,
+    maxBytes = MAX_INLINE_FILE_WRITE_BYTES,
+  ): Promise<void> {
     const approximateBytes = Math.floor((contentBase64.length * 3) / 4);
     if (approximateBytes > maxBytes) {
       throw new Error(

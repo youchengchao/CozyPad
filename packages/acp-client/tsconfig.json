@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    // No `node` types on purpose. `src/` must stay runnable anywhere a
+    // WHATWG stream exists — if a Node global ever compiles here, the Node-free
+    // promise in src/nodeStreams.ts has already been broken. Tests get the Node
+    // types they need from tsconfig.tests.json.
+    "types": []
+  },
+  "include": ["src"]
+}

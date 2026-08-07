@@ -1,0 +1,493 @@
+/* ==========================================================================
+   CozyPad — chat presentation layer
+   --------------------------------------------------------------------------
+   Loaded from main.tsx *after* styles.css, so this file is the final word on
+   how a conversation looks. It is kept separate on purpose: the chat surface
+   is the part of the product that gets iterated on most, and its rules used
+   to be scattered across four unrelated regions of a 7,000-line stylesheet,
+   which is how the two conversation views drifted apart in the first place.
+
+   Two components render conversations:
+
+     ChatTimeline    Claude / Codex, and the read-only view of a selected
+                     session before Resume.
+     AgyCliSurface   AGY, both its transcript preview (before Resume) and its
+                     live surface (after Resume).
+
+   Every rule below is written to cover all of them. The visible difference
+   between them *was* the bug: the live AGY surface declared its own purple
+   identity in `--agy-accent`, which only existed inside `.agy-chat-surface`.
+   Outside it — in the before-Resume preview — every `color-mix()` referencing
+   that variable was invalid, so browsers dropped those declarations and the
+   same markup rendered in two different themes. Pressing Resume changed how
+   the product looked. The accent now lives on `:root`, one value, everywhere.
+
+   Visual direction: neutral background, a single accent, hairline borders,
+   restrained shadow. No page-wide gradients, glass, or glow — those were what
+   made a finished answer read as a heavy dark slab in the middle of the page.
+   ========================================================================== */
+
+:root {
+  /* Long answers are read, not scanned; this is the line length they get. */
+  --chat-measure: 820px;
+  --chat-gutter: 26px;
+
+  /* One accent for the whole product. AGY no longer brings its own. */
+  --chat-accent: var(--accent);
+  --chat-accent-soft: color-mix(in srgb, var(--chat-accent) 15%, transparent);
+  --chat-accent-line: color-mix(in srgb, var(--chat-accent) 45%, var(--border));
+
+  --chat-line: var(--border);
+  --chat-line-soft: color-mix(in srgb, var(--border) 62%, transparent);
+  --chat-card: color-mix(in srgb, var(--bg-raised) 88%, transparent);
+  --chat-user-bubble: color-mix(in srgb, var(--chat-accent) 12%, var(--bg-elevated));
+  --chat-user-line: color-mix(in srgb, var(--chat-accent) 30%, transparent);
+
+  --chat-radius: 12px;
+  --chat-radius-sm: 9px;
+  --chat-motion: 140ms cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* Consumed by the AGY rules already in styles.css. Defined here so the
+     preview and the live surface resolve identical colours. */
+  --agy-accent: var(--chat-accent);
+  --agy-accent-soft: var(--chat-accent-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Surface
+   -------------------------------------------------------------------------- */
+
+.agy-chat-surface {
+  /* Overrides the local purple declaration further up the stylesheet. */
+  --agy-accent: var(--chat-accent);
+  --agy-accent-soft: var(--chat-accent-soft);
+  background: var(--bg);
+}
+
+.chat-timeline,
+.agy-chat-timeline {
+  padding: var(--chat-gutter) max(20px, calc((100% - var(--chat-measure)) / 2))
+    36px;
+  gap: 14px;
+  overscroll-behavior: contain;
+}
+
+/* --------------------------------------------------------------------------
+   Messages
+   --------------------------------------------------------------------------
+   A user turn is a short bubble on the right. An agent turn is body copy —
+   no bubble, no card — because it carries markdown, code, tables and diagrams
+   that a box only makes harder to read.
+   -------------------------------------------------------------------------- */
+
+.msg-user {
+  justify-content: flex-end;
+}
+
+.msg-user .msg-body,
+.agy-chat-turn .msg-user .msg-body {
+  max-width: min(78%, 620px);
+  padding: 8px 13px;
+  border: 1px solid var(--chat-user-line);
+  border-radius: 14px 14px 4px 14px;
+  background: var(--chat-user-bubble);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.msg-assistant .msg-body,
+.agy-chat-turn .msg-assistant .msg-body {
+  max-width: 100%;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  font-size: 14px;
+  line-height: 1.68;
+}
+
+/* The role bar is a caption, not a badge bar competing with the message. */
+.msg-role-bar {
+  gap: 6px;
+  margin-bottom: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.msg-role-badge-user {
+  color: var(--text-faint);
+}
+
+.msg-role-badge-assistant {
+  color: color-mix(in srgb, var(--chat-accent) 70%, var(--text-faint));
+}
+
+/* --------------------------------------------------------------------------
+   Reasoning disclosure
+   --------------------------------------------------------------------------
+   `Thought for 2s` is the label; the reasoning itself is the content, closed
+   until asked for. It used to be the other way round — the whole summary sat
+   in the `<summary>` element, so the disclosure had nothing to disclose and
+   the model's private notes were permanently pinned above its answer.
+   -------------------------------------------------------------------------- */
+
+.agy-thinking-card {
+  align-self: flex-start;
+  max-width: min(100%, 640px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.agy-thinking-card summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px 3px 9px;
+  border: 1px solid var(--chat-line-soft);
+  border-radius: 999px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  transition: color var(--chat-motion), border-color var(--chat-motion),
+    background-color var(--chat-motion);
+}
+
+.agy-thinking-card summary::marker {
+  content: '';
+}
+
+.agy-thinking-card summary:hover {
+  border-color: var(--chat-line);
+  background: var(--chat-card);
+  color: var(--text-dim);
+}
+
+.agy-thinking-icon {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--chat-accent) 65%, transparent);
+}
+
+.agy-thinking-label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.agy-thinking-chevron {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.85;
+  transition: transform var(--chat-motion);
+}
+
+.agy-thinking-card[open] .agy-thinking-chevron {
+  transform: rotate(180deg);
+}
+
+/* Disclosed reasoning is an aside — a quiet rule down the left, not a card
+   that competes with the answer underneath it. */
+.agy-thinking-body {
+  margin: 8px 0 2px;
+  padding: 0 0 0 13px;
+  border-left: 2px solid color-mix(in srgb, var(--chat-accent) 28%, transparent);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.66;
+  white-space: pre-wrap;
+}
+
+/* --------------------------------------------------------------------------
+   CLI notice
+   --------------------------------------------------------------------------
+   AGY talking about the session ("this conversation is also open in another
+   CLI instance"), not the model answering. Deliberately unlike a message: an
+   attributed aside, so it can never be read as something the agent said.
+   -------------------------------------------------------------------------- */
+
+.agy-notice-card {
+  align-self: stretch;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, var(--chat-line));
+  border-radius: var(--chat-radius);
+  background: color-mix(in srgb, var(--yellow) 7%, transparent);
+}
+
+.agy-notice-icon {
+  flex: 0 0 auto;
+  color: var(--yellow);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agy-notice-card > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.agy-notice-card strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.agy-notice-card p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.agy-notice-source {
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------------------------
+   Working indicator
+   --------------------------------------------------------------------------
+   The streaming caret is a hairline, not a block. At 7x15px in accent blue it
+   read as a text cursor parked in the middle of the answer — users took it for
+   an input field they were expected to type into.
+   -------------------------------------------------------------------------- */
+
+.caret {
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--chat-accent) 75%, transparent);
+  vertical-align: -0.15em;
+}
+
+.agy-chat-working {
+  color: var(--text-dim);
+}
+
+.agy-chat-spinner {
+  border-color: color-mix(in srgb, var(--chat-accent) 25%, transparent);
+  border-top-color: var(--chat-accent);
+}
+
+/* --------------------------------------------------------------------------
+   Status line
+   --------------------------------------------------------------------------
+   Full bleed, unlike the timeline below it: the quota chips are a horizontal
+   scroller, and inseting them to the reading measure clipped the last one.
+   -------------------------------------------------------------------------- */
+
+.agy-statusline {
+  min-height: 40px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--chat-line-soft);
+  background: none;
+}
+
+.agy-statusline-metric {
+  border-color: var(--chat-line-soft);
+}
+
+.agy-statusline-presence-running {
+  background: var(--chat-accent);
+  box-shadow: 0 0 0 4px var(--chat-accent-soft);
+}
+
+.agy-statusline-effort {
+  border-color: var(--chat-accent-line);
+  background: var(--chat-accent-soft);
+  color: color-mix(in srgb, var(--chat-accent) 62%, var(--text));
+}
+
+/* --------------------------------------------------------------------------
+   Welcome / panels
+   --------------------------------------------------------------------------
+   Flat cards. The blurred, glowing panel read as a modal floating above the
+   conversation rather than a step inside it.
+   -------------------------------------------------------------------------- */
+
+.agy-chat-welcome {
+  padding: 34px 28px;
+  border: 1px solid var(--chat-line);
+  border-radius: 16px;
+  background: var(--chat-card);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.agy-chat-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--chat-accent) 22%, var(--bg-elevated));
+  box-shadow: none;
+  color: var(--text);
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.agy-chat-welcome h2 {
+  margin-top: 16px;
+  font-size: 22px;
+}
+
+.agy-chat-panel {
+  border-color: var(--chat-accent-line);
+  box-shadow: none;
+}
+
+/* --------------------------------------------------------------------------
+   Composer
+   --------------------------------------------------------------------------
+   One solid input, a hairline border, an accent focus ring. Send is the only
+   filled control; Stop is filled only while it is the live action, so the two
+   are never both shouting at the user.
+   -------------------------------------------------------------------------- */
+
+.agy-composer-wrap {
+  width: min(var(--chat-measure), calc(100% - 40px));
+  margin: 0 auto 14px;
+}
+
+.agy-composer {
+  min-height: 52px;
+  padding: 9px 10px 9px 13px;
+  border: 1px solid var(--chat-line);
+  border-radius: 14px;
+  background: var(--bg-raised);
+  box-shadow: none;
+  backdrop-filter: none;
+  transition: border-color var(--chat-motion), box-shadow var(--chat-motion);
+}
+
+.agy-composer:focus-within {
+  border-color: var(--chat-accent-line);
+  box-shadow: 0 0 0 3px var(--chat-accent-soft);
+}
+
+.composer textarea {
+  border-radius: var(--chat-radius-sm);
+}
+
+.composer textarea:focus {
+  border-color: var(--chat-accent-line);
+  box-shadow: 0 0 0 3px var(--chat-accent-soft);
+}
+
+.agy-composer-hint {
+  font-size: 11px;
+}
+
+.composer-send,
+.agy-composer .composer-send {
+  min-width: 68px;
+  min-height: 36px;
+  padding: 8px 16px;
+  border-radius: var(--chat-radius-sm);
+  background: var(--chat-accent);
+  color: var(--accent-ink);
+  box-shadow: none;
+  font-weight: 700;
+  transition: filter var(--chat-motion), opacity var(--chat-motion);
+}
+
+.composer-send:hover:not(:disabled),
+.agy-composer .composer-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.composer-send:active:not(:disabled),
+.agy-composer .composer-send:active:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.composer-stop,
+.agy-composer .composer-stop {
+  min-height: 36px;
+  padding: 8px 13px;
+  border: 1px solid color-mix(in srgb, var(--red) 42%, transparent);
+  border-radius: var(--chat-radius-sm);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  font-weight: 650;
+  transition: background-color var(--chat-motion), border-color var(--chat-motion);
+}
+
+.composer-stop:hover:not(:disabled),
+.agy-composer .composer-stop:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--red) 65%, transparent);
+  background: color-mix(in srgb, var(--red) 20%, transparent);
+}
+
+.composer-attach {
+  min-height: 36px;
+  border-radius: var(--chat-radius-sm);
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive — the acceptance sizes: 375 / 768 / 1280 / 1600
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 768px) {
+  .chat-timeline,
+  .agy-chat-timeline {
+    padding: 14px 12px 24px;
+    gap: 12px;
+  }
+
+  .agy-statusline {
+    padding-inline: 12px;
+  }
+
+  .agy-composer-wrap {
+    width: calc(100% - 16px);
+    margin-bottom: 8px;
+  }
+
+  .msg-user .msg-body,
+  .agy-chat-turn .msg-user .msg-body {
+    max-width: 88%;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Motion
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .agy-thinking-card,
+  .agy-thinking-chevron,
+  .agy-composer,
+  .composer-send,
+  .composer-stop,
+  .composer textarea {
+    transition: none;
+  }
+
+  .agy-chat-spinner,
+  .typing-dot,
+  .caret {
+    animation: none;
+  }
+}

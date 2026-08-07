@@ -1,16 +1,189 @@
-import { useEffect, useRef } from 'react';
-import type { ChatItem } from '@cozypad/contracts';
+import {
+  Children,
+  Component,
+  isValidElement,
+  useEffect,
+  useRef,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from 'react';
+import type { ChatItem, ToolCallItem } from '@cozypad/contracts';
 import { AssistantMarkdown } from './AssistantMarkdown';
 import { MessageAttachments } from './MessageAttachments';
 
-interface ChatTimelineProps {
+export interface ChatTimelineProps {
   sessionId: string;
   items: ChatItem[];
   interactive?: boolean;
+  sessionStatus?: string;
+  sessionError?: string;
   onResolveApproval(itemId: string, resolution: 'allowed' | 'denied'): void;
   onAnswerQuestion(itemId: string, optionIndex: number): void;
   /** Refuses a whole question request; used by unrepresentable questions. */
   onDeclineQuestion?(itemId: string): void;
+  onRetrySession?(): void;
+}
+
+export interface TimelineErrorBoundaryProps {
+  children: ReactNode;
+  fallback?: ReactNode;
+}
+
+export interface TimelineErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+export class TimelineErrorBoundary extends Component<
+  TimelineErrorBoundaryProps,
+  TimelineErrorBoundaryState
+> {
+  constructor(props: TimelineErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): TimelineErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    console.error('TimelineErrorBoundary caught an error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return (
+        <div className="card timeline-error-boundary" role="alert">
+          <div className="timeline-error-head">
+            <span>⚠️ Timeline Rendering Error</span>
+          </div>
+          <p className="timeline-error-msg">
+            {this.state.error?.message ?? 'Timeline encountered an error while rendering.'}
+          </p>
+          <button
+            className="timeline-error-reload-btn"
+            onClick={() => this.setState({ hasError: false, error: null })}
+          >
+            Reload Timeline
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export interface AgentErrorCardProps {
+  error?: string;
+  onRetry?(): void;
+}
+
+export function AgentErrorCard({ error, onRetry }: AgentErrorCardProps) {
+  return (
+    <div className="card agent-error-card" role="alert">
+      <div className="agent-error-head">
+        <span className="agent-error-icon" aria-hidden="true">
+          ⚠️
+        </span>
+        <strong>Agent Session Error</strong>
+      </div>
+      <p className="agent-error-detail">
+        {error ?? 'An error occurred during agent session execution.'}
+      </p>
+      {onRetry ? (
+        <button className="agent-error-retry-btn" onClick={onRetry}>
+          Resume Session
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export interface ToolStepCardProps {
+  item: ToolCallItem;
+  isCollapsible?: boolean;
+  defaultExpanded?: boolean;
+}
+
+/**
+ * Format execution elapsed time into human-friendly duration string.
+ */
+export function formatToolDuration(durationMs?: number, status?: string): string {
+  if (status === 'unknown' && durationMs === undefined) {
+    return '結果未知';
+  }
+  if (durationMs === undefined) {
+    return status === 'running' ? 'running...' : '';
+  }
+  return `${durationMs}ms`;
+}
+
+/**
+ * Step-by-step collapsible panel card for tool execution (Cursor / VS Code inspired).
+ */
+export function ToolStepCard({
+  item,
+  isCollapsible = true,
+  defaultExpanded,
+}: ToolStepCardProps) {
+  const isRunning = item.status === 'running';
+  const isError = item.status === 'error';
+  const isCompleted = item.status === 'completed';
+  const isOpen = defaultExpanded ?? (isRunning || isError);
+  const durationText = formatToolDuration(item.durationMs, item.status);
+
+  const statusBadge = (
+    <span className={`tool-status tool-status-${item.status}`}>
+      {isRunning ? <span className="tool-spinner" aria-hidden="true" /> : null}
+      {isCompleted ? <span className="tool-icon-check" aria-hidden="true">✓ </span> : null}
+      {isError ? <span className="tool-icon-cross" aria-hidden="true">✕ </span> : null}
+      {item.status === 'running' ? 'Running' : item.status === 'completed' ? 'Success' : item.status === 'error' ? 'Error' : ''}
+    </span>
+  );
+
+  const cardContent = (
+    <>
+      <summary className="tool-card-header">
+        {statusBadge}
+        <span className="tool-name">{item.name}</span>
+        <span className="tool-summary mono">{item.summary}</span>
+        {durationText ? (
+          <span className={`tool-duration${isRunning ? ' tool-duration-running' : ''}`}>
+            {durationText}
+          </span>
+        ) : null}
+        {isCollapsible ? (
+          <span className="tool-chevron" aria-hidden="true">▼</span>
+        ) : null}
+      </summary>
+      {item.output ? (
+        <div className="tool-output-wrapper">
+          <pre className="tool-output">{item.output}</pre>
+        </div>
+      ) : null}
+    </>
+  );
+
+  if (!isCollapsible) {
+    return (
+      <div className={`card tool-card tool-${item.status}`}>
+        {cardContent}
+      </div>
+    );
+  }
+
+  return (
+    <details
+      className={`card tool-card tool-${item.status}`}
+      open={isOpen}
+    >
+      {cardContent}
+    </details>
+  );
 }
 
 function DiffBody({ diff }: { diff: string }) {
@@ -35,13 +208,44 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
+/**
+ * Intercepts ```diff / ```patch code fences in Claude/Codex assistant
+ * messages and renders them as rich DiffBody cards instead of plain <pre>.
+ */
+function ChatTimelineMarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) {
+  const child = Children.count(children) === 1 ? Children.only(children) : null;
+  if (
+    isValidElement<{
+      className?: string;
+      children?: ReactNode;
+    }>(child)
+  ) {
+    const language = child.props.className ?? '';
+    const text = String(child.props.children ?? '').replace(/\n$/u, '');
+    if (/\blanguage-(?:diff|patch)\b/u.test(language)) {
+      return (
+        <details className="card diff-card" open>
+          <summary>
+            <span className="mono diff-path">inline diff</span>
+          </summary>
+          <DiffBody diff={text} />
+        </details>
+      );
+    }
+  }
+  return <pre>{children}</pre>;
+}
+
 export function ChatTimeline({
   sessionId,
   items,
   interactive = true,
+  sessionStatus,
+  sessionError,
   onResolveApproval,
   onAnswerQuestion,
   onDeclineQuestion,
+  onRetrySession,
 }: ChatTimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const positions = useRef(new Map<string, number>());
@@ -68,47 +272,51 @@ export function ChatTimeline({
         switch (item.kind) {
           case 'message':
             const messageAttachments = item.attachments ?? [];
+            const isUser = item.role === 'user';
             return (
               <div
                 key={item.id}
                 className={`msg msg-${item.role}${item.streaming ? ' msg-streaming' : ''}`}
               >
-                <div
-                  className={`msg-body${messageAttachments.length > 0 ? ' msg-body-with-attachments' : ''}`}
-                >
-                  {item.role === 'assistant' ? (
-                    <div className="markdown">
-                      <AssistantMarkdown streaming={item.streaming}>
-                        {item.text}
-                      </AssistantMarkdown>
-                    </div>
-                  ) : item.text === '' ? null : (
-                    <div className="msg-text">{item.text}</div>
-                  )}
-                  <MessageAttachments attachments={messageAttachments} />
-                  {item.streaming ? <span className="caret" /> : null}
-                  {item.interrupted === true ? (
-                    <span className="msg-interrupted">已中斷</span>
-                  ) : null}
+                <div className="msg-wrapper">
+                  <div className={`msg-role-bar msg-role-bar-${item.role}`}>
+                    <span className={`msg-role-badge msg-role-badge-${item.role}`}>
+                      {isUser ? '👤 You' : '🤖 Agent'}
+                    </span>
+                    {item.streaming ? (
+                      <span className="agent-typing-indicator">
+                        <span className="typing-dot" />
+                        <span className="typing-dot" />
+                        <span className="typing-dot" />
+                      </span>
+                    ) : null}
+                  </div>
+                  <div
+                    className={`msg-body${messageAttachments.length > 0 ? ' msg-body-with-attachments' : ''}`}
+                  >
+                    {item.role === 'assistant' ? (
+                      <div className="markdown">
+                        <AssistantMarkdown
+                          streaming={item.streaming}
+                          fallbackPre={ChatTimelineMarkdownPre}
+                        >
+                          {item.text}
+                        </AssistantMarkdown>
+                      </div>
+                    ) : item.text === '' ? null : (
+                      <div className="msg-text">{item.text}</div>
+                    )}
+                    <MessageAttachments attachments={messageAttachments} />
+                    {item.streaming ? <span className="caret" /> : null}
+                    {item.interrupted === true ? (
+                      <span className="msg-interrupted">已中斷</span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             );
           case 'tool_call':
-            return (
-              <details key={item.id} className={`card tool-card tool-${item.status}`}>
-                <summary>
-                  <span className={`tool-status tool-status-${item.status}`} />
-                  <span className="tool-name">{item.name}</span>
-                  <span className="tool-summary mono">{item.summary}</span>
-                  {item.status === 'unknown' ? (
-                    <span className="tool-duration">結果未知</span>
-                  ) : item.durationMs !== undefined ? (
-                    <span className="tool-duration">{item.durationMs}ms</span>
-                  ) : null}
-                </summary>
-                {item.output ? <pre className="tool-output">{item.output}</pre> : null}
-              </details>
-            );
+            return <ToolStepCard key={item.id} item={item} />;
           case 'file_diff':
             return (
               <details key={item.id} className="card diff-card" open>
@@ -187,9 +395,6 @@ export function ChatTimeline({
                 <span className="chip chip-expired">Expired</span>
               ) : null;
             if (item.unrepresentable === true) {
-              // SPEC 3.4.6: a question the card cannot express still shows
-              // its raw content and can be refused — one refusal answers the
-              // whole request, so the agent is never left waiting on nothing.
               return (
                 <div
                   key={item.id}
@@ -255,9 +460,6 @@ export function ChatTimeline({
               </div>
             );
           case 'notice':
-            // A CozyPad marker (e.g. the new-native-conversation boundary),
-            // deliberately styled as a divider so it never reads as agent
-            // output (SPEC 277).
             return (
               <div key={item.id} className="timeline-notice" role="note">
                 <span>{item.text}</span>
@@ -265,6 +467,9 @@ export function ChatTimeline({
             );
         }
       })}
+      {sessionStatus === 'error' ? (
+        <AgentErrorCard error={sessionError} onRetry={onRetrySession} />
+      ) : null}
     </div>
   );
 }

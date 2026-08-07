@@ -34,7 +34,7 @@ export type FsPathRequest = z.infer<typeof FsPathRequestSchema>;
 
 export const FsReadRequestSchema = z.object({
   path: z.string().min(1),
-  maxBytes: z.number().int().positive().default(262144),
+  maxBytes: z.number().int().positive().default(2 * 1024 * 1024),
   offset: z.number().int().min(0).default(0),
 });
 export type FsReadRequest = z.infer<typeof FsReadRequestSchema>;
