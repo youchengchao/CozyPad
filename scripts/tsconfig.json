@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // DOM comes along because packages/acp-client is deliberately Node-free and
+    // typed against WHATWG streams (see the comment in its own tsconfig). These
+    // scripts spawn processes, so unlike that package they do take `node`.
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    // The scripts spawn agents and drive them through packages/acp-client's
+    // TypeScript sources directly, so they are checked against those sources
+    // rather than against a build that does not exist yet.
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["."]
+}

@@ -397,7 +397,14 @@ describe('Milestone 5 Full E2E & Stress Verification Suite', () => {
       expect(html).toContain('usage — in');
 
       // Verify rendering duration is fast and non-blocking (<500ms benchmark)
-      expect(renderDurationMs).toBeLessThan(500);
+      // Blowup guard, not a benchmark. These renders take 100-200ms alone; the
+      // number below is not a speed target. What it catches is an algorithmic
+      // regression — an O(n^2) markdown path on a 10k-line payload takes tens of
+      // seconds, not milliseconds — so it is set where a real regression is
+      // unmissable and scheduler noise cannot reach. The previous 300/500/1000ms
+      // thresholds were reachable by noise: this suite runs 40 files in parallel,
+      // and one of them failed at >1000ms while passing at 155-176ms alone.
+      expect(renderDurationMs).toBeLessThan(5_000);
     });
 
     it('renders a 10,000 line massive text output without memory overflow or lag', () => {
@@ -413,7 +420,7 @@ describe('Milestone 5 Full E2E & Stress Verification Suite', () => {
       expect(html).toContain('Massive codebase output:');
       expect(html).toContain('CONST_0 =');
       expect(html).toContain('CONST_9999 =');
-      expect(renderDurationMs).toBeLessThan(1000);
+      expect(renderDurationMs).toBeLessThan(5_000);
     });
 
     it('handles 1,000 prompt navigation operations without stack overflow', () => {

@@ -928,3 +928,80 @@ Spike 程式碼在 session scratchpad 的 `acp-spike/`（`agy-acp-agent.mjs` +
 就會得到假信心）。變異一次只改一處、跑完立刻還原、最後用 `cmp` 逐檔確認
 source 回到原狀——這一輪十二個變異全部照這個流程跑完，`git status` 只剩兩個
 未追蹤目錄，沒有任何 source 被留下。
+
+## ✅ 驗收達成（2026-08-08）：Claude / Codex / AGY 三家跑通同一支 client
+
+`scripts/probe-acp-agent.mts` 用 **同一支 `packages/acp-client`、同一段程式碼**
+驅動三家 agent，只有 spawn 那一行不同。這是整個遷移的核心主張，所以它必須是
+可重跑的腳本而不是一段散文：
+
+```
+pnpm tsx scripts/probe-acp-agent.mts claude
+pnpm tsx scripts/probe-acp-agent.mts codex
+pnpm tsx scripts/probe-acp-agent.mts agy
+```
+
+Prompt 一律是 `Reply with exactly: OK`，三家都 `stopReason = end_turn`：
+
+| | claude-agent-acp 0.23.1 | codex-acp 1.1.14 | adapter-agy（我們的） |
+|---|---|---|---|
+| protocolVersion | 1 | 1 | 1 |
+| 回應耗時 | 1679ms | 3882ms | 6548ms |
+| authMethods | （已登入，空） | `api-key`, `chat-gpt` | （不適用，空） |
+| `loadSession` | ✅ | ✅ | ❌ |
+| sessionCapabilities | fork, list, resume, close | resume, list, close, delete, additionalDirectories | resume, additionalDirectories |
+| promptCapabilities | image, embeddedContext | image, embeddedContext | 全部 ❌ |
+| mcpCapabilities | http, sse | http | ❌ |
+| model 數量 | 3 | 7 | 12 |
+| 實測釘住的 model | `sonnet` | （未釘，7 個 GPT 可選） | `claude-sonnet-4-6` |
+| session/update 種類 | `available_commands_update`, `agent_message_chunk`×2, `usage_update` | `available_commands_update`, `session_info_update`×3, `agent_message_chunk`, `usage_update` | `agent_message_chunk`×2 |
+| 審批請求次數 | 0 | 0 | 0（**永遠是 0**，見下） |
+
+### 三個直接影響設計的量測結果
+
+**一、model picker 是真的統一的。** 三家都用 ACP 標準的
+`session/set_config_option` + `configId: "model"`，並在 `session/new` 回應裡
+advertise 可選清單。`claude-agent-acp` 的 `dist/acp-agent.js` 裡就是
+`else if (configId === "model")`，和我們 `adapter-agy` 的 `AGY_MODEL_CONFIG_ID`
+是同一個機制——不是我們自己發明的慣例。**一個 UI 元件涵蓋三家。**
+
+**二、能力差異正好落在「呈現為不可用」的那條線上。** agy 的
+`loadSession: false`、`promptCapabilities` 全 false、沒有 MCP，另外兩家都有。
+這正是 [[cozypad-product-goal]] 講的「差異只在 Adapter 層吸收，能力不足呈現為
+不可用而非改變版面」——而且現在是**從線上讀到的**，不是猜的。
+
+**三、審批那條缺口在協定層是看得見的。** agy 三次探測都是 0 個
+`session/request_permission`，而且 `initialize` 的 `agentCapabilities._meta`
+裡直接帶著 `cozypad.dev/agy-limitations`，client 一開始就讀得到
+`requestsPermission: false`。另外兩家有真的審批機制。UI 要據此把 agy 的
+審批相關控制項標成不可用，而不是假裝有。
+
+### 兩個 CLI 都沒有原生 ACP（實測，非文件）
+
+- **claude 2.1.224**：`claude --help` 沒有 `--acp`。只有雙向的
+  `--input-format stream-json` / `--output-format stream-json`。走 ACP 要靠
+  `@zed-industries/claude-agent-acp`（Zed 寫的，ACP 作者本人）。
+- **codex-cli 0.146.1**：子指令有 `mcp-server`、`app-server`，**沒有 `acp`**。
+  要靠 `@agentclientprotocol/codex-acp`，而且它會連帶裝自己的
+  `@openai/codex@0.147.0`——**不是**使用者本機那支 0.146.1，版本會分岔。
+
+兩個橋接器都依賴 `@agentclientprotocol/sdk`，和我們同一套，所以三方都在同一個
+協定版本上。
+
+### spawn 的硬規則
+
+一律 `node <dist/index.js>`，**不要走 `.CMD` shim**（那需要 shell），而且
+**永遠不要 `shell: true`**——Windows 上它會把 argv 串成一個未跳脫的字串。
+`scripts/probe-acp-agent.mts` 把 argv 印出來就是為了這件事可被檢查。
+
+腳本在送出任何 prompt 之前會先從 agent 自己的 model 清單確認身分，並且
+`/opus/` 命中就中止（測試一律 Sonnet，見「測試慣例」）。這條是因為早先一次
+CLI 預設值把探測導到了錯的 agent，花掉使用者的付費額度。
+
+### 還沒解決的（B1）
+
+`serveAgyOverStdio` 目前唯一的執行進入點是 `scripts/agy-acp-entry.mts`，靠 tsx
+跑。**出貨要的是 esbuild entry**：`apps/desktop/esbuild.mjs` 現在只有
+`src/main/main.ts` 和 `src/preload/preload.ts` 兩個 entryPoints，要加第三個把
+adapter 打包成 `dist/agy-acp.cjs`，再由 main 用 `spawn(process.execPath, [...])`
+拉起來。另外兩家不需要這一步——它們本來就是可執行的 npm 套件。

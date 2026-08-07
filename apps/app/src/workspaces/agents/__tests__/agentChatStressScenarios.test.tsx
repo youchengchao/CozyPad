@@ -83,7 +83,14 @@ describe('Real-World & Stress Performance Scenarios Suite', () => {
       expect(html).toContain('Component98.tsx');
 
       // Verify rendering performance benchmark
-      expect(duration).toBeLessThan(1000); // Sub-second execution in static React render
+      // Blowup guard, not a benchmark. These renders take 100-200ms alone; the
+      // number below is not a speed target. What it catches is an algorithmic
+      // regression — an O(n^2) markdown path on a 10k-line payload takes tens of
+      // seconds, not milliseconds — so it is set where a real regression is
+      // unmissable and scheduler noise cannot reach. The previous 300/500/1000ms
+      // thresholds were reachable by noise: this suite runs 40 files in parallel,
+      // and one of them failed at >1000ms while passing at 155-176ms alone.
+      expect(duration).toBeLessThan(5_000);
     });
 
     it('renders 300+ items without layout crash', () => {
@@ -115,7 +122,7 @@ describe('Real-World & Stress Performance Scenarios Suite', () => {
       expect(html).toContain('Here is a huge generated code file:');
       expect(html).toContain('var_0 =');
       expect(html).toContain('var_4999 =');
-      expect(duration).toBeLessThan(1000);
+      expect(duration).toBeLessThan(5_000);
     });
   });
 

@@ -51,3 +51,6 @@ lib/graphify-out/
 /SPEC-hand.legacy-en.md
 /docs/HANDOFF.md
 /docs/TEST_HISTORY.md
+
+# Local agent probes: real quota, not part of the product.
+/.probe/

@@ -8,3 +8,7 @@ allowBuilds:
   electron: true
   esbuild: true
   electron-winstaller: true
+
+minimumReleaseAgeExclude:
+  - '@agentclientprotocol/codex-acp@1.1.14'
+  - '@openai/codex@0.147.0-darwin-arm64 || 0.147.0-darwin-x64 || 0.147.0-linux-arm64 || 0.147.0-linux-x64 || 0.147.0-win32-arm64 || 0.147.0-win32-x64 || 0.147.0'
