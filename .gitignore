@@ -45,3 +45,9 @@ lib/graphify-out/
 
 # Agent orchestration notes: local working record, not product.
 .agents/
+
+# Session/process records: kept locally, not part of the product.
+/DEVELOPMENT_GUIDE.md
+/SPEC-hand.legacy-en.md
+/docs/HANDOFF.md
+/docs/TEST_HISTORY.md
