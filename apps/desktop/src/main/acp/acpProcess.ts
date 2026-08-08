@@ -107,6 +107,27 @@ export function launchSpecFor(agentKind: string, cwd: string): AcpLaunchSpec {
   }
 }
 
+/**
+ * Rewrites an MSYS/git-bash path into one Windows can actually enter.
+ *
+ * CozyPad probes a host's environment through a shell, and on Windows that
+ * shell is git-bash — so the home directory it reports is `/c/Users/name`, not
+ * `C:\Users\name`. That value becomes the session's cwd, and `spawn` cannot
+ * enter it: a local agent session opened on the default directory failed every
+ * time, with ENOENT naming the interpreter.
+ *
+ * Deliberately narrow. Only `/<drive letter>/…` is rewritten, because that form
+ * is unambiguous — a real POSIX path like `/srv/data` is left alone so a
+ * genuinely remote path still fails loudly instead of being bent into
+ * `S:\rv\data`.
+ */
+export function toLocalPath(candidate: string): string {
+  if (process.platform !== 'win32') return candidate;
+  const msys = /^\/([A-Za-z])\/(.*)$/u.exec(candidate);
+  if (msys === null) return candidate;
+  return path.win32.join(`${msys[1]!.toUpperCase()}:\\`, msys[2]!.replace(/\//gu, '\\'));
+}
+
 export interface AcpChild {
   readonly handle: AcpAgentHandle;
   /** Ends the agent. Safe to call more than once. */
@@ -137,14 +158,16 @@ export function spawnAcpAgent(
   // which sends the reader looking for a missing Electron that is sitting right
   // there. A path like `/c/Users/name` — what a git-bash shell reports — is not
   // a directory on Windows and lands in exactly this trap.
-  if (!existsSync(spec.cwd)) {
+  const cwd = toLocalPath(spec.cwd);
+  if (!existsSync(cwd)) {
+    const rewritten = cwd === spec.cwd ? '' : ` (read as ${cwd})`;
     throw new Error(
-      `The working directory for this session does not exist: ${spec.cwd}\n` +
+      `The working directory for this session does not exist: ${spec.cwd}${rewritten}\n` +
         'The agent was never started. On Windows this must be a real path such ' +
         'as D:\\projects\\thing, not a shell-style path such as /d/projects/thing.',
     );
   }
-  if (!statSync(spec.cwd).isDirectory()) {
+  if (!statSync(cwd).isDirectory()) {
     throw new Error(`The working directory for this session is not a directory: ${spec.cwd}`);
   }
   if (!existsSync(spec.args[0] ?? '')) {
@@ -157,7 +180,9 @@ export function spawnAcpAgent(
   }
 
   const child = spawn(spec.command, [...spec.args], {
-    cwd: spec.cwd,
+    // The translated one, not `spec.cwd`: the check above proved this is the
+    // path that exists.
+    cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: false,
     windowsHide: true,

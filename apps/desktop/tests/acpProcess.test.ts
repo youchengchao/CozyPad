@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { agyAcpEntryPath, spawnAcpAgent, type AcpLaunchSpec } from '../src/main/acp/acpProcess';
+import { agyAcpEntryPath, spawnAcpAgent, toLocalPath, type AcpLaunchSpec } from '../src/main/acp/acpProcess';
 
 const desktopRoot = path.dirname(fileURLToPath(new URL('.', import.meta.url)));
 const bundle = path.join(desktopRoot, 'dist', 'agy-acp.cjs');
@@ -168,5 +168,47 @@ describe('a bad working directory is reported as one', () => {
         handlers as never,
       ),
     ).toThrow(/agent entry point is missing/u);
+  });
+});
+
+describe('MSYS paths, which is what a git-bash environment probe returns', () => {
+  const handlers = {
+    onSessionUpdate: () => undefined,
+    requestPermission: async () => ({ outcome: { outcome: 'cancelled' as const } }),
+  };
+
+  it('rewrites /c/Users/name into a path Windows can enter', () => {
+    // CozyPad probes a host's environment through a shell, and on Windows that
+    // shell is git-bash — so the home directory it reports is `/c/Users/name`.
+    // That becomes the session's default cwd, and every local session opened on
+    // it failed to spawn.
+    expect(toLocalPath('/c/Users/ycchao')).toBe(String.raw`C:\Users\ycchao`);
+    expect(toLocalPath('/d/CozyPad/apps/desktop')).toBe(String.raw`D:\CozyPad\apps\desktop`);
+    expect(toLocalPath('/D/CozyPad')).toBe(String.raw`D:\CozyPad`);
+  });
+
+  it('leaves a real POSIX path alone so a remote one still fails loudly', () => {
+    // `/srv/data` must NOT become `S:\rv\data`. A path that genuinely belongs
+    // to another host has to keep failing rather than be bent into a local one.
+    expect(toLocalPath('/srv/deep-learning')).toBe('/srv/deep-learning');
+    expect(toLocalPath('/home/researcher')).toBe('/home/researcher');
+    expect(toLocalPath(String.raw`D:\CozyPad`)).toBe(String.raw`D:\CozyPad`);
+  });
+
+  it('actually spawns in a directory given in MSYS form', () => {
+    // The end of the story: the rewrite is not cosmetic, the child starts.
+    // Built with slice/split rather than a regex so the intent stays legible:
+    // "D:\\CozyPad\\apps\\desktop" written the way git-bash would report it.
+    const drive = desktopRoot.slice(0, 1).toLowerCase();
+    const rest = desktopRoot.slice(3).split('\\').join('/');
+    const msysCwd = '/' + drive + '/' + rest;
+    expect(toLocalPath(msysCwd)).toBe(desktopRoot);
+
+    const child = spawnAcpAgent(
+      { label: 'adapter-agy', command: process.execPath, args: [bundle], cwd: msysCwd },
+      handlers as never,
+    );
+    expect(child).toBeDefined();
+    child.kill();
   });
 });

@@ -8,7 +8,13 @@
  */
 import type { ChatItem } from '@cozypad/contracts';
 import type { AcpClientHandlers, AcpSessionEvent } from '@cozypad/acp-client';
-import { launchSpecFor, spawnAcpAgent, type AcpChild, type AcpLaunchSpec } from './acpProcess';
+import {
+  launchSpecFor,
+  spawnAcpAgent,
+  toLocalPath,
+  type AcpChild,
+  type AcpLaunchSpec,
+} from './acpProcess';
 import {
   approvalItemFor,
   defaultClock,
@@ -58,6 +64,30 @@ interface Running {
  * store, the identity model and the tmux path, and mixing a second runtime into
  * it is how the first one became untestable.
  */
+/**
+ * Turns a JSON-RPC failure into something worth reading.
+ *
+ * `RequestError: Internal error` is code -32603 and says nothing; the agent's
+ * own message rides in `data`, and the ACP SDK keeps it there. This unwraps it
+ * so a failed turn names its cause.
+ */
+function describeAgentError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const rpc = error as Error & { code?: unknown; data?: unknown };
+  const parts = [error.message];
+  if (typeof rpc.code === 'number') parts.push(`(code ${rpc.code})`);
+  const data = rpc.data;
+  if (typeof data === 'string' && data !== '') parts.push(data);
+  else if (data !== undefined && data !== null) {
+    try {
+      parts.push(JSON.stringify(data));
+    } catch {
+      /* a data blob that will not serialise is not worth failing over */
+    }
+  }
+  return parts.join(' — ');
+}
+
 export class AcpAgentRuntime {
   readonly #sessions = new Map<string, Running>();
 
@@ -86,8 +116,13 @@ export class AcpAgentRuntime {
    */
   async start(
     sessionId: string,
-    cwd: string,
+    rawCwd: string,
     agentKind = 'agy',
+    // Translated once, here, so the spawn and the agent agree. Getting this
+    // wrong is quiet rather than loud: the child would start in the right place
+    // while `--add-dir /c/Users/name` told agy to look somewhere that does not
+    // exist on Windows, and it would answer confidently about nothing.
+    cwd: string = toLocalPath(rawCwd),
     spec: AcpLaunchSpec = launchSpecFor(agentKind, cwd),
   ): Promise<{ acpSessionId: string; configOptions: unknown }> {
     this.stop(sessionId);
@@ -211,9 +246,13 @@ export class AcpAgentRuntime {
     } catch (error) {
       running.state = settleAcpTimeline(running.state);
       this.callbacks.onTimeline(sessionId, running.state.items);
-      const message = error instanceof Error ? error.message : String(error);
-      this.callbacks.onError(sessionId, message);
-      throw error;
+      // JSON-RPC reports an agent-side failure as "Internal error" and puts
+      // what actually happened in `data`. Surfacing only the former gives the
+      // user a sentence with no information in it — which is exactly what a
+      // failed send looked like.
+      const detail = describeAgentError(error);
+      this.callbacks.onError(sessionId, detail);
+      throw new Error(detail, { cause: error });
     }
   }
 
