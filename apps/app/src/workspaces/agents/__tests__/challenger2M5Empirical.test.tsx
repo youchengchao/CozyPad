@@ -22,6 +22,29 @@ import { TimelineErrorBoundary } from '../ChatTimeline';
 import { AgentsWorkspaceErrorBoundary } from '../AgentsWorkspace';
 import type { AgentSessionSummary } from '@cozypad/contracts';
 
+/**
+ * A valid `AgentSessionSummary`. The literals in this file used to invent a
+ * `createdAt` the schema has no field for, and omit `host`, `project`,
+ * `cwd`, `unread` and `slashCommands`, which it requires. vitest strips
+ * types, so they compiled to nothing and the tests passed against a shape the
+ * app never emits.
+ */
+function summary(
+  over: Partial<AgentSessionSummary> & Pick<AgentSessionSummary, 'id' | 'agentKind'>,
+): AgentSessionSummary {
+  return {
+    title: over.id,
+    host: 'localhost',
+    project: 'CozyPad',
+    cwd: 'D:\\CozyPad',
+    status: 'ready',
+    unread: 0,
+    slashCommands: [],
+    updatedAt: '2026-08-08T00:00:00.000Z',
+    ...over,
+  };
+}
+
 describe('Challenger 2 M5 Empirical Stress Test Suite — Robustness & Adversarial Verification', () => {
   const originalWindow = globalThis.window;
 
@@ -220,7 +243,6 @@ describe('Challenger 2 M5 Empirical Stress Test Suite — Robustness & Adversari
 
       const boundary = new TimelineErrorBoundary({
         children: 'Normal child',
-        rawItem: { id: 'err-item-1', kind: 'tool' },
       });
       boundary.state = {
         hasError: true,
@@ -412,14 +434,7 @@ describe('Challenger 2 M5 Empirical Stress Test Suite — Robustness & Adversari
       state = enterSelectedSession(state, 'codex', 'sess-codex-100');
 
       const activeSessions: AgentSessionSummary[] = [
-        {
-          id: 'sess-codex-101',
-          agentKind: 'codex',
-          title: 'Active Session 101',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          status: 'ready',
-        },
+        summary({ id: 'sess-codex-101', agentKind: 'codex', title: 'Active Session 101', status: 'ready' }),
       ];
 
       // sess-codex-100 is no longer in activeSessions -> reconcile should clear it
@@ -434,14 +449,7 @@ describe('Challenger 2 M5 Empirical Stress Test Suite — Robustness & Adversari
 
       // Session exists but has agentKind = 'agy', not 'claude'
       const activeSessions: AgentSessionSummary[] = [
-        {
-          id: 'sess-100',
-          agentKind: 'agy',
-          title: 'AGY session with same ID',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          status: 'ready',
-        },
+        summary({ id: 'sess-100', agentKind: 'agy', title: 'AGY session with same ID', status: 'ready' }),
       ];
 
       const reconciled = reconcileSessionView(state, activeSessions);
@@ -471,8 +479,8 @@ describe('Challenger 2 M5 Empirical Stress Test Suite — Robustness & Adversari
       state = selectSessionForPreview(state, 'agy', 'a-deleted');
 
       const currentSessions: AgentSessionSummary[] = [
-        { id: 'c1', agentKind: 'claude', title: 'Claude 1', createdAt: 0, updatedAt: 0, status: 'ready' },
-        { id: 'cx1', agentKind: 'codex', title: 'Codex 1', createdAt: 0, updatedAt: 0, status: 'ready' },
+        summary({ id: 'c1', agentKind: 'claude', title: 'Claude 1' }),
+        summary({ id: 'cx1', agentKind: 'codex', title: 'Codex 1' }),
       ];
 
       const reconciled = reconcileSessionView(state, currentSessions);

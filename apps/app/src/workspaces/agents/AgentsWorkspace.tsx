@@ -453,6 +453,9 @@ export function AgentsWorkspace({
               {
                 kind: 'notice',
                 id: `notice-disrupt-${Date.now()}`,
+                // Required by NoticeItemSchema, and it was missing: this notice
+                // would have failed to parse on its way to or from the store.
+                timestamp: new Date().toISOString(),
                 text: '⚡ 連線中斷 — Agent 執行已中斷',
               },
             ];
@@ -1558,14 +1561,14 @@ export function AgentsWorkspace({
             {!connected ? (
               <div
                 className={`agent-availability-banner${
-                  connectionState === 'reconnecting' || reconnect
+                  reconnect
                     ? ' agent-availability-reconnecting'
                     : ''
                 }`}
                 role="status"
               >
                 <strong>
-                  {connectionState === 'reconnecting' || reconnect
+                  {reconnect
                     ? '連線中斷 — 正在重連中'
                     : '尚未連線'}
                 </strong>
@@ -1756,7 +1759,7 @@ export function AgentsWorkspace({
                       {selectedSession.agentKind === 'agy' ? (
                         <span className="agent-surface-chip">AGY CLI</span>
                       ) : null}
-                      {reconnect || connectionState === 'reconnecting' ? (
+                      {reconnect ? (
                         <span className="reconnect-pill mono">
                           Reconnecting {reconnect ? `(${reconnect.secondsLeft}s)` : ''}...
                         </span>

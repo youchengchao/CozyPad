@@ -29,7 +29,6 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
     const html = renderToStaticMarkup(
       <AgentsWorkspace
         connected={false}
-        connectionState="reconnecting"
         reconnect={{ attempt: 2, secondsLeft: 5 }}
         profileId="profile-1"
       />,
@@ -44,7 +43,6 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
     const html = renderToStaticMarkup(
       <AgentsWorkspace
         connected={false}
-        connectionState="reconnecting"
         reconnect={{ attempt: 1, secondsLeft: 10 }}
         profileId="profile-1"
       />,
@@ -72,6 +70,7 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
     const items: ChatItem[] = [
       {
         kind: 'message',
+        timestamp: '2026-08-08T00:00:00.000Z',
         id: 'msg-1',
         role: 'assistant',
         text: 'Partial response before drop...',
@@ -96,6 +95,7 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
     const items: ChatItem[] = [
       {
         kind: 'notice',
+        timestamp: '2026-08-08T00:00:00.000Z',
         id: 'notice-1',
         text: '⚡ 連線中斷 — Agent 執行已中斷',
       },

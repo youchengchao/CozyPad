@@ -1,0 +1,263 @@
+{
+  "agent": "adapter-agy",
+  "prompt": "出一題四選一的猜謎題給我選，用互動選項讓我點",
+  "updates": [
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "你",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "跳過了題目，不試試看嗎？😄\n\n謎底是：**",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "🗺️ 地圖**\n\n> 地圖有城市的",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "輪廓，但沒有真正的房屋；\n> 有山脈的標示",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "，但沒有真正的樹木；\n> 有水域的圖案，但沒有真正的魚；",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "\n> 有道路的線條，但沒有真正的車輛。\n\n要再來一題嗎？",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "😊",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    },
+    {
+      "sessionId": "agy-msjnqv5k-e81w25",
+      "kind": "agent_message_chunk",
+      "update": {
+        "content": {
+          "text": "\n",
+          "type": "text"
+        },
+        "sessionUpdate": "agent_message_chunk"
+      },
+      "_meta": {
+        "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec"
+      }
+    }
+  ],
+  "promptResponse": {
+    "stopReason": "end_turn",
+    "_meta": {
+      "cozypad.dev/agy-conversation-id": "25990acd-d48d-4d68-b30f-bd8bb9ce36ec",
+      "cozypad.dev/agy-model": {
+        "pinned": true,
+        "modelId": "claude-sonnet-4-6",
+        "detail": "every turn in this session is launched with --model claude-sonnet-4-6"
+      }
+    }
+  },
+  "newSession": {
+    "sessionId": "agy-msjnqv5k-e81w25",
+    "modes": {
+      "currentModeId": "always-proceed",
+      "availableModes": [
+        {
+          "id": "always-proceed",
+          "name": "Always proceed (no approval)",
+          "description": "agy print mode reports permission_mode \"always-proceed\": it runs every tool without asking, inside its own process. This adapter therefore never sends session/request_permission, and a client permission policy cannot allow, deny or modify any tool call in this session."
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "type": "select",
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "description": "Which model agy runs this session's turns on. Anything other than \"not pinned\" is passed to agy as --model, which is what makes a run repeatable.",
+        "currentValue": "agy-persisted-default",
+        "options": [
+          {
+            "value": "agy-persisted-default",
+            "name": "Not pinned — agy's saved default (Gemini 3.6 Flash (Low))",
+            "description": "No --model flag is sent. agy uses the model in ~/.gemini/antigravity-cli/settings.json, which any other agy client can change between turns, so two identical prompts can run on two different models without anything saying so."
+          },
+          {
+            "value": "gemini-3.6-flash-high",
+            "name": "Gemini 3.6 Flash (High)",
+            "description": "--model gemini-3.6-flash-high"
+          },
+          {
+            "value": "gemini-3.6-flash-medium",
+            "name": "Gemini 3.6 Flash (Medium)",
+            "description": "--model gemini-3.6-flash-medium"
+          },
+          {
+            "value": "gemini-3.6-flash-low",
+            "name": "Gemini 3.6 Flash (Low)",
+            "description": "--model gemini-3.6-flash-low"
+          },
+          {
+            "value": "gemini-3.5-flash-high",
+            "name": "Gemini 3.5 Flash (High)",
+            "description": "--model gemini-3.5-flash-high"
+          },
+          {
+            "value": "gemini-3.5-flash-medium",
+            "name": "Gemini 3.5 Flash (Medium)",
+            "description": "--model gemini-3.5-flash-medium"
+          },
+          {
+            "value": "gemini-3.5-flash-low",
+            "name": "Gemini 3.5 Flash (Low)",
+            "description": "--model gemini-3.5-flash-low"
+          },
+          {
+            "value": "gemini-3.1-pro-high",
+            "name": "Gemini 3.1 Pro (High)",
+            "description": "--model gemini-3.1-pro-high"
+          },
+          {
+            "value": "gemini-3.1-pro-low",
+            "name": "Gemini 3.1 Pro (Low)",
+            "description": "--model gemini-3.1-pro-low"
+          },
+          {
+            "value": "claude-sonnet-4-6",
+            "name": "Claude Sonnet 4.6 (Thinking)",
+            "description": "--model claude-sonnet-4-6"
+          },
+          {
+            "value": "claude-opus-4-6-thinking",
+            "name": "Claude Opus 4.6 (Thinking)",
+            "description": "--model claude-opus-4-6-thinking"
+          },
+          {
+            "value": "gpt-oss-120b-medium",
+            "name": "GPT-OSS 120B (Medium)",
+            "description": "--model gpt-oss-120b-medium"
+          }
+        ],
+        "_meta": {
+          "pinned": false,
+          "agySavedDefault": {
+            "id": "gemini-3.6-flash-low",
+            "name": "Gemini 3.6 Flash (Low)"
+          },
+          "catalogDiagnostics": []
+        }
+      }
+    ],
+    "_meta": {
+      "cozypad.dev/agy-model": {
+        "pinned": false,
+        "modelId": null,
+        "agySavedDefault": {
+          "id": "gemini-3.6-flash-low",
+          "name": "Gemini 3.6 Flash (Low)"
+        },
+        "detail": "no model was chosen, so no --model is passed and agy uses the model saved in its own settings — currently \"Gemini 3.6 Flash (Low)\". Another tool can change that between two turns of this session; set configOption \"model\" for a run that can be reproduced."
+      }
+    }
+  },
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": false,
+      "promptCapabilities": {
+        "image": false,
+        "audio": false,
+        "embeddedContext": false
+      },
+      "sessionCapabilities": {
+        "resume": {},
+        "additionalDirectories": {}
+      },
+      "_meta": {
+        "cozypad.dev/agy-limitations": {
+          "transport": "cli",
+          "requestsPermission": false,
+          "permissionMode": "always-proceed",
+          "replaysHistory": false,
+          "pinsModelByDefault": false,
+          "confinesToWorkspace": false,
+          "pinSurvivesResume": false,
+          "pinRestoreMetaKey": "cozypad.dev/agy-model",
+          "detail": "agy print mode reports permission_mode \"always-proceed\": it runs every tool without asking, inside its own process. This adapter therefore never sends session/request_permission, and a client permission policy cannot allow, deny or modify any tool call in this session.",
+          "workspaceDetail": "cwd and additionalDirectories are passed to agy as --add-dir, which is what makes agy read them. They do NOT confine it: agy runs shell commands, reads URLs and searches its own scratch directory outside those roots, and because no permission request is ever sent, a client cannot stop it. Treat the roots as \"where to look\", never as a sandbox boundary."
+        }
+      }
+    },
+    "authMethods": []
+  }
+}

@@ -207,7 +207,7 @@ describe('Milestone 5 Full E2E & Stress Verification Suite', () => {
       );
 
       expect(matches).toHaveLength(1);
-      expect(matches[0].name).toBe('/help');
+      expect(matches[0]?.name).toBe('/help');
     });
 
     it('enforces attachment buffer capacity limits (max 10 files, 20MB total)', () => {

@@ -103,14 +103,41 @@ export const FileDiffItemSchema = z.object({
 });
 export type FileDiffItem = z.infer<typeof FileDiffItemSchema>;
 
+/**
+ * One button on an approval card, as the agent named it.
+ *
+ * ACP's `RequestPermissionRequest` carries an arbitrary list, not a yes/no.
+ * claude-agent-acp offers `Always Allow / Allow / Reject`, and in plan mode
+ * three options that are not about permission at all. A two-button card
+ * silently drops whatever it has no slot for — "Always Allow" being the one a
+ * user would most notice missing.
+ */
+export const ApprovalOptionSchema = z.object({
+  optionId: z.string().min(1),
+  name: z.string().min(1),
+  /** ACP's own classification. Unknown values pass through as strings. */
+  kind: z.string().optional(),
+});
+export type ApprovalOption = z.infer<typeof ApprovalOptionSchema>;
+
 export const ApprovalItemSchema = z.object({
   ...chatItemBase,
   kind: z.literal('approval'),
-  command: z.string().min(1),
-  cwd: z.string().min(1),
+  /**
+   * Optional because ACP has no such field. A permission request names a tool
+   * call, not a shell command, and the tmux path was the only thing that could
+   * ever produce one. Requiring it here would make every ACP approval fail to
+   * parse — and a dropped approval is a tool that runs unasked.
+   */
+  command: z.string().optional(),
+  cwd: z.string().optional(),
   /** Which machine would run it (SPEC 2.9 requires the card to say). */
   machine: z.string().optional(),
   riskSummary: z.string(),
+  /** Present for ACP agents; absent on the legacy allow/deny path. */
+  options: z.array(ApprovalOptionSchema).optional(),
+  /** Which option the user picked, for agents that offer more than two. */
+  selectedOptionId: z.string().optional(),
   /** `expired`: the execution generation that asked ended before an answer. */
   resolution: z.enum(['pending', 'allowed', 'denied', 'expired']).default('pending'),
 });
@@ -121,8 +148,39 @@ export const UsageItemSchema = z.object({
   kind: z.literal('usage'),
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
+  /**
+   * Context pressure, which is **not** the token counts above and cannot be
+   * derived from them. ACP reports the two separately and means different
+   * things by them: `usage_update` carries `{used, size, cost}` for the context
+   * window, while `PromptResponse.usage` carries `{inputTokens, outputTokens}`
+   * for the turn. One probe recorded both from claude at once — used 8990 of
+   * 200000, against 3 input and 4 output tokens.
+   *
+   * Optional because agy reports neither, and codex reports `used`/`size` with
+   * no cost at all.
+   */
+  contextUsed: z.number().int().min(0).optional(),
+  contextSize: z.number().int().min(0).optional(),
+  costUsd: z.number().min(0).optional(),
 });
 export type UsageItem = z.infer<typeof UsageItemSchema>;
+
+/**
+ * The agent's reasoning, as its own item rather than as markup inside a reply.
+ *
+ * ACP has a first-class `agent_thought_chunk`, and both codex and claude send
+ * it. Until now CozyPad recovered thinking by regexing `<think>` tags out of
+ * assistant text — a string protocol invented on top of prose, and one of the
+ * things this migration exists to remove. Added now rather than later so the
+ * session store does not need a second migration for it.
+ */
+export const ThoughtItemSchema = z.object({
+  ...chatItemBase,
+  kind: z.literal('thought'),
+  text: z.string(),
+  streaming: z.boolean().optional(),
+});
+export type ThoughtItem = z.infer<typeof ThoughtItemSchema>;
 
 /**
  * A CozyPad-authored marker in the timeline — e.g. the boundary after a
@@ -170,6 +228,7 @@ export const ChatItemSchema = z.discriminatedUnion('kind', [
   UsageItemSchema,
   QuestionItemSchema,
   NoticeItemSchema,
+  ThoughtItemSchema,
 ]);
 export type ChatItem = z.infer<typeof ChatItemSchema>;
 

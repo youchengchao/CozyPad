@@ -50,7 +50,6 @@ describe('Challenger 1 M4 Empirical Suite - Connection Disruption & Error States
       const html = renderToStaticMarkup(
         <AgentsWorkspace
           connected={false}
-          connectionState="reconnecting"
           reconnect={{ attempt: 3, secondsLeft: 12 }}
           profileId="profile-1"
         />,
@@ -78,6 +77,7 @@ describe('Challenger 1 M4 Empirical Suite - Connection Disruption & Error States
       const items: ChatItem[] = [
         {
           kind: 'message',
+          timestamp: '2026-08-08T00:00:00.000Z',
           id: 'msg-drop-1',
           role: 'assistant',
           text: 'Generating code when websocket connection closed suddenly...',
@@ -103,12 +103,14 @@ describe('Challenger 1 M4 Empirical Suite - Connection Disruption & Error States
       const items: ChatItem[] = [
         {
           kind: 'message',
+          timestamp: '2026-08-08T00:00:00.000Z',
           id: 'msg-1',
           role: 'user',
           text: 'Run long script',
         },
         {
           kind: 'notice',
+          timestamp: '2026-08-08T00:00:00.000Z',
           id: 'notice-drop-1',
           text: '⚡ 連線中斷 — Socket connection dropped during response stream.',
         },
@@ -159,7 +161,7 @@ describe('Challenger 1 M4 Empirical Suite - Connection Disruption & Error States
       };
       (globalThis as unknown as Record<string, unknown>).cozypad = mockBridge;
       const bridge = getBridge();
-      const res = await bridge.fsList('/test');
+      const res = await bridge.fsList({ path: '/test' });
       expect(res).toEqual(['file1.txt']);
     });
   });

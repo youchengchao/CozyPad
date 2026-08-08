@@ -267,7 +267,10 @@ export function MessageAttachments({
               aria-haspopup="dialog"
               onClick={() => setSelected(attachment)}
             >
-              {image ? (
+              {/* Without a bridge there is nothing to fetch the bytes with, so
+                  the badge stands in. Passing the null through would have
+                  reached `bridge.readFile` and thrown inside a render. */}
+              {image && bridge !== null ? (
                 <AttachmentImage attachment={attachment} bridge={bridge} />
               ) : (
                 <span className="message-attachment-placeholder" aria-hidden="true">
@@ -284,7 +287,7 @@ export function MessageAttachments({
           );
         })}
       </div>
-      {selected === null ? null : (
+      {selected === null || bridge === null ? null : (
         <AttachmentPreviewDialog
           attachment={selected}
           bridge={bridge}

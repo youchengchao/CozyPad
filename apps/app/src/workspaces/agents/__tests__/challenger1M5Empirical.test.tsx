@@ -195,7 +195,7 @@ describe('Challenger 1 M5 Empirical Stress & Adversarial Suite', () => {
       });
 
       expect(result.attachments).toHaveLength(1);
-      expect(result.attachments[0].name).toBe('small.txt');
+      expect(result.attachments[0]?.name).toBe('small.txt');
       expect(result.oversizedCount).toBe(1);
       expect(result.limitCount).toBe(0);
 
