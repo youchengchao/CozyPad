@@ -184,7 +184,24 @@ export interface AgentCommunicationServiceOptions {
    * revived session's transcript. Absent on hosts without one.
    */
   readLocalAgyTranscript?(conversationId?: string): Promise<AgyRecoveredTurn[]>;
+  /**
+   * Called when the session store could not be read and was moved aside.
+   *
+   * Startup uses this to tell the user, because the alternative — an app that
+   * silently forgot every session — is the failure mode people report as data
+   * loss. `backupPath` is null when even the rename failed.
+   */
+  onStoreRecovered?(info: { reason: string; backupPath: string | null }): void;
 }
+
+/**
+ * The session store layout this build reads and writes.
+ *
+ * Named rather than inlined because {@link AgentCommunicationService.load}
+ * reports it to the user when a store does not match, and a number that appears
+ * in a message and in a comparison must not be able to drift apart.
+ */
+export const STORE_VERSION = 1;
 
 const EMPTY_EVENTS: AgentCommunicationEvents = {
   onSessionChanged: () => undefined,
@@ -889,6 +906,25 @@ export class AgentCommunicationService implements AgentCommunicationPort {
 
   constructor(private readonly options: AgentCommunicationServiceOptions) {}
 
+  /**
+   * Reads the session store, and **never throws because of its contents**.
+   *
+   * It used to throw on a corrupt file or an unrecognised `version`, and the
+   * only caller is `createServices()` in main.ts, which runs in the same `try`
+   * as `registerIpc()`. So an unreadable session store did not degrade the
+   * agent page — it stopped `window.cozypad` from ever being defined, and files,
+   * terminal, monitor and settings all went with it. The user saw one dialog and
+   * an app with nothing in it.
+   *
+   * That is a live hazard rather than a hypothetical one: this store's schema is
+   * about to change for the ACP cutover, and a downgrade — running an older
+   * build once against a newer store — is exactly the "unsupported version" case.
+   *
+   * So an unusable store is moved aside instead. The reason is reported through
+   * {@link AgentCommunicationServiceOptions.onStoreRecovered} so startup can
+   * surface it, and the file is kept: a session list is worth trying to recover
+   * by hand, and silently deleting one would be worse than not reading it.
+   */
   async load(): Promise<void> {
     let raw: string;
     try {
@@ -901,15 +937,44 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      throw new Error('Agent session store is corrupt');
+      await this.quarantineStore('the file is not valid JSON');
+      return;
     }
-    if (!isRecord(parsed) || parsed.version !== 1 || !Array.isArray(parsed.sessions)) {
-      throw new Error('Unsupported agent session store format');
+    if (!isRecord(parsed) || !Array.isArray(parsed.sessions)) {
+      await this.quarantineStore('the file has no session list');
+      return;
+    }
+    if (parsed.version !== STORE_VERSION) {
+      await this.quarantineStore(
+        `it was written by a different version of CozyPad (store version ${String(parsed.version)}, this build reads ${STORE_VERSION})`,
+      );
+      return;
     }
     for (const value of parsed.sessions) {
       const session = parseStoredSession(value);
       if (session !== null) this.sessions.set(session.record.id, session);
     }
+  }
+
+  /**
+   * Renames an unusable store aside and starts empty.
+   *
+   * The suffix is derived from the store's own path rather than a timestamp so
+   * the result is deterministic and testable; an existing backup is overwritten
+   * because the second failure of the same store is not more interesting than
+   * the first, and an unbounded pile of `.bak` files is its own problem.
+   */
+  private async quarantineStore(reason: string): Promise<void> {
+    const backup = `${this.options.storePath}.unreadable.bak`;
+    let moved = false;
+    try {
+      await fs.rename(this.options.storePath, backup);
+      moved = true;
+    } catch {
+      // A store that cannot even be renamed (locked, read-only, gone) must
+      // still not take the whole app down. Starting empty is the point.
+    }
+    this.options.onStoreRecovered?.({ reason, backupPath: moved ? backup : null });
   }
 
   setEvents(events: AgentCommunicationEvents): void {
@@ -3335,7 +3400,7 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
 
   private persist(): Promise<void> {
     const payload: PersistedAgentStore = {
-      version: 1,
+      version: STORE_VERSION,
       sessions: [...this.sessions.values()],
     };
     const raw = JSON.stringify(payload, null, 2);

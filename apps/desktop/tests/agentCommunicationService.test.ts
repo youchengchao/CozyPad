@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TmuxSessionInfo } from '@cozypad/tmux-runtime';
 import {
   AgentCommunicationService,
+  STORE_VERSION,
   buildAttachmentUnpackScript,
   createAttachmentArchive,
 } from '../src/main/agentCommunicationService';
@@ -1593,5 +1594,79 @@ describe('AgentCommunicationService', () => {
         resolution: 'allowed',
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe('an unreadable session store degrades the agent page, not the app', () => {
+  let directory: string;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cozypad-store-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5 });
+  });
+
+  function serviceFor(
+    storePath: string,
+    recovered: { reason: string; backupPath: string | null }[],
+  ): AgentCommunicationService {
+    return new AgentCommunicationService({
+      transport: new FakeTransport() as unknown as TransportPort,
+      tmux: new FakeTmux(),
+      profileStore: new MemoryProfileStore([]),
+      storePath,
+      getHostFingerprint: () => 'SHA256:test',
+      onStoreRecovered: (info) => recovered.push(info),
+    });
+  }
+
+  it.each([
+    ['a version this build does not read', JSON.stringify({ version: 99, sessions: [] }), /store version 99/],
+    ['a file that is not JSON', 'not json at all', /not valid JSON/],
+    ['an object with no session list', JSON.stringify({ version: 1 }), /no session list/],
+  ])('starts empty and reports the reason: %s', async (_label, contents, reasonPattern) => {
+    // Each of these used to throw out of `load()`. The only caller is
+    // `createServices()` in main.ts, which ran in the same `try` as
+    // `registerIpc()` — so the whole of `window.cozypad` went undefined and
+    // files, terminal, monitor and settings died with the agent page.
+    //
+    // A version bump is not hypothetical here: the ACP cutover changes this
+    // store, and running an older build once against a newer store is exactly
+    // the version-99 row.
+    const storePath = path.join(directory, 'sessions.json');
+    await fs.writeFile(storePath, contents, 'utf8');
+    const recovered: { reason: string; backupPath: string | null }[] = [];
+
+    await expect(serviceFor(storePath, recovered).load()).resolves.toBeUndefined();
+
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.reason).toMatch(reasonPattern);
+    // Moved aside, not deleted: a session list is worth recovering by hand.
+    expect(recovered[0]?.backupPath).toBe(`${storePath}.unreadable.bak`);
+    await expect(fs.readFile(`${storePath}.unreadable.bak`, 'utf8')).resolves.toBe(contents);
+  });
+
+  it('still reports nothing when the store simply does not exist', async () => {
+    // A first run is not a recovery, and must not warn about one.
+    const recovered: { reason: string; backupPath: string | null }[] = [];
+    await serviceFor(path.join(directory, 'absent.json'), recovered).load();
+    expect(recovered).toEqual([]);
+  });
+
+  it('writes the version it claims to read, so a round-trip never quarantines itself', async () => {
+    // The reported number and the compared number were the same literal in two
+    // places. Pinning both against the exported constant is what keeps a future
+    // bump from telling the user their own store is foreign.
+    const storePath = path.join(directory, 'roundtrip.json');
+    await fs.writeFile(
+      storePath,
+      JSON.stringify({ version: STORE_VERSION, sessions: [] }),
+      'utf8',
+    );
+    const recovered: { reason: string; backupPath: string | null }[] = [];
+    await serviceFor(storePath, recovered).load();
+    expect(recovered).toEqual([]);
   });
 });

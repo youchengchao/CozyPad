@@ -207,8 +207,34 @@ async function createServices(
     getLatestLocalAgyConversationId: (window) => latestAgyConversationId(window),
     readLocalAgyTranscript: (conversationId) =>
       readAgyTranscript(conversationId),
+    onStoreRecovered: ({ reason, backupPath }) => {
+      startupWarnings.push(
+        backupPath === null
+          ? `過去的 agent 對話清單讀不出來（${reason}），這次以空清單啟動。`
+          : `過去的 agent 對話清單讀不出來（${reason}），已備份到 ${backupPath}，這次以空清單啟動。`,
+      );
+    },
   });
-  await agentCommunication.load();
+  // The agent subsystem must not be able to take the rest of the app with it.
+  // `MainServices.agentCommunication` is already nullable and `registerIpc`
+  // already handles null by rejecting agent calls with a reason — but until now
+  // nothing ever produced a null, because a throw here escaped to the caller,
+  // where it also skipped `registerIpc()` and left `window.cozypad` undefined.
+  // Files, terminal, monitor and settings died with it.
+  //
+  // `load()` no longer throws on store contents, so this catches what is left:
+  // an unreadable path, a permissions problem, a bug in a future migration.
+  let loaded: AgentCommunicationPort | null = agentCommunication;
+  try {
+    await agentCommunication.load();
+  } catch (error) {
+    loaded = null;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[cozypad] agent session store failed to load:', error);
+    startupWarnings.push(
+      `Agent 對話功能這次無法啟動（${detail}）。其他功能不受影響。`,
+    );
+  }
   return {
     transport,
     files: new ShellRemoteFiles(exec),
@@ -219,7 +245,7 @@ async function createServices(
       transport.execStream(command, onLine, timeoutMs),
     ),
     tmuxWatcher: new TmuxSessionWatcher(remoteTmux),
-    agentCommunication,
+    agentCommunication: loaded,
   };
 }
 
