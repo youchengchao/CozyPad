@@ -7,6 +7,7 @@
  * one code path, and all three answer.
  */
 import { spawn } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   connectAcpAgentProcess,
@@ -127,6 +128,34 @@ export function spawnAcpAgent(
   handlers: AcpClientHandlers,
   timeouts?: AcpRequestTimeouts,
 ): AcpChild {
+  // Checked here because of how badly Node reports the alternative. `spawn`
+  // fails with **ENOENT naming the command** when it is the *cwd* that does not
+  // exist, so a session opened on a missing or POSIX-style directory produced
+  //
+  //   spawn D:\...\electron.exe ENOENT
+  //
+  // which sends the reader looking for a missing Electron that is sitting right
+  // there. A path like `/c/Users/name` — what a git-bash shell reports — is not
+  // a directory on Windows and lands in exactly this trap.
+  if (!existsSync(spec.cwd)) {
+    throw new Error(
+      `The working directory for this session does not exist: ${spec.cwd}\n` +
+        'The agent was never started. On Windows this must be a real path such ' +
+        'as D:\\projects\\thing, not a shell-style path such as /d/projects/thing.',
+    );
+  }
+  if (!statSync(spec.cwd).isDirectory()) {
+    throw new Error(`The working directory for this session is not a directory: ${spec.cwd}`);
+  }
+  if (!existsSync(spec.args[0] ?? '')) {
+    // The other half of the same trap: a missing script argument also surfaces
+    // as ENOENT against the interpreter.
+    throw new Error(
+      `The agent entry point is missing: ${spec.args[0] ?? '(none)'}\n` +
+        'Run `pnpm --filter @cozypad/desktop build` to produce it.',
+    );
+  }
+
   const child = spawn(spec.command, [...spec.args], {
     cwd: spec.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],

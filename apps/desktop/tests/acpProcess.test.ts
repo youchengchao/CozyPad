@@ -116,3 +116,57 @@ describe('the launch spec', () => {
     expect(dev.replace('app.asar', 'app.asar.unpacked')).toBe(dev);
   });
 });
+
+describe('a bad working directory is reported as one', () => {
+  const handlers = {
+    onSessionUpdate: () => undefined,
+    requestPermission: async () => ({ outcome: { outcome: 'cancelled' as const } }),
+  };
+
+  it('names the directory, not the interpreter', () => {
+    // Node's `spawn` fails with ENOENT **naming the command** when it is the
+    // cwd that is missing, so a session opened on a directory that does not
+    // exist produced `spawn D:\...\electron.exe ENOENT` — sending the reader
+    // hunting for a missing Electron that was sitting right there.
+    expect(() =>
+      spawnAcpAgent(
+        { label: 'adapter-agy', command: process.execPath, args: [bundle], cwd: path.join(desktopRoot, 'no-such-dir') },
+        handlers as never,
+      ),
+    ).toThrow(/working directory for this session does not exist/u);
+  });
+
+  it('rejects a shell-style path, which is what a git-bash cwd looks like', () => {
+    // `/c/Users/name` is what a git-bash shell reports and is not a directory
+    // on Windows. It is the most likely way to hit this in practice.
+    expect(() =>
+      spawnAcpAgent(
+        { label: 'adapter-agy', command: process.execPath, args: [bundle], cwd: '/c/Users/nobody' },
+        handlers as never,
+      ),
+    ).toThrow(/working directory/u);
+  });
+
+  it('rejects a file where a directory was expected', () => {
+    expect(() =>
+      spawnAcpAgent(
+        { label: 'adapter-agy', command: process.execPath, args: [bundle], cwd: bundle },
+        handlers as never,
+      ),
+    ).toThrow(/not a directory/u);
+  });
+
+  it('says which entry point is missing rather than blaming node', () => {
+    expect(() =>
+      spawnAcpAgent(
+        {
+          label: 'adapter-agy',
+          command: process.execPath,
+          args: [path.join(desktopRoot, 'dist', 'not-built.cjs')],
+          cwd: desktopRoot,
+        },
+        handlers as never,
+      ),
+    ).toThrow(/agent entry point is missing/u);
+  });
+});
