@@ -114,6 +114,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@agentclientprotocol/codex-acp':
+        specifier: 1.1.14
+        version: 1.1.14
       '@cozypad/acp-client':
         specifier: workspace:*
         version: link:../../packages/acp-client
@@ -138,6 +141,9 @@ importers:
       '@cozypad/tmux-runtime':
         specifier: workspace:*
         version: link:../../packages/tmux-runtime
+      '@zed-industries/claude-agent-acp':
+        specifier: 0.23.1
+        version: 0.23.1
       ssh2:
         specifier: ^1.17.0
         version: 1.17.0

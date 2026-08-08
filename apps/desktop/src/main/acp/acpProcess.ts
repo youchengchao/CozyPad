@@ -54,6 +54,58 @@ export function agyLaunchSpec(cwd: string): AcpLaunchSpec {
   };
 }
 
+/**
+ * Where a published ACP agent's real entry point lives.
+ *
+ * Resolved to `dist/index.js` and run with node rather than through the npm
+ * `.CMD` shim, which needs a shell — and `shell: true` on Windows concatenates
+ * argv into one unescaped string. Same reason the adapter is bundled rather
+ * than launched by name.
+ */
+function publishedAgentEntry(packageName: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const pkg = require(`${packageName}/package.json`) as {
+    bin: string | Record<string, string>;
+  };
+  const bin = typeof pkg.bin === 'string' ? pkg.bin : Object.values(pkg.bin)[0]!;
+  return path.join(path.dirname(require.resolve(`${packageName}/package.json`)), bin);
+}
+
+/**
+ * The launch spec for each agent CozyPad drives.
+ *
+ * Every one of them speaks the same protocol; only this line differs. That was
+ * measured rather than assumed — `scripts/probe-acp-agent.mts` drives all three
+ * through one client and one code path, and all three answer.
+ *
+ * claude-agent-acp and codex-acp are published packages that wrap the real
+ * CLIs: the first spawns Claude Code itself, the second bundles `@openai/codex`.
+ * So the agent's own context management, compaction and tool loop are unchanged
+ * — ACP replaces how CozyPad *listens*, not how the agent *thinks*.
+ */
+export function launchSpecFor(agentKind: string, cwd: string): AcpLaunchSpec {
+  switch (agentKind) {
+    case 'claude':
+      return {
+        label: 'claude-agent-acp',
+        command: process.execPath,
+        args: [publishedAgentEntry('@zed-industries/claude-agent-acp')],
+        cwd,
+        env: { ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' },
+      };
+    case 'codex':
+      return {
+        label: 'codex-acp',
+        command: process.execPath,
+        args: [publishedAgentEntry('@agentclientprotocol/codex-acp')],
+        cwd,
+        env: { ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' },
+      };
+    default:
+      return agyLaunchSpec(cwd);
+  }
+}
+
 export interface AcpChild {
   readonly handle: AcpAgentHandle;
   /** Ends the agent. Safe to call more than once. */

@@ -49,6 +49,7 @@
     ]
   },
   "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.1.14",
     "@cozypad/acp-client": "workspace:*",
     "@cozypad/adapter-agy": "workspace:*",
     "@cozypad/adapter-claude": "workspace:*",
@@ -57,6 +58,7 @@
     "@cozypad/telemetry": "workspace:*",
     "@cozypad/test-fixtures": "workspace:*",
     "@cozypad/tmux-runtime": "workspace:*",
+    "@zed-industries/claude-agent-acp": "0.23.1",
     "ssh2": "^1.17.0"
   },
   "devDependencies": {

@@ -8,7 +8,7 @@
  */
 import type { ChatItem } from '@cozypad/contracts';
 import type { AcpClientHandlers, AcpSessionEvent } from '@cozypad/acp-client';
-import { agyLaunchSpec, spawnAcpAgent, type AcpChild, type AcpLaunchSpec } from './acpProcess';
+import { launchSpecFor, spawnAcpAgent, type AcpChild, type AcpLaunchSpec } from './acpProcess';
 import {
   approvalItemFor,
   defaultClock,
@@ -27,12 +27,28 @@ export interface AcpRuntimeCallbacks {
   onError(sessionId: string, message: string): void;
 }
 
+/** A control request the agent is blocked on, waiting for the user. */
+interface PendingControl {
+  // No id here: the map is keyed by it, and carrying a second copy is how the
+  // two drift apart.
+  resolve(optionId: string | null): void;
+}
+
 interface Running {
   readonly child: AcpChild;
   /** The agent's own session id, which is not CozyPad's. */
   acpSessionId: string;
   state: AcpTimelineState;
   readonly clock: AcpTimelineClock;
+  /**
+   * Every control request currently awaiting an answer, keyed by the id the
+   * timeline item carries.
+   *
+   * A map rather than one slot: an agent running tools in parallel opens more
+   * than one permission request at a time, and answering "whichever is
+   * pending" sends the user's decision to the wrong tool.
+   */
+  readonly pending: Map<string, PendingControl>;
 }
 
 /**
@@ -71,7 +87,8 @@ export class AcpAgentRuntime {
   async start(
     sessionId: string,
     cwd: string,
-    spec: AcpLaunchSpec = agyLaunchSpec(cwd),
+    agentKind = 'agy',
+    spec: AcpLaunchSpec = launchSpecFor(agentKind, cwd),
   ): Promise<{ acpSessionId: string; configOptions: unknown }> {
     this.stop(sessionId);
 
@@ -93,7 +110,24 @@ export class AcpAgentRuntime {
         running.state = { ...running.state, items: [...running.state.items, item] };
         this.callbacks.onTimeline(sessionId, running.state.items);
 
-        const optionId = await this.callbacks.onPermission(sessionId, item);
+        // Blocks until the user answers. ACP models permission as a request,
+        // so the agent is genuinely waiting on this return value — which is
+        // also why an unanswered one has to expire rather than hang forever.
+        const optionId = await new Promise<string | null>((resolve) => {
+          running.pending.set(item.id, {
+            resolve: (answer: string | null) => {
+              resolve(answer);
+            },
+          });
+          void this.callbacks.onPermission(sessionId, item).then(
+            (answer) => {
+              if (running.pending.delete(item.id)) resolve(answer);
+            },
+            () => {
+              if (running.pending.delete(item.id)) resolve(null);
+            },
+          );
+        });
         const after = this.#sessions.get(sessionId);
         if (after !== undefined) {
           after.state = {
@@ -122,6 +156,7 @@ export class AcpAgentRuntime {
       acpSessionId: '',
       state: emptyAcpTimeline(),
       clock,
+      pending: new Map(),
     };
     this.#sessions.set(sessionId, running);
 
@@ -199,6 +234,25 @@ export class AcpAgentRuntime {
     });
   }
 
+  /**
+   * Answers whatever control request the agent is blocked on.
+   *
+   * `null` declines. Called by the service when the user picks an option, and
+   * a no-op when nothing is pending — a late click after a turn ended must not
+   * throw.
+   */
+  resolveControl(
+    sessionId: string,
+    requestId: string,
+    optionId: string | null = null,
+  ): void {
+    const running = this.#sessions.get(sessionId);
+    const pending = running?.pending.get(requestId);
+    if (running === undefined || pending === undefined) return;
+    running.pending.delete(requestId);
+    pending.resolve(optionId);
+  }
+
   /** Seeds a restored transcript so history survives a restart. */
   seed(sessionId: string, items: readonly ChatItem[]): void {
     const running = this.#sessions.get(sessionId);
@@ -209,6 +263,10 @@ export class AcpAgentRuntime {
   stop(sessionId: string): void {
     const running = this.#sessions.get(sessionId);
     if (running === undefined) return;
+    // Decline anything still open. An unanswered request would otherwise keep
+    // a promise — and whatever awaits it — alive after the agent is gone.
+    for (const [, pending] of running.pending) pending.resolve(null);
+    running.pending.clear();
     running.child.kill();
     this.#sessions.delete(sessionId);
   }

@@ -198,9 +198,15 @@ export interface AgentCommunicationServiceOptions {
    */
   acp?: {
     has(sessionId: string): boolean;
-    start(sessionId: string, cwd: string): Promise<unknown>;
+    start(sessionId: string, cwd: string, agentKind: string): Promise<unknown>;
     prompt(sessionId: string, text: string): Promise<string>;
     cancel(sessionId: string): Promise<void>;
+    /**
+     * Answers a permission or elicitation request the agent is waiting on.
+     * `null` declines. ACP models both as requests, so the answer is a return
+     * value the runtime is holding open, not a frame written back.
+     */
+    resolveControl(sessionId: string, requestId: string, optionId?: string | null): void;
     stop(sessionId: string): void;
   };
 }
@@ -1027,7 +1033,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
         stored.record.provisionalIdentity.connectionProfileId === profileId &&
         liveIds.has(stored.record.provisionalIdentity.tmuxSessionId)
       ) {
-        this.followSession(stored);
       }
     }
     await this.persist();
@@ -1457,10 +1462,25 @@ exit "$agent_status"`;
     await this.persist();
     this.emitSession(stored);
     this.emitTimeline(stored);
-    this.followSession(stored);
 
     try {
-      await this.startAgentConversation(stored, launchMode);
+      await this.startAgentConversation();
+      // "Ready" has to mean the agent answered, not that a process was
+      // spawned. followSession used to decide this by watching the agent's
+      // output stream; the ACP equivalent is that initialize and session/new
+      // both returned, which is also when the model list becomes available.
+      if (this.options.acp !== undefined) {
+        await this.options.acp.start(
+          stored.record.id,
+          stored.record.cwd,
+          stored.record.provisionalIdentity.agentKind,
+        );
+      }
+      stored.record = {
+        ...stored.record,
+        status: 'ready',
+        updatedAt: new Date().toISOString(),
+      };
       await this.persist();
       this.emitSession(stored);
       return this.bundle(stored);
@@ -1489,64 +1509,16 @@ exit "$agent_status"`;
    * handshake for chat agents, and proof that the process survived startup.
    * Shared by create and revive.
    */
-  private async startAgentConversation(
-    stored: StoredAgentSession,
-    launchMode: string,
-  ): Promise<void> {
-    const agentKind = stored.record.provisionalIdentity.agentKind;
-    const id = stored.record.id;
-    if (agentKind === 'claude') {
-      await this.writeFrame(stored, {
-        type: 'control_request',
-        request_id: `initialize_${randomUUID()}`,
-        request: { subtype: 'initialize', hooks: null },
-      });
-    } else if (agentKind === 'codex') {
-      const policy = codexPolicyForMode(launchMode);
-      await this.writeFrame(stored, {
-        id: `initialize_${id}`,
-        method: 'initialize',
-        params: {
-          clientInfo: {
-            name: 'cozypad',
-            title: 'CozyPad',
-            version: '0.3.0',
-          },
-        },
-      });
-      await this.writeFrame(stored, { method: 'initialized', params: {} });
-      await this.writeFrame(stored, {
-        id: `thread_start_${id}`,
-        method: 'thread/start',
-        params: {
-          cwd: stored.record.cwd,
-          approvalPolicy: policy.approvalPolicy,
-          sandbox: policy.sandbox,
-          serviceName: 'cozypad',
-        },
-      });
-    } else {
-      stored.record = {
-        ...stored.record,
-        status: 'ready',
-        updatedAt: new Date().toISOString(),
-      };
-    }
-    await this.assertAgentStayedAlive(id, agentKind);
-    if (
-      !(await this.options.tmux.hasSession(
-        stored.record.provisionalIdentity.tmuxSessionId,
-      ))
-    ) {
-      throw new Error(
-        `${agentKind} exited during startup; inspect the remote stderr log`,
-      );
-    }
-    // Claude stays 'starting' like Codex: SPEC 219-221/1481 — an agent that
-    // publishes a Conversation ID is Starting until the id arrives
-    // (system/init → session_initialized flips it to ready). Marking it
-    // ready here bound the first prompt to an identity that did not exist
-    // yet. Only AGY, which publishes no id, goes straight to ready.
+  /**
+   * The handshake belongs to the runtime now, not to the service.
+   *
+   * This used to write an agent-specific initialize frame into a tmux pane:
+   * a `control_request` for claude, a JSON-RPC `initialize` for codex. Both
+   * are `initialize` + `session/new` over ACP, performed when the runtime
+   * starts a session, so there is nothing left to send from here.
+   */
+  private async startAgentConversation(): Promise<void> {
+    return Promise.resolve();
   }
 
   /**
@@ -1584,7 +1556,6 @@ exit "$agent_status"`;
         };
         await this.persist();
         this.emitSession(stored);
-        this.followSession(stored);
         return this.bundle(stored);
       }
     }
@@ -1712,9 +1683,8 @@ exit "$agent_status"`;
     await this.writeRemoteMetadata(stored).catch(() => undefined);
     await this.persist();
     this.emitSession(stored);
-    this.followSession(stored);
     try {
-      await this.startAgentConversation(stored, launchMode);
+      await this.startAgentConversation();
       await this.persist();
       this.emitSession(stored);
       return this.bundle(stored);
@@ -2201,65 +2171,27 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     this.emitTimeline(stored);
 
     try {
-      if (stored.record.provisionalIdentity.agentKind === 'claude') {
-        await this.writeFrame(stored, {
-          type: 'user',
-          message: { role: 'user', content: messageText },
-          parent_tool_use_id: null,
-          session_id: 'default',
-        });
-      } else if (stored.record.provisionalIdentity.agentKind === 'codex') {
-        const threadId = stored.record.identity?.agentConversationId;
-        if (threadId === undefined) {
-          throw new Error('Codex app-server is still creating its thread');
-        }
-        if (codexLocalCommand === '/compact') {
-          await this.writeFrame(stored, {
-            id: `compact_${stored.record.id}_${stored.turnCounter}`,
-            method: 'thread/compact/start',
-            params: { threadId },
-          });
-        } else if (codexLocalCommand === '/review') {
-          await this.writeFrame(stored, {
-            id: `review_${stored.record.id}_${stored.turnCounter}`,
-            method: 'review/start',
-            params: {
-              threadId,
-              delivery: 'inline',
-              target: { type: 'uncommittedChanges' },
-            },
-          });
-        } else {
-          await this.writeFrame(stored, {
-            id: `turn_start_${stored.record.id}_${stored.turnCounter}`,
-            method: 'turn/start',
-            params: {
-              threadId,
-              cwd: stored.record.cwd,
-              input: [
-                { type: 'text', text: messageText },
-                ...attachments.flatMap((attachment) =>
-                  attachment.mediaType.startsWith('image/')
-                    ? [{ type: 'localImage', path: attachment.remotePath }]
-                    : [],
-                ),
-              ],
-            },
-          });
-        }
-      } else if (this.options.acp !== undefined) {
-        // agy. There is no native terminal to type into any more: the adapter
-        // turns `-p --output-format stream-json` into ACP, and the reply
-        // arrives as typed `session/update` events rather than as a repainted
-        // screen. The runtime starts on first use so opening a session costs
-        // nothing until a message is actually sent.
-        if (!this.options.acp.has(stored.record.id)) {
-          await this.options.acp.start(stored.record.id, stored.record.cwd);
-        }
-        await this.options.acp.prompt(stored.record.id, messageText);
-      } else {
+      // One protocol for every agent. claude went through a frame written
+      // into a tmux pane's stdin, codex through JSON-RPC to its app-server,
+      // agy through a terminal CozyPad read off a screen. All three speak
+      // ACP now, so only the launch spec differs — measured by
+      // scripts/probe-acp-agent.mts, which drives all three through one
+      // client and one code path.
+      //
+      // The agents still manage their own context: claude-agent-acp spawns
+      // the real Claude Code CLI and codex-acp bundles @openai/codex. ACP
+      // changed how CozyPad listens, not how an agent thinks.
+      if (this.options.acp === undefined) {
         throw new Error('No ACP runtime is available for this agent');
       }
+      if (!this.options.acp.has(stored.record.id)) {
+        await this.options.acp.start(
+          stored.record.id,
+          stored.record.cwd,
+          stored.record.provisionalIdentity.agentKind,
+        );
+      }
+      await this.options.acp.prompt(stored.record.id, messageText);
     } catch (error) {
       stored.activeTurn = undefined;
       // The renderer keeps the draft and its local attachment buffer when
@@ -2286,30 +2218,27 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     }
   }
 
+  /**
+   * Asks the agent to stop the turn it is on.
+   *
+   * `session/cancel` rather than a signal or an escape key: the in-flight
+   * `session/prompt` resolves with stopReason 'cancelled', so the UI learns
+   * the agent actually handed control back instead of assuming it did.
+   */
   async interrupt(request: AgentSessionRequest): Promise<void> {
     const stored = this.requireSession(request.sessionId);
     this.assertSessionConnected(stored);
-    if (stored.record.provisionalIdentity.agentKind === 'codex') {
-      const threadId = stored.record.identity?.agentConversationId;
-      if (threadId === undefined || stored.activeAgentTurnId === undefined) {
-        throw new Error('Codex has no active turn to interrupt');
-      }
-      await this.writeFrame(stored, {
-        id: `interrupt_${randomUUID()}`,
-        method: 'turn/interrupt',
-        params: { threadId, turnId: stored.activeAgentTurnId },
-      });
-    } else if (stored.record.provisionalIdentity.agentKind === 'claude') {
-      await this.writeFrame(stored, {
-        type: 'control_request',
-        request_id: `interrupt_${randomUUID()}`,
-        request: { subtype: 'interrupt' },
-      });
-    } else if (stored.record.provisionalIdentity.agentKind === 'agy') {
-      await this.options.tmux.escape(stored.paneId);
-    } else {
-      await this.options.tmux.interrupt(stored.paneId);
+    if (this.options.acp === undefined) {
+      throw new Error('No ACP runtime is available for this agent');
     }
+    await this.options.acp.cancel(stored.record.id);
+    stored.record = {
+      ...stored.record,
+      status: 'ready',
+      updatedAt: new Date().toISOString(),
+    };
+    await this.persist();
+    this.emitSession(stored);
   }
 
   async resolveApproval(request: ResolveAgentApprovalRequest): Promise<void> {
@@ -2342,17 +2271,11 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
             granted.fileSystem = requested.fileSystem;
           }
         }
-        await this.writeFrame(stored, {
-          id: pending.rpcId ?? requestId,
-          result: { permissions: granted, scope: 'turn' },
-        });
+        // Answered through ACP's own return value; see AcpAgentRuntime.
+        this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
       } else {
-        await this.writeFrame(stored, {
-          id: pending.rpcId ?? requestId,
-          result: {
-            decision: request.resolution === 'allowed' ? 'accept' : 'decline',
-          },
-        });
+        // Answered through ACP's own return value; see AcpAgentRuntime.
+        this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
       }
     } else {
       const response =
@@ -2430,17 +2353,8 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       relatedItems.every((candidate) => candidate.selectedIndex !== null)
     ) {
       if (pending.protocol === 'codex') {
-        await this.writeFrame(stored, {
-          id: pending.rpcId ?? requestId,
-          result: {
-            answers: Object.fromEntries(
-              Object.entries(answers).map(([key, answer]) => [
-                key,
-                { answers: [answer] },
-              ]),
-            ),
-          },
-        });
+        // Answered through ACP's own return value; see AcpAgentRuntime.
+        this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
       } else {
         await this.writeControlResponse(stored, requestId, {
           behavior: 'allow',
@@ -2492,10 +2406,8 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       throw new Error('Question control request has expired');
     }
     if (pending.protocol === 'codex') {
-      await this.writeFrame(stored, {
-        id: pending.rpcId ?? requestId,
-        error: { code: -32800, message: 'Declined by the CozyPad user' },
-      });
+      // Answered through ACP's own return value; see AcpAgentRuntime.
+      this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
     } else {
       await this.writeControlResponse(stored, requestId, {
         behavior: 'deny',
@@ -2557,168 +2469,6 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     stored.questionAnswers = {};
   }
 
-  private followSession(stored: StoredAgentSession): void {
-    const id = stored.record.id;
-    const launchNonce = stored.record.provisionalIdentity.launchNonce;
-    const followedTmuxSessionId =
-      stored.record.provisionalIdentity.tmuxSessionId;
-    if (this.following.get(id) === launchNonce) return;
-    this.following.set(id, launchNonce);
-    const dir = remoteSessionDir(id);
-    const startLine = stored.rawLines + 1;
-    const tmux =
-      this.options.tmux.socketName === 'default'
-        ? 'tmux'
-        : `tmux -L ${quoteShellArg(this.options.tmux.socketName)}`;
-    const target = quoteShellArg(stored.record.provisionalIdentity.tmuxSessionId);
-    // Liveness has a different witness per host. Remotely tmux is what keeps
-    // the agent alive, so its session is the thing to watch. Locally there is
-    // no tmux: the launch wrapper writes launch-status the moment the agent
-    // exits, and the log file disappearing means the session's storage was
-    // deleted out from under us — either way the stream is over.
-    const liveGuard = this.options.isLocalHost?.(
-      stored.record.provisionalIdentity.connectionProfileId,
-    )
-      ? `[ -f "$log" ] && [ ! -s "${dir}/launch-status" ]`
-      : `${tmux} has-session -t ${target} 2>/dev/null`;
-    const processExitCheck = `  if [ -s "${dir}/launch-status" ]; then break; fi
-`;
-    const command = `log="${dir}/raw-events.ndjson"
-next=${startLine}
-emit_new_lines() {
-  if [ -f "$log" ]; then
-    total=$(wc -l < "$log")
-    if [ "$total" -ge "$next" ]; then
-      sed -n "\${next},\${total}p" "$log"
-      next=$((total + 1))
-    fi
-  fi
-}
-while ${liveGuard}; do
-  emit_new_lines
-${processExitCheck}  sleep 0.2
-done
-emit_new_lines
-printf '__COZYPAD_AGENT_EXIT__\\n'
-`;
-    let exited = false;
-    let sequence = stored.record.lastEventSequence;
-    const context: ClaudeParseContext | CodexParseContext = {
-      localSessionId: id,
-      ...(stored.record.identity === null
-        ? {}
-        : { agentConversationId: stored.record.identity.agentConversationId }),
-      nextSequence: () => ++sequence,
-      nextEventId: () => randomUUID(),
-      now: () => new Date().toISOString(),
-    };
-    void this.options.transport
-      .execStream(
-        command,
-        (line) => {
-          const current = this.sessions.get(id);
-          if (
-            current === undefined ||
-            current.record.provisionalIdentity.launchNonce !== launchNonce
-          ) {
-            return;
-          }
-          if (line === '__COZYPAD_AGENT_EXIT__') {
-            exited = true;
-            return;
-          }
-          current.rawLines += 1;
-          const agentKind = current.record.provisionalIdentity.agentKind;
-          if (agentKind === 'agy') return;
-          const control =
-            agentKind === 'codex'
-              ? parseCodexControlRequest(line)
-              : agentKind === 'claude'
-                ? parseControlRequest(line)
-                : null;
-          if (control !== null) current.pendingControls[control.requestId] = control;
-          if (agentKind === 'codex') {
-            const turnId = parseCodexTurnId(line);
-            if (turnId !== undefined) current.activeAgentTurnId = turnId;
-          }
-          const events =
-            agentKind === 'codex'
-              ? parseCodexAppServerLine(line, context)
-              : parseClaudeStreamLine(line, context, agentKind);
-          for (const event of events) this.applyNormalizedEvent(current, event);
-          // Fire-and-forget by design; a failure here surfaces on the next
-          // awaited persist instead of as an unhandled rejection.
-          void this.persist().catch(() => undefined);
-        },
-        0,
-        false,
-      )
-      .catch(async (error: unknown) => {
-        const current = this.sessions.get(id);
-        if (
-          current === undefined ||
-          current.record.provisionalIdentity.launchNonce !== launchNonce ||
-          this.activeProfileId !==
-            current.record.provisionalIdentity.connectionProfileId
-        ) {
-          return;
-        }
-        const alive = await this.options.tmux
-          .hasSession(followedTmuxSessionId)
-          .catch(() => false);
-        if (alive) return;
-        this.finalizeInFlightItems(current);
-        this.expirePendingInteractions(current);
-        current.record = {
-          ...current.record,
-          status: 'error',
-          updatedAt: new Date().toISOString(),
-        };
-        this.appendError(current, await this.withRemoteStderr(id, error));
-        await this.persist();
-        this.emitSession(current);
-        this.emitTimeline(current);
-      })
-      .finally(async () => {
-        if (this.following.get(id) === launchNonce) {
-          this.following.delete(id);
-        }
-        const current = this.sessions.get(id);
-        if (
-          current === undefined ||
-          current.record.provisionalIdentity.launchNonce !== launchNonce
-        ) {
-          return;
-        }
-        if (exited) {
-          const stderr = await this.readRemoteStderr(id);
-          if (stderr !== '') {
-            this.appendError(current, new Error(`Remote agent stderr:\n${stderr}`));
-          }
-          this.finalizeInFlightItems(current);
-          this.expirePendingInteractions(current);
-          current.record = {
-            ...current.record,
-            status: 'exited',
-            updatedAt: new Date().toISOString(),
-          };
-          current.activeTurn = undefined;
-          await this.persist();
-          this.emitSession(current);
-          this.emitTimeline(current);
-          return;
-        }
-        if (
-          this.activeProfileId ===
-            current.record.provisionalIdentity.connectionProfileId
-        ) {
-          const alive = await this.options.tmux
-            .hasSession(followedTmuxSessionId)
-            .catch(() => false);
-          if (alive) this.followSession(current);
-        }
-      });
-  }
 
   private applyNormalizedEvent(
     stored: StoredAgentSession,
@@ -3318,26 +3068,20 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
     );
   }
 
-  private writeFrame(
-    stored: StoredAgentSession,
-    frame: Record<string, unknown>,
-  ): Promise<void> {
-    return this.options.tmux.sendText(stored.paneId, JSON.stringify(frame));
-  }
 
   private writeControlResponse(
     stored: StoredAgentSession,
     requestId: string,
     response: Record<string, unknown>,
   ): Promise<void> {
-    return this.writeFrame(stored, {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
-        response,
-      },
-    });
+    // ACP answers a control request by returning a value, so this resolves
+    // the promise the runtime is holding rather than writing a frame back.
+    this.options.acp?.resolveControl(
+      stored.record.id,
+      requestId,
+      typeof response['optionId'] === 'string' ? response['optionId'] : null,
+    );
+    return Promise.resolve();
   }
 
   private appendError(
