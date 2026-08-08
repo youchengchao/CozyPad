@@ -1469,6 +1469,12 @@ exit "$agent_status"`;
       // spawned. followSession used to decide this by watching the agent's
       // output stream; the ACP equivalent is that initialize and session/new
       // both returned, which is also when the model list becomes available.
+      // Only on this machine. `acp.start` spawns a child here, in this cwd —
+      // a remote session's cwd belongs to the other host and does not exist
+      // locally. Running the agent over SSH is a separate transport that does
+      // not exist yet, so a remote session says so rather than failing at a
+      // spawn with a message about the wrong thing.
+      this.assertAcpSupported(stored);
       if (this.options.acp !== undefined) {
         await this.options.acp.start(
           stored.record.id,
@@ -2184,6 +2190,7 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       if (this.options.acp === undefined) {
         throw new Error('No ACP runtime is available for this agent');
       }
+      this.assertAcpSupported(stored);
       if (!this.options.acp.has(stored.record.id)) {
         await this.options.acp.start(
           stored.record.id,
@@ -3168,6 +3175,25 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
     if (this.activeProfileId !== profileId) {
       throw new Error('The requested SSH profile is not connected');
     }
+  }
+
+  /**
+   * Refuses work the local ACP runtime cannot do.
+   *
+   * Split out so both `create` and `send` refuse identically: a session that
+   * was created remotely must not become sendable later just because the check
+   * lived in only one of them.
+   */
+  private assertAcpSupported(stored: StoredAgentSession): void {
+    const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    if (this.options.isLocalHost?.(profileId) === true) return;
+    throw new Error(
+      'Agent sessions on a remote host are not available yet. ' +
+        'CozyPad now runs agents over the Agent Client Protocol as a local ' +
+        'child process; running one on the other end of an SSH connection is a ' +
+        'separate transport that has not been built. Open this session on ' +
+        '"This computer" instead.',
+    );
   }
 
   private assertSessionConnected(stored: StoredAgentSession): void {

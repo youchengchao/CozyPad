@@ -297,6 +297,9 @@ describe('AgentCommunicationService', () => {
       profileStore: profiles,
       storePath: path.join(tempDirectory, 'sessions.json'),
       getHostFingerprint: () => 'SHA256:test',
+      // These tests are about the agent path, not about which host it runs on.
+      // The remote case has its own describe at the end of this file.
+      isLocalHost: () => true,
       acp: acpRuntime,
     });
     await service.connected('profile-1');
@@ -930,5 +933,65 @@ describe('an unreadable session store degrades the agent page, not the app', () 
     const recovered: { reason: string; backupPath: string | null }[] = [];
     await serviceFor(storePath, recovered).load();
     expect(recovered).toEqual([]);
+  });
+});
+
+describe('a remote session is not spawned as a local child', () => {
+  let directory: string;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cozypad-remote-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5 });
+  });
+
+  it('refuses to create one, with a reason instead of a spawn failure', async () => {
+    // `acp.start` runs an agent on THIS machine, in the session's cwd. A remote
+    // session's cwd — `/srv/deep-learning` here — belongs to the other host and
+    // is not a directory on Windows, so routing every agent through the local
+    // runtime broke every remote session at once. The symptom reported was
+    // `spawn …electron.exe ENOENT`, which named a binary that was present and
+    // said nothing about the host.
+    //
+    // No `isLocalHost` here on purpose: 'profile-1' is a real SSH profile.
+    const remote = new AgentCommunicationService({
+      transport: new FakeTransport() as unknown as TransportPort,
+      tmux: new FakeTmux(),
+      profileStore: new MemoryProfileStore([
+        {
+          id: 'profile-1',
+          name: 'Research box',
+          host: 'lab.example',
+          port: 22,
+          username: 'researcher',
+          authMethod: 'password',
+          hasPassword: true,
+          credentialPersisted: false,
+        },
+      ]),
+      storePath: path.join(directory, 'remote.json'),
+      getHostFingerprint: () => 'SHA256:test',
+      acp: {
+        has: () => false,
+        start: async () => ({}),
+        prompt: async () => 'end_turn',
+        cancel: async () => undefined,
+        resolveControl: () => undefined,
+        stop: () => undefined,
+      },
+    });
+    await remote.connected('profile-1');
+
+    await expect(
+      remote.create({
+        profileId: 'profile-1',
+        agentKind: 'agy',
+        cwd: '/srv/deep-learning',
+        launchMode: 'default',
+        interactionMode: 'chat',
+      }),
+    ).rejects.toThrow(/remote host are not available yet/u);
   });
 });
