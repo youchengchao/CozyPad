@@ -2,8 +2,9 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TmuxSessionInfo } from '@cozypad/tmux-runtime';
+import type { ChatItem } from '@cozypad/contracts';
 import {
   AgentCommunicationService,
   STORE_VERSION,
@@ -527,6 +528,158 @@ describe('AgentCommunicationService', () => {
     ]);
   });
 
+  const pendingApproval = (id: string): Extract<ChatItem, { kind: 'approval' }> => ({
+    kind: 'approval',
+    id,
+    timestamp: new Date().toISOString(),
+    riskSummary: 'Run tests',
+    resolution: 'pending',
+    options: [
+      { optionId: 'always', name: 'Always Allow', kind: 'allow_always' },
+      { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+    ],
+  });
+
+  const statusOf = (sessionId: string) =>
+    service
+      .list({ profileId: 'profile-1' })
+      .find((bundle) => bundle.session.id === sessionId)?.session.status;
+
+  async function createSessionWithHeldTurn(): Promise<{
+    sessionId: string;
+    turn: Promise<void>;
+    releaseTurn: (stopReason: string) => void;
+  }> {
+    const bundle = await service.create({
+      profileId: 'profile-1',
+      agentKind: 'agy',
+      cwd: '/srv/deep-learning',
+      launchMode: 'default',
+      interactionMode: 'chat',
+    });
+    let release: ((stopReason: string) => void) | undefined;
+    acpRuntime.prompt = () =>
+      new Promise<string>((resolve) => {
+        release = resolve;
+      });
+    const turn = service.send({
+      sessionId: bundle.session.id,
+      text: 'go',
+      attachmentIds: [],
+    });
+    // send() reaches the agent only after its own awaits; the turn is not
+    // held until the fake prompt has actually been entered.
+    await vi.waitFor(() => {
+      if (release === undefined) throw new Error('turn not started yet');
+    });
+    return {
+      sessionId: bundle.session.id,
+      turn,
+      releaseTurn: (stopReason: string) => release!(stopReason),
+    };
+  }
+
+  it('shows waiting_approval while an approval card is pending, and only then', async () => {
+    const { sessionId, turn, releaseTurn } = await createSessionWithHeldTurn();
+    expect(statusOf(sessionId)).toBe('running');
+
+    service.replaceTimeline(sessionId, [pendingApproval('a1')]);
+    expect(statusOf(sessionId)).toBe('waiting_approval');
+
+    service.replaceTimeline(sessionId, [
+      { ...pendingApproval('a1'), resolution: 'allowed' },
+    ]);
+    expect(statusOf(sessionId)).toBe('running');
+
+    releaseTurn('end_turn');
+    await turn;
+    expect(statusOf(sessionId)).toBe('ready');
+  });
+
+  it('answers "allowed" with allow_once even when allow_always is listed first', async () => {
+    const bundle = await service.create({
+      profileId: 'profile-1',
+      agentKind: 'agy',
+      cwd: '/srv/deep-learning',
+      launchMode: 'default',
+      interactionMode: 'chat',
+    });
+    const resolved: { requestId: string; optionId: string | null | undefined }[] = [];
+    acpRuntime.resolveControl = (_sessionId, requestId, optionId) => {
+      resolved.push({ requestId, optionId });
+    };
+    service.replaceTimeline(bundle.session.id, [pendingApproval('a1')]);
+
+    await service.resolveApproval({
+      sessionId: bundle.session.id,
+      itemId: 'a1',
+      resolution: 'allowed',
+    });
+
+    expect(resolved).toEqual([{ requestId: 'a1', optionId: 'once' }]);
+  });
+
+  it('sends the exact option the card named, overriding the fallback mapping', async () => {
+    const bundle = await service.create({
+      profileId: 'profile-1',
+      agentKind: 'agy',
+      cwd: '/srv/deep-learning',
+      launchMode: 'default',
+      interactionMode: 'chat',
+    });
+    const resolved: (string | null | undefined)[] = [];
+    acpRuntime.resolveControl = (_sessionId, _requestId, optionId) => {
+      resolved.push(optionId);
+    };
+    service.replaceTimeline(bundle.session.id, [pendingApproval('a1')]);
+
+    await service.resolveApproval({
+      sessionId: bundle.session.id,
+      itemId: 'a1',
+      resolution: 'allowed',
+      optionId: 'always',
+    });
+
+    expect(resolved).toEqual(['always']);
+  });
+
+  it('leaves an interrupted turn running until the agent honours the cancel', async () => {
+    const { sessionId, turn, releaseTurn } = await createSessionWithHeldTurn();
+    const cancelled: string[] = [];
+    acpRuntime.cancel = async (target) => {
+      cancelled.push(target);
+    };
+
+    await service.interrupt({ sessionId });
+
+    expect(cancelled).toEqual([sessionId]);
+    // Still the agent's turn: 'ready' here with activeTurn set is the state
+    // that used to refuse every later send while hiding the Stop button.
+    expect(statusOf(sessionId)).toBe('running');
+
+    releaseTurn('cancelled');
+    await turn;
+    expect(statusOf(sessionId)).toBe('ready');
+    acpRuntime.prompt = async () => 'end_turn';
+    await expect(
+      service.send({ sessionId, text: 'next', attachmentIds: [] }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('clears a stale turn on interrupt when no agent process exists', async () => {
+    const { sessionId, turn, releaseTurn } = await createSessionWithHeldTurn();
+    releaseTurn('end_turn');
+    await turn;
+    acpRuntime.prompt = () => new Promise<string>(() => undefined);
+    const secondTurn = service.send({ sessionId, text: 'again', attachmentIds: [] });
+    acpRuntime.has = () => false;
+
+    await service.interrupt({ sessionId });
+
+    expect(statusOf(sessionId)).toBe('ready');
+    secondTurn.catch(() => undefined);
+  });
 
   it('surfaces remote stderr when tmux reports that its server exited', async () => {
     tmux.newSessionError = new Error('server exited unexpectedly');

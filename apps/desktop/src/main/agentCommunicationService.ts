@@ -2317,6 +2317,18 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       throw new Error('No ACP runtime is available for this agent');
     }
     await this.options.acp.cancel(stored.record.id);
+    if (this.options.acp.has(stored.record.id)) {
+      // The turn ends when the agent honours the cancel: `session/prompt`
+      // resolves with `stopReason: 'cancelled'` and the send path flips the
+      // status and clears the turn. Declaring 'ready' here while `activeTurn`
+      // was still set left a session that refused every send and hid the Stop
+      // button that could have retried the cancel.
+      return;
+    }
+    // No agent process — after an app restart there is no turn to cancel,
+    // only stale state to clear.
+    stored.activeTurn = undefined;
+    stored.activeAgentTurnId = undefined;
     stored.record = {
       ...stored.record,
       status: 'ready',
@@ -2351,12 +2363,22 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     }
 
     const options = item.options ?? [];
+    const exactKind = (kind: string): string | undefined =>
+      options.find((option) => option.kind === kind)?.optionId;
     const byKind = (prefix: string): string | undefined =>
       options.find((option) => option.kind?.startsWith(prefix) === true)?.optionId;
+    // The card's own option wins when it names one. The fallback maps the
+    // two-button resolution to the *narrowest* matching kind first: claude
+    // lists `allow_always` before `allow_once`, so a bare prefix match would
+    // grant a standing permission the user never chose.
     const optionId =
-      request.resolution === 'allowed'
-        ? (byKind('allow') ?? options[0]?.optionId ?? null)
-        : (byKind('reject') ?? byKind('deny') ?? null);
+      (request.optionId !== undefined &&
+      options.some((option) => option.optionId === request.optionId)
+        ? request.optionId
+        : undefined) ??
+      (request.resolution === 'allowed'
+        ? (exactKind('allow_once') ?? byKind('allow') ?? options[0]?.optionId ?? null)
+        : (exactKind('reject_once') ?? byKind('reject') ?? byKind('deny') ?? null));
 
     this.options.acp?.resolveControl(stored.record.id, item.id, optionId);
 
@@ -2369,9 +2391,15 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
           }
         : candidate,
     );
+    // The agent is unblocked, so the turn is running again until the prompt
+    // resolves; the session list must stop saying it needs input.
+    if (stored.record.status === 'waiting_approval') {
+      stored.record = { ...stored.record, status: 'running' };
+    }
     stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
     await this.persist();
     this.emitTimeline(stored);
+    this.emitSession(stored);
   }
 
   async answerQuestion(request: AnswerAgentQuestionRequest): Promise<void> {
@@ -3243,6 +3271,20 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
     if (stored === undefined) return;
     stored.timeline = [...items];
     stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
+    // The timeline is where a blocked agent shows: a pending approval means
+    // the agent is waiting on the user, not working. Derived here — the one
+    // place every runtime's items pass through — so the "needs input" state
+    // cannot depend on which code path produced the card.
+    const blocked = items.some(
+      (item) => item.kind === 'approval' && item.resolution === 'pending',
+    );
+    if (blocked && stored.record.status === 'running') {
+      stored.record = { ...stored.record, status: 'waiting_approval' };
+      this.emitSession(stored);
+    } else if (!blocked && stored.record.status === 'waiting_approval') {
+      stored.record = { ...stored.record, status: 'running' };
+      this.emitSession(stored);
+    }
     this.emitTimeline(stored);
     void this.persist();
   }

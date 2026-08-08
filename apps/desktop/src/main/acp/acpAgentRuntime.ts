@@ -444,10 +444,12 @@ export class AcpAgentRuntime {
       });
       const meta = (response as { _meta?: Record<string, unknown> })._meta;
       if (meta !== undefined) this.callbacks.onPromptMeta?.(sessionId, meta);
+      this.#drainPending(running);
       running.state = settleAcpTimeline(running.state);
       this.callbacks.onTimeline(sessionId, running.state.items);
       return response.stopReason;
     } catch (error) {
+      this.#drainPending(running);
       running.state = settleAcpTimeline(running.state);
       this.callbacks.onTimeline(sessionId, running.state.items);
       // JSON-RPC reports an agent-side failure as "Internal error" and puts
@@ -499,12 +501,19 @@ export class AcpAgentRuntime {
   stop(sessionId: string): void {
     const running = this.#sessions.get(sessionId);
     if (running === undefined) return;
-    // Decline anything still open. An unanswered request would otherwise keep
-    // a promise — and whatever awaits it — alive after the agent is gone.
-    for (const [, pending] of running.pending) pending.resolve(null);
-    running.pending.clear();
+    this.#drainPending(running);
     running.child.kill();
     this.#sessions.delete(sessionId);
+  }
+
+  /**
+   * Declines every control request still open. An unanswered request would
+   * otherwise keep a promise — and whatever awaits it — alive after the turn
+   * or the agent is gone.
+   */
+  #drainPending(running: Running): void {
+    for (const [, pending] of running.pending) pending.resolve(null);
+    running.pending.clear();
   }
 
   stopAll(): void {

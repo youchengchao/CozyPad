@@ -336,15 +336,23 @@ export function reduceAcpEvent(
 
 /** Closes any open streaming item at the end of a turn. */
 export function settleAcpTimeline(state: AcpTimelineState): AcpTimelineState {
-  if (state.openAssistantId === null && state.openThoughtId === null) return state;
   return {
     ...state,
-    items: state.items.map((item) =>
-      (item.id === state.openAssistantId && item.kind === 'message') ||
-      (item.id === state.openThoughtId && item.kind === 'thought')
-        ? { ...item, streaming: false }
-        : item,
-    ),
+    items: state.items.map((item) => {
+      if (
+        (item.id === state.openAssistantId && item.kind === 'message') ||
+        (item.id === state.openThoughtId && item.kind === 'thought')
+      ) {
+        return { ...item, streaming: false };
+      }
+      // A permission request dies with its turn: after a cancel or a failure
+      // there is no agent waiting on the answer, and a card left 'pending'
+      // would keep the session labelled as needing input forever.
+      if (item.kind === 'approval' && item.resolution === 'pending') {
+        return { ...item, resolution: 'expired' as const };
+      }
+      return item;
+    }),
     openAssistantId: null,
     openThoughtId: null,
     openMessageId: null,

@@ -191,6 +191,12 @@ export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSche
 export const ResolveAgentApprovalRequestSchema = AgentSessionRequestSchema.extend({
   itemId: z.string().min(1),
   resolution: z.enum(['allowed', 'denied']),
+  /**
+   * The exact option the user picked, when the card rendered the agent's own
+   * options. Absent on the two-button fallback, where the service maps the
+   * resolution to the safest matching option kind.
+   */
+  optionId: z.string().min(1).optional(),
 });
 export type ResolveAgentApprovalRequest = z.infer<
   typeof ResolveAgentApprovalRequestSchema
