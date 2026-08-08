@@ -217,6 +217,72 @@ function MarkdownPre({
   return <pre {...props}>{children}</pre>;
 }
 
+export interface MarkdownViewProps {
+  children: string;
+  /** Defers Mermaid rendering while text is still arriving. */
+  streaming?: boolean;
+  /** AGY keeps its existing diff/git-log code-block cards through this hook. */
+  fallbackPre?: PreComponent;
+  className?: string;
+}
+
+/**
+ * Markdown with this app's plugin set, and nothing that assumes an assistant
+ * wrote it.
+ *
+ * Split out from {@link AssistantMarkdown} because two of its three callers are
+ * not assistants: a user's own message in the timeline, and a draft in
+ * FilesWorkspace. Both were previously either rendered as plain text or run
+ * through {@link parseAssistantText}, which deletes anything between `<think>`
+ * tags — fine for a model that emits them, wrong for a human who types them.
+ *
+ * Everything else is deliberately shared rather than duplicated: the same
+ * GFM/KaTeX/highlight plugins, the same Mermaid hook, the same error boundary.
+ * A user pasting a mermaid fence should get the same diagram the agent would.
+ */
+export function MarkdownView({
+  children,
+  streaming = false,
+  fallbackPre,
+  className = 'assistant-markdown-container',
+}: MarkdownViewProps) {
+  const normalized = useMemo(
+    () => normalizeHackmdDisplayMath(children),
+    [children],
+  );
+
+  const components = useMemo<Components>(
+    () => ({
+      pre: (componentProps) => {
+        const { node, ...props } = componentProps;
+        void node;
+        return (
+          <MarkdownPre {...props} fallbackPre={fallbackPre} streaming={streaming} />
+        );
+      },
+    }),
+    [fallbackPre, streaming],
+  );
+
+  if (children === '') return null;
+
+  return (
+    <MarkdownErrorBoundary rawText={children}>
+      <div className={className}>
+        {normalized === '' ? null : (
+          <Markdown
+            components={components}
+            rehypePlugins={REHYPE_PLUGINS}
+            remarkPlugins={REMARK_PLUGINS}
+          >
+            {normalized}
+          </Markdown>
+        )}
+      </div>
+    </MarkdownErrorBoundary>
+  );
+}
+
 export interface AssistantMarkdownProps {
   children: string;
   streaming?: boolean;

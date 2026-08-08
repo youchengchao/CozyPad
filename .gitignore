@@ -54,3 +54,7 @@ lib/graphify-out/
 
 # Local agent probes: real quota, not part of the product.
 /.probe/
+
+# Local render harness, not product.
+/apps/app/dev-preview.html
+/apps/app/dev-preview.tsx

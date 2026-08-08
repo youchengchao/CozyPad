@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ChatItem, ToolCallItem } from '@cozypad/contracts';
-import { AssistantMarkdown } from './AssistantMarkdown';
+import { AssistantMarkdown, MarkdownView } from './AssistantMarkdown';
 import { MessageAttachments } from './MessageAttachments';
 
 export interface ChatTimelineProps {
@@ -304,7 +304,19 @@ export function ChatTimeline({
                         </AssistantMarkdown>
                       </div>
                     ) : item.text === '' ? null : (
-                      <div className="msg-text">{item.text}</div>
+                      // Your own message gets the same renderer the agent's
+                      // does, minus the `<think>` stripping — a link, a fenced
+                      // block, a mermaid diagram or a path reads the same on
+                      // both sides of the conversation. It used to be a bare
+                      // text node, so anything you typed came back as source.
+                      <div className="msg-text markdown">
+                        <MarkdownView
+                          fallbackPre={ChatTimelineMarkdownPre}
+                          className="user-markdown-container"
+                        >
+                          {item.text}
+                        </MarkdownView>
+                      </div>
                     )}
                     <MessageAttachments attachments={messageAttachments} />
                     {item.streaming ? <span className="caret" /> : null}

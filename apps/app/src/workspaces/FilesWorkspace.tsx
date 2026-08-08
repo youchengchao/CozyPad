@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RemoteFileItem } from '@cozypad/contracts';
 import { textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
-import { AssistantMarkdown } from './agents/AssistantMarkdown';
+import { MarkdownView } from './agents/AssistantMarkdown';
 import { CodeEditor } from '../components/CodeEditor';
 import { ContextMenu, useLongPress } from '../components/ContextMenu';
 import type { MenuAction } from '../components/ContextMenu';
@@ -780,7 +780,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
               )
             ) : draft && isMarkdownPreviewFile(selected) && mdPreview ? (
               <div className="md-preview markdown markdown-doc">
-                <AssistantMarkdown>{draft.text}</AssistantMarkdown>
+                <MarkdownView>{draft.text}</MarkdownView>
               </div>
             ) : draft ? (
               <CodeEditor
