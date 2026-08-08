@@ -391,6 +391,7 @@ export function App() {
               connectionState={state}
               reconnect={reconnect}
               profileId={selectedId}
+              hostIsLocal={connectedProfile?.isLocal === true}
             />
           </section>
           <section className="workspace-page" hidden={workspace !== 'research'}>

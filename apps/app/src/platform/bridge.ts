@@ -16,17 +16,20 @@ const FAST_TIMEOUT_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const LONG_TIMEOUT_MS = 45_000;
 
+/**
+ * `sendAgentMessage` resolves when the agent's whole turn ends, and a turn is
+ * allowed to take as long as it takes — racing it against a timer produced a
+ * red "IPC Timeout" banner over every working multi-minute turn. Delivery
+ * confirmation is the user message echoing back on the timeline, not this
+ * call resolving.
+ */
+const UNBOUNDED_METHODS = new Set(['sendAgentMessage']);
+
 function getTimeoutForMethod(methodName: string): number {
   if (['fsList', 'listProfiles', 'readClipboard'].includes(methodName)) {
     return FAST_TIMEOUT_MS;
   }
-  if (
-    [
-      'sendAgentMessage',
-      'uploadAgentAttachments',
-      'reviveAgentSession',
-    ].includes(methodName)
-  ) {
+  if (['uploadAgentAttachments', 'reviveAgentSession'].includes(methodName)) {
     return LONG_TIMEOUT_MS;
   }
   return DEFAULT_TIMEOUT_MS;
@@ -77,6 +80,13 @@ function wrapResilientBridge(rawBridge: PlatformBridge): PlatformBridge {
             (typeof result === 'object' || typeof result === 'function') &&
             typeof (result as Promise<unknown>).then === 'function'
           ) {
+            if (UNBOUNDED_METHODS.has(propName)) {
+              return (result as Promise<unknown>).catch((err: unknown) => {
+                if (err instanceof CozyPadIPCError) throw err;
+                const msg = err instanceof Error ? err.message : String(err);
+                throw new CozyPadIPCError('IPC_FAILED', msg, false);
+              });
+            }
             const timeoutMs = getTimeoutForMethod(propName);
             let timer: ReturnType<typeof setTimeout>;
             const timeoutPromise = new Promise<never>((_, reject) => {

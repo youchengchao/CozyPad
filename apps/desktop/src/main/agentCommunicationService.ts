@@ -1286,6 +1286,7 @@ exit "$agent_status"`;
 
   async create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle> {
     this.assertConnected(request.profileId);
+    this.assertAcpSupportedOn(request.profileId);
     // Every agent is a chat session now. agy used to be forced to `terminal`,
     // which meant CozyPad drove its TUI and read the answer back off a 120x40
     // screen — the path that concatenated prompts, lost their first character,
@@ -1604,6 +1605,7 @@ exit "$agent_status"`;
     const stored = this.requireSession(request.sessionId);
     const profileId = stored.record.provisionalIdentity.connectionProfileId;
     this.assertConnected(profileId);
+    this.assertAcpSupportedOn(profileId);
     if (
       stored.record.status !== 'exited' &&
       stored.record.status !== 'error' &&
@@ -3380,7 +3382,15 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
    * lived in only one of them.
    */
   private assertAcpSupported(stored: StoredAgentSession): void {
-    const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    this.assertAcpSupportedOn(stored.record.provisionalIdentity.connectionProfileId);
+  }
+
+  /**
+   * Refuses remote agent work BEFORE any remote side effect. Failing after
+   * creating the tmux session and the ~/.cozypad directories left garbage on
+   * the host, and every Resume retry added another copy.
+   */
+  private assertAcpSupportedOn(profileId: string): void {
     if (this.options.isLocalHost?.(profileId) === true) return;
     throw new Error(
       'Agent sessions on a remote host are not available yet. ' +

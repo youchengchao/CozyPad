@@ -391,6 +391,8 @@ interface AgentsWorkspaceProps {
   connectionState?: ConnectionState;
   reconnect?: { attempt: number; secondsLeft: number } | null;
   profileId: string | null;
+  /** Agents run as local ACP children; a remote host cannot create one. */
+  hostIsLocal?: boolean;
 }
 
 export function AgentsWorkspace({
@@ -398,6 +400,7 @@ export function AgentsWorkspace({
   connectionState,
   reconnect,
   profileId,
+  hostIsLocal = false,
 }: AgentsWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [agent, setAgent] = useState<AgentKind>('claude');
@@ -464,7 +467,12 @@ export function AgentsWorkspace({
   const [sendUnconfirmed, setSendUnconfirmed] = useState<
     Record<string, { text: string }>
   >({});
-  const sendTimersRef = useRef<Record<string, number>>({});
+  /**
+   * Sends whose delivery is not yet proven. Proof is the user message echoing
+   * back on the timeline — NOT `sendAgentMessage` resolving, which happens
+   * only when the whole turn ends.
+   */
+  const sendTimersRef = useRef<Record<string, { timer: number; text: string }>>({});
   const [interrupting, setInterrupting] = useState<Record<string, boolean>>({});
   const [filters, setFilters] = useState<Record<AgentKind, string>>({
     claude: '',
@@ -639,9 +647,9 @@ export function AgentsWorkspace({
     setUnreadIds(drop);
     setAgyActivity(drop);
     // A pending delivery timer must not write back a key that is gone.
-    const timer = sendTimersRef.current[sessionId];
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
+    const pendingSend = sendTimersRef.current[sessionId];
+    if (pendingSend !== undefined) {
+      window.clearTimeout(pendingSend.timer);
       delete sendTimersRef.current[sessionId];
     }
     setSendUnconfirmed(drop);
@@ -676,6 +684,26 @@ export function AgentsWorkspace({
         // SPEC 1514-1515: late events must not resurrect a deleted session.
         if (forgotten.current.has(sessionId)) return;
         setTimelines((current) => ({ ...current, [sessionId]: items }));
+        // The prompt showing up in the timeline IS the delivery confirmation.
+        const pendingSend = sendTimersRef.current[sessionId];
+        if (
+          pendingSend !== undefined &&
+          items.some(
+            (item) =>
+              item.kind === 'message' &&
+              item.role === 'user' &&
+              item.text === pendingSend.text,
+          )
+        ) {
+          window.clearTimeout(pendingSend.timer);
+          delete sendTimersRef.current[sessionId];
+          setSendUnconfirmed((current) => {
+            if (!(sessionId in current)) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          });
+        }
         if (sessionId !== selectedSessionIdRef.current) {
           setUnreadIds((current) =>
             current[sessionId] === undefined ? { ...current, [sessionId]: true } : current,
@@ -891,17 +919,20 @@ export function AgentsWorkspace({
     [timeline],
   );
   const installation = installations[agent];
+  // Mirrors what create() actually accepts — an enabled button that the
+  // service then refuses is worse than a disabled one with a reason.
+  const remoteUnsupported = connected && !hostIsLocal;
   const canCreate =
     connected &&
+    hostIsLocal &&
     profileId !== null &&
     installation?.installed === true &&
     installation.installationScope === 'user' &&
-    (agent === 'agy' || installation.supportsStructuredOutput) &&
+    installation.supportsStructuredOutput &&
     installation.launchModes.length > 0;
   const agentUnavailable =
     installation !== undefined &&
-    (!installation.installed ||
-      (agent !== 'agy' && !installation.supportsStructuredOutput));
+    (!installation.installed || !installation.supportsStructuredOutput);
 
   // The screen-derived AGY activity dies with the surface: keeping the last
   // guess after leaving the session let it override every later status the
@@ -1110,7 +1141,7 @@ export function AgentsWorkspace({
     const unconfirmedTimer = window.setTimeout(() => {
       setSendUnconfirmed((current) => ({ ...current, [sessionId]: { text } }));
     }, 20_000);
-    sendTimersRef.current[sessionId] = unconfirmedTimer;
+    sendTimersRef.current[sessionId] = { timer: unconfirmedTimer, text };
     try {
       const buffered = pending.filter(
         (attachment): attachment is ComposerAttachment & { file: File } =>
@@ -1618,6 +1649,15 @@ export function AgentsWorkspace({
                   {reconnect
                     ? `${reconnect.secondsLeft}s 後進行第 ${reconnect.attempt} 次重連嘗試`
                     : '已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入或新建。Agent 對話會在遠端指定路徑建立 tmux session。'}
+                </p>
+              </div>
+            ) : remoteUnsupported ? (
+              <div className="agent-availability-banner" role="status">
+                <strong>遠端主機尚不支援 agent 對話</strong>
+                <p>
+                  Agent 目前以本機子程序運行（ACP）；SSH 主機上的執行是尚未建置的獨立
+                  transport。已保存的 sessions 仍可瀏覽，切回「This computer」即可新建或
+                  Resume。
                 </p>
               </div>
             ) : agentUnavailable ? (
