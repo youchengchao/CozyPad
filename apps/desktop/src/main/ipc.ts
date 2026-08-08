@@ -5,7 +5,6 @@ import {
   AgentAttachmentUploadSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
-  AgyTranscriptRequestSchema,
   AnswerAgentQuestionRequestSchema,
   DeclineAgentQuestionRequestSchema,
   ConnectRequestSchema,
@@ -461,14 +460,6 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
       throw new Error('Agent communication is unavailable in mock desktop mode');
     }
     return agentCommunication.revive(AgentSessionRequestSchema.parse(raw));
-  });
-
-  ipcMain.handle(IpcChannels.agentAgyTranscript, (event, raw: unknown) => {
-    assertSender(event);
-    if (agentCommunication === null) return { turns: [] };
-    return agentCommunication.readAgyTranscript(
-      AgyTranscriptRequestSchema.parse(raw),
-    );
   });
 
   ipcMain.handle(IpcChannels.agentSessionRename, (event, raw: unknown) => {

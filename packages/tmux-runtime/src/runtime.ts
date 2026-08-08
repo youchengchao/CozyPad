@@ -237,17 +237,6 @@ printf "__OK__\\n"
     throwOnError(await this.exec(command, 5000), 'tmux escape failed');
   }
 
-  /** Terminal fallback／診斷用；不得作為 chat 主資料源（SPEC_V3 §6）。 */
-  async capturePane(target: string, lines = 160): Promise<string> {
-    const clamped = Math.min(500, Math.max(20, Math.trunc(lines)));
-    const command = `if ! ${this.tmux()} display-message -p -t ${quoteShellArg(target)} '#{pane_id}' >/dev/null 2>&1; then
-  echo "__ERROR__\tSession not found: ${target}"
-  exit 0
-fi
-${this.tmux()} capture-pane -p -J -t ${quoteShellArg(target)} -S -${clamped}
-`;
-    return throwOnError(await this.exec(command, 5000), 'tmux capture failed');
-  }
 
   /**
    * 讀取 tmux 全域 mouse 模式（滾輪捲動 / 滑鼠選取）。

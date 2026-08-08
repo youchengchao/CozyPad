@@ -35,8 +35,6 @@ import type {
   AgentDetectionRequest,
   AgentInstallation,
   AgentSessionBundle,
-  AgyTranscript,
-  AgyTranscriptRequest,
   AgentSessionChangedEvent,
   AgentSessionDeletedEvent,
   AgentSessionListRequest,
@@ -161,7 +159,6 @@ export interface PlatformBridge {
    * Fresh sessions must include their exact submitted prompt so the backend
    * can bind the correct native conversation without exposing other history.
    */
-  readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript>;
   renameAgentSession(request: RenameAgentSessionRequest): Promise<void>;
   deleteAgentSession(
     request: AgentSessionRequest,

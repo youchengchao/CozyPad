@@ -52,9 +52,9 @@ function clock(): AcpTimelineClock {
   };
 }
 
-function fold(events: readonly AcpSessionEvent[], replaying = false): AcpTimelineState {
+function fold(events: readonly AcpSessionEvent[]): AcpTimelineState {
   const c = clock();
-  let state = emptyAcpTimeline(replaying);
+  let state = emptyAcpTimeline();
   for (const event of events) state = reduceAcpEvent(state, event, c);
   return settleAcpTimeline(state);
 }
@@ -154,10 +154,12 @@ describe('the three shapes that would silently corrupt a transcript', () => {
     expect(assistantText(state)).toBe('OK');
   });
 
-  it('discards a replayed user message during a live turn', () => {
+  it('discards a replayed user message', () => {
     // CozyPad appends the user's message itself when it sends, and
     // claude-agent-acp launches the CLI with `replay-user-messages`, which
     // echoes it back. Accepting both doubles every message the user sends.
+    // (A session/load replay never reaches this reducer — the runtime drops
+    // the whole stream and seeds the persisted transcript instead.)
     const replay = {
       sessionId: session,
       kind: 'user_message_chunk',
@@ -167,11 +169,6 @@ describe('the three shapes that would silently corrupt a transcript', () => {
     const live = fold([replay, chunk('hi')]);
     expect(live.items.filter((i) => i.kind === 'message' && i.role === 'user')).toHaveLength(0);
     expect(live.dropped).toContain('user_message_chunk');
-
-    // During a session/load drain there is no local copy, so it is the only
-    // source of the user's side and must be kept.
-    const loaded = fold([replay, chunk('hi')], true);
-    expect(loaded.items.filter((i) => i.kind === 'message' && i.role === 'user')).toHaveLength(1);
   });
 
   it('names a tool call that only has a title', () => {

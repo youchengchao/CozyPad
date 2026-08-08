@@ -89,16 +89,7 @@ export class LocalAgentRuntime {
       throw new Error(`Session already exists: ${name}`);
     }
     const cwd = options.cwd.trim() === '' ? '~' : options.cwd.trim();
-    const isCozyPadAgentLaunch =
-      options.argv.length === 3 &&
-      options.argv[0] !== undefined &&
-      options.argv[1] === '-lc' &&
-      options.argv[2] !== undefined &&
-      options.argv[2].includes('launch-status');
-    const command = isCozyPadAgentLaunch && options.argv[0] !== undefined
-      ? `cd ${quoteShellArg(cwd)} || exit 1
-exec ${quoteShellArg(options.argv[0])} -lc 'while :; do sleep 3600; done'`
-      : `cd ${quoteShellArg(cwd)} || exit 1
+    const command = `cd ${quoteShellArg(cwd)} || exit 1
 exec ${options.argv.map((argument) => quoteShellArg(argument)).join(' ')}`;
 
     const terminalId = await this.host.openTerminal(
@@ -122,16 +113,7 @@ exec ${options.argv.map((argument) => quoteShellArg(argument)).join(' ')}`;
   async respawnPane(target: string, argv: string[]): Promise<void> {
     const session = this.require(target);
     this.host.closeTerminal(session.terminalId);
-    const isCozyPadAgentLaunch =
-      argv.length === 3 &&
-      argv[0] !== undefined &&
-      argv[1] === '-lc' &&
-      argv[2] !== undefined &&
-      argv[2].includes('launch-status');
-    const command = isCozyPadAgentLaunch && argv[0] !== undefined
-      ? `cd ${quoteShellArg(session.cwd)} || exit 1
-exec ${quoteShellArg(argv[0])} -lc 'while :; do sleep 3600; done'`
-      : `cd ${quoteShellArg(session.cwd)} || exit 1
+    const command = `cd ${quoteShellArg(session.cwd)} || exit 1
 exec ${argv.map((argument) => quoteShellArg(argument)).join(' ')}`;
     session.terminalId = await this.host.openTerminal(
       { profileId: 'local-machine', cols: this.size.cols, rows: this.size.rows },

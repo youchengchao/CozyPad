@@ -135,13 +135,6 @@ describe('TmuxRuntime', () => {
     expect(commands[0]).not.toContain(' C-c');
   });
 
-  it('capturePane clamps the line count', async () => {
-    const { exec, commands } = fakeExec(['screen contents']);
-    const runtime = new TmuxRuntime(exec);
-    await runtime.capturePane('$5', 9999);
-    expect(commands[0]).toContain('-S -500');
-  });
-
   it('reads mouse mode from the running server', async () => {
     const { exec } = fakeExec(['__MOUSE__\ton\n']);
     await expect(new TmuxRuntime(exec).getMouseMode()).resolves.toBe(true);

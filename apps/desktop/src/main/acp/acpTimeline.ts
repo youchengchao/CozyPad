@@ -28,26 +28,17 @@ export interface AcpTimelineState {
   readonly openMessageId: string | null;
   /** `toolCallId` → index in `items`. */
   readonly toolIndex: ReadonlyMap<string, number>;
-  /**
-   * True while draining a `session/load` replay.
-   *
-   * The single most consequential flag here. See {@link reduceAcpEvent}'s
-   * `user_message_chunk` case: outside a replay those must be discarded, and
-   * getting it wrong doubles every message the user ever sent.
-   */
-  readonly replaying: boolean;
   /** Update kinds seen and deliberately not mapped, for diagnostics. */
   readonly dropped: readonly string[];
 }
 
-export function emptyAcpTimeline(replaying = false): AcpTimelineState {
+export function emptyAcpTimeline(): AcpTimelineState {
   return {
     items: [],
     openAssistantId: null,
     openThoughtId: null,
     openMessageId: null,
     toolIndex: new Map(),
-    replaying,
     dropped: [],
   };
 }
@@ -225,27 +216,13 @@ export function reduceAcpEvent(
 
   switch (event.kind) {
     case 'user_message_chunk': {
-      // **Discarded outside a replay, on purpose.** CozyPad appends the user's
-      // message itself at send time, and claude-agent-acp launches the CLI with
+      // **Discarded, on purpose.** CozyPad appends the user's message itself
+      // at send time, and claude-agent-acp launches the CLI with
       // `replay-user-messages`, which echoes it straight back. Accepting both
-      // puts every message the user sends into the transcript twice.
-      //
-      // During a `session/load` drain there is no locally-appended copy, so the
-      // replay is the only source and must be kept.
-      if (!state.replaying) {
-        return { ...state, dropped: [...state.dropped, event.kind] };
-      }
-      const text = textOf(update['content']);
-      if (text === '') return state;
-      return {
-        ...state,
-        items: [
-          ...state.items,
-          { kind: 'message', id: clock.nextId('user'), timestamp: clock.now(), role: 'user', text },
-        ],
-        openAssistantId: null,
-        openMessageId: null,
-      };
+      // puts every message the user sends into the transcript twice. (A
+      // `session/load` replay never reaches this reducer either — the runtime
+      // drops the whole stream and seeds the persisted transcript instead.)
+      return { ...state, dropped: [...state.dropped, event.kind] };
     }
 
     case 'agent_message_chunk': {

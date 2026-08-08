@@ -536,20 +536,8 @@ export function AgentsWorkspace({
     y: number;
   } | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
-  const [modelPickerSessionId, setModelPickerSessionId] = useState<string | null>(
-    null,
-  );
-  const [modelName, setModelName] = useState('');
-  /** Live status for native AGY sessions, whose record status never changes. */
-  const [agyActivity, setAgyActivity] = useState<Record<string, AgentSessionStatus>>({});
   const [bucketFilter, setBucketFilter] = useState<SessionBucket | 'all'>('all');
   const [resuming, setResuming] = useState<Record<string, boolean>>({});
-  /**
-   * Bumped when a session is revived. The AGY surface is keyed on it: the old
-   * surface's terminal died with the old process, so the new process needs a
-   * fresh mount to attach to.
-   */
-  const [reviveNonce, setReviveNonce] = useState<Record<string, number>>({});
 
   /* ---- Sidebar drag-to-resize (VS Code style) ---- */
   const SIDEBAR_MIN = 180;
@@ -645,7 +633,6 @@ export function AgentsWorkspace({
     setResuming(drop);
     setInterrupting(drop);
     setUnreadIds(drop);
-    setAgyActivity(drop);
     // A pending delivery timer must not write back a key that is gone.
     const pendingSend = sendTimersRef.current[sessionId];
     if (pendingSend !== undefined) {
@@ -659,7 +646,6 @@ export function AgentsWorkspace({
     setSessionMenu((current) =>
       current?.session.id === sessionId ? null : current,
     );
-    setModelPickerSessionId((current) => (current === sessionId ? null : current));
   }, []);
 
   useEffect(() => {
@@ -817,28 +803,6 @@ export function AgentsWorkspace({
     };
   }, [bridge, connected, profileId]);
 
-  /**
-   * A native AGY session's stored status is written once at launch, so the
-   * only thing that knows whether it is thinking right now is the live
-   * screen. But the service is the authority on liveness: once it says the
-   * process is disconnected/exited/errored, a stale screen-derived guess —
-   * the surface unmounted long ago — must not resurrect it as "ready".
-   */
-  const liveStatus = useCallback(
-    (session: AgentSessionSummary): AgentSessionStatus => {
-      if (session.agentKind !== 'agy') return session.status;
-      if (
-        session.status === 'disconnected' ||
-        session.status === 'exited' ||
-        session.status === 'error'
-      ) {
-        return session.status;
-      }
-      return agyActivity[session.id] ?? session.status;
-    },
-    [agyActivity],
-  );
-
   const searchedSessions = useMemo(
     () =>
       sessions
@@ -864,18 +828,18 @@ export function AgentsWorkspace({
       error: 0,
     };
     for (const session of searchedSessions) {
-      counts[sessionBucket(liveStatus(session))] += 1;
+      counts[sessionBucket(session.status)] += 1;
     }
     return counts;
-  }, [searchedSessions, liveStatus]);
+  }, [searchedSessions]);
   const agentSessions = useMemo(
     () =>
       bucketFilter === 'all'
         ? searchedSessions
         : searchedSessions.filter(
-            (session) => sessionBucket(liveStatus(session)) === bucketFilter,
+            (session) => sessionBucket(session.status) === bucketFilter,
           ),
-    [searchedSessions, bucketFilter, liveStatus],
+    [searchedSessions, bucketFilter],
   );
 
   const selectedSessionId = sessionView.selected[agent];
@@ -934,33 +898,14 @@ export function AgentsWorkspace({
     installation !== undefined &&
     (!installation.installed || !installation.supportsStructuredOutput);
 
-  // The screen-derived AGY activity dies with the surface: keeping the last
-  // guess after leaving the session let it override every later status the
-  // service reported. A revive remount keeps the same entered id, so this
-  // only clears on a genuine leave.
-  const enteredAgySessionId =
-    agent === 'agy' && selectedSessionEntered ? (selectedSession?.id ?? null) : null;
-  const previousEnteredAgyRef = useRef<string | null>(null);
-  useEffect(() => {
-    const previous = previousEnteredAgyRef.current;
-    if (previous !== null && previous !== enteredAgySessionId) {
-      setAgyActivity((current) => {
-        if (!(previous in current)) return current;
-        const next = { ...current };
-        delete next[previous];
-        return next;
-      });
-    }
-    previousEnteredAgyRef.current = enteredAgySessionId;
-  }, [enteredAgySessionId]);
 
   const badge = (kind: AgentKind) => {
     const mine = sessions.filter((session) => session.agentKind === kind);
     // Same source as the list rows; reading raw session.status here made the
     // tab dot and the list disagree about the same session.
     return {
-      waiting: mine.some((session) => liveStatus(session) === 'waiting_approval'),
-      running: mine.some((session) => liveStatus(session) === 'running'),
+      waiting: mine.some((session) => session.status === 'waiting_approval'),
+      running: mine.some((session) => session.status === 'running'),
       // Tracked by the renderer: it is this window's reading position, not a
       // fact about the session, so the summary cannot know it.
       unread: mine.reduce(
@@ -1397,25 +1342,7 @@ export function AgentsWorkspace({
   const selectSlashCommand = (command: SlashCommand) => {
     if (selectedSessionId === null) return;
     const name = command.name.replace(/^\/+/, '').toLowerCase();
-    if (command.behavior === 'picker' && name === 'model') {
-      setModelPickerSessionId(selectedSessionId);
-      setModelName('');
-      return;
-    }
     void sendSlashCommand(selectedSessionId, `/${name}`);
-  };
-
-  const applyModelSelection = (useDefault = false) => {
-    if (modelPickerSessionId === null) return;
-    const value = modelName.trim();
-    if (!useDefault && value === '') return;
-    const sessionId = modelPickerSessionId;
-    setModelPickerSessionId(null);
-    setModelName('');
-    void sendSlashCommand(
-      sessionId,
-      useDefault ? '/model default' : `/model ${value}`,
-    );
   };
 
   const attachFiles = (sessionId: string, files: File[]) => {
@@ -1564,18 +1491,6 @@ export function AgentsWorkspace({
       setSessionView((current) =>
         enterSelectedSession(current, session.agentKind, sessionId),
       );
-      if (relaunching) {
-        setAgyActivity((current) => {
-          if (!(sessionId in current)) return current;
-          const next = { ...current };
-          delete next[sessionId];
-          return next;
-        });
-        setReviveNonce((current) => ({
-          ...current,
-          [sessionId]: (current[sessionId] ?? 0) + 1,
-        }));
-      }
     } catch (reviveError) {
       setError(errorText(reviveError));
     } finally {
@@ -1774,7 +1689,7 @@ export function AgentsWorkspace({
             </div>
             <div className="session-list">
               {agentSessions.map((session) => {
-                const status = liveStatus(session);
+                const status = session.status;
                 return (
                   <SessionListItem
                     key={session.id}
@@ -1987,8 +1902,8 @@ export function AgentsWorkspace({
                       <span>
                         已選取但尚未進入。按 Resume 後才會連回這個 session，並顯示訊息與附件輸入區。
                       </span>
-                      <span className={`chip chip-${liveStatus(selectedSession)}`}>
-                        {STATUS_LABEL[liveStatus(selectedSession)]}
+                      <span className={`chip chip-${selectedSession.status}`}>
+                        {STATUS_LABEL[selectedSession.status]}
                       </span>
                       <button
                         className="composer-send"
@@ -2420,49 +2335,6 @@ export function AgentsWorkspace({
         </div>
       ) : null}
 
-      {modelPickerSessionId !== null ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="modal modal-narrow" role="dialog" aria-modal="true">
-            <div className="modal-head">
-              <h2>Choose AGY model</h2>
-              <button
-                className="modal-close"
-                onClick={() => setModelPickerSessionId(null)}
-              >
-                ×
-              </button>
-            </div>
-            <label>
-              Model name
-              <input
-                value={modelName}
-                onChange={(event) => setModelName(event.target.value)}
-                placeholder="Enter an AGY model ID"
-                autoFocus
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') applyModelSelection();
-                }}
-              />
-            </label>
-            <p className="hint">
-              CozyPad passes this value to AGY with <code>--model</code> on later
-              turns. This picker does not start a remote process.
-            </p>
-            <div className="modal-actions">
-              <button onClick={() => applyModelSelection(true)}>
-                Use AGY default
-              </button>
-              <button
-                className="primary"
-                disabled={modelName.trim() === ''}
-                onClick={() => applyModelSelection()}
-              >
-                Use model
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

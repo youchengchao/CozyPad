@@ -496,16 +496,24 @@ describe('AgentCommunicationService', () => {
     expect(installation.detail).toContain('requires a per-user installation');
   });
 
-  it('launches the explicitly selected dangerous permission mode', async () => {
-    await service.create({
+  it('says so when the agent offers no mode matching the requested permissions', async () => {
+    // Permission flags no longer ride the pane script — the pane is a
+    // placeholder and the mode goes to the agent via session/set_mode. When
+    // the agent advertises nothing that matches, the session must say the
+    // choice did not take rather than silently running with defaults.
+    const bundle = await service.create({
       profileId: 'profile-1',
       agentKind: 'claude',
       cwd: '/srv/deep-learning',
       permissionMode: 'dangerouslySkip',
     });
 
-    expect(tmux.created[0]?.argv[2]).toContain('--dangerously-skip-permissions');
-    expect(tmux.created[0]?.argv[2]).not.toContain('--permission-prompt-tool');
+    expect(tmux.created[0]?.argv[2]).toContain('sleep 3600');
+    expect(
+      bundle.items.some(
+        (item) => item.kind === 'notice' && item.text.includes('bypassPermissions'),
+      ),
+    ).toBe(true);
   });
 
 

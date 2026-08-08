@@ -6,8 +6,6 @@ import {
   AgentDetectionRequestSchema,
   AgentInstallationSchema,
   AgentSessionBundleSchema,
-  AgyTranscriptSchema,
-  AgyTranscriptRequestSchema,
   AgentSessionChangedEventSchema,
   AgentSessionDeletedEventSchema,
   AgentSessionListRequestSchema,
@@ -233,14 +231,6 @@ const bridge: PlatformBridge = {
       await ipcRenderer.invoke(
         IpcChannels.agentSessionRevive,
         AgentSessionRequestSchema.parse(request),
-      ),
-    ),
-
-  readAgyTranscript: async (request) =>
-    AgyTranscriptSchema.parse(
-      await ipcRenderer.invoke(
-        IpcChannels.agentAgyTranscript,
-        AgyTranscriptRequestSchema.parse(request),
       ),
     ),
 

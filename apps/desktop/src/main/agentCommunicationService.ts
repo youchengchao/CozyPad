@@ -19,8 +19,6 @@ import type {
   AgentInstallation,
   AgentLaunchMode,
   AgyRecoveredTurn,
-  AgyTranscript,
-  AgyTranscriptRequest,
   AgentSessionBundle,
   AgentSessionChangedEvent,
   AgentSessionDeletedEvent,
@@ -33,7 +31,6 @@ import type {
   CreateAgentSessionRequest,
   DeclineAgentQuestionRequest,
   DeleteAgentSessionResult,
-  NormalizedAgentEvent,
   RemoteAgentSessionRecord,
   RemoteHostEnvironment,
   RenameAgentSessionRequest,
@@ -42,9 +39,6 @@ import type {
   SetAgentSessionConfigOptionRequest,
   UploadAgentAttachmentsRequest,
 } from '@cozypad/contracts';
-import {
-  buildClaudeStreamingArgv,
-} from '@cozypad/adapter-claude';
 import { AGY_CONVERSATION_META_KEY } from '@cozypad/adapter-agy';
 import { reconcileSessions } from '@cozypad/tmux-runtime';
 import type { TmuxRuntime } from '@cozypad/tmux-runtime';
@@ -58,15 +52,6 @@ interface ActiveTurn {
   changedPaths: string[];
 }
 
-interface PendingControlRequest {
-  requestId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-  protocol?: 'claude' | 'codex' | 'agy';
-  rpcId?: string | number;
-  method?: string;
-}
-
 interface StoredAgentSession {
   record: RemoteAgentSessionRecord;
   paneId: string;
@@ -74,9 +59,6 @@ interface StoredAgentSession {
   project: string;
   timeline: ChatItem[];
   turnCounter: number;
-  rawLines: number;
-  pendingControls: Record<string, PendingControlRequest>;
-  questionAnswers: Record<string, Record<string, string>>;
   slashCommands: string[];
   /** Per-command help, shown next to the name in the composer's menu. */
   slashCommandDescriptions?: Record<string, string>;
@@ -120,15 +102,7 @@ interface ResolvedRemoteEnvironment {
 
 type AgentTmuxPort = Pick<
   TmuxRuntime,
-  | 'socketName'
-  | 'listSessions'
-  | 'newSession'
-  | 'respawnPane'
-  | 'sendText'
-  | 'interrupt'
-  | 'escape'
-  | 'hasSession'
-  | 'killSession'
+  'socketName' | 'listSessions' | 'newSession' | 'hasSession' | 'killSession'
 >;
 
 export interface AgentCommunicationEvents {
@@ -147,7 +121,6 @@ export interface AgentCommunicationPort {
   list(request: AgentSessionListRequest): AgentSessionBundle[];
   create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle>;
   revive(request: AgentSessionRequest): Promise<AgentSessionBundle>;
-  readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript>;
   rename(request: RenameAgentSessionRequest): Promise<void>;
   delete(request: AgentSessionRequest): Promise<DeleteAgentSessionResult>;
   uploadAttachments(
@@ -263,10 +236,6 @@ function markerValue(output: string, marker: string): string | undefined {
   return undefined;
 }
 
-function sameAgyPrompt(actual: string, expected: string): boolean {
-  const normalize = (value: string) => value.replace(/\r\n?/gu, '\n').trim();
-  return normalize(actual) === normalize(expected);
-}
 
 function markerBlock(output: string, marker: string): string {
   const start = `__COZYPAD_${marker}_BEGIN__`;
@@ -729,31 +698,6 @@ function stringRecord<T>(
   return result;
 }
 
-function parsePendingControl(value: unknown): PendingControlRequest | null {
-  if (!isRecord(value)) return null;
-  if (
-    typeof value.requestId !== 'string' ||
-    typeof value.toolName !== 'string' ||
-    !isRecord(value.input)
-  ) {
-    return null;
-  }
-  return {
-    requestId: value.requestId,
-    toolName: value.toolName,
-    input: value.input,
-    ...(value.protocol === 'claude' ||
-    value.protocol === 'codex' ||
-    value.protocol === 'agy'
-      ? { protocol: value.protocol }
-      : {}),
-    ...(typeof value.rpcId === 'string' || typeof value.rpcId === 'number'
-      ? { rpcId: value.rpcId }
-      : {}),
-    ...(typeof value.method === 'string' ? { method: value.method } : {}),
-  };
-}
-
 function parseStoredSession(value: unknown): StoredAgentSession | null {
   if (!isRecord(value)) return null;
   const record = RemoteAgentSessionRecordSchema.safeParse(value.record);
@@ -779,19 +723,6 @@ function parseStoredSession(value: unknown): StoredAgentSession | null {
     typeof value.turnCounter === 'number' && Number.isInteger(value.turnCounter)
       ? Math.max(0, value.turnCounter)
       : 0;
-  const rawLines =
-    typeof value.rawLines === 'number' && Number.isInteger(value.rawLines)
-      ? Math.max(0, value.rawLines)
-      : 0;
-  const pendingControls = stringRecord(value.pendingControls, parsePendingControl);
-  const questionAnswers = stringRecord(value.questionAnswers, (entry) => {
-    if (!isRecord(entry)) return null;
-    const answers: Record<string, string> = {};
-    for (const [key, answer] of Object.entries(entry)) {
-      if (typeof answer === 'string') answers[key] = answer;
-    }
-    return answers;
-  });
   const slashCommands = Array.isArray(value.slashCommands)
     ? normalizeSlashCommands(
         value.slashCommands.filter(
@@ -835,9 +766,6 @@ function parseStoredSession(value: unknown): StoredAgentSession | null {
     project: value.project,
     timeline,
     turnCounter,
-    rawLines,
-    pendingControls,
-    questionAnswers,
     slashCommands,
     attachments,
     // Persisted sessions load as chat too. An agy session stored before the ACP
@@ -971,14 +899,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       if (stored === undefined) continue;
       stored.record = record;
       this.emitSession(stored);
-    }
-    const liveIds = new Set(live.map((session) => session.sessionId));
-    for (const stored of this.sessions.values()) {
-      if (
-        stored.record.provisionalIdentity.connectionProfileId === profileId &&
-        liveIds.has(stored.record.provisionalIdentity.tmuxSessionId)
-      ) {
-      }
     }
     await this.persist();
   }
@@ -1214,82 +1134,12 @@ export class AgentCommunicationService implements AgentCommunicationPort {
   }
 
   /**
-   * The wrapper script a session's agent runs inside: PATH from the login
-   * shell, exit status recorded for the follow loop, and — for chat agents —
-   * stdio redirected into the session's NDJSON log. Shared by create and
-   * revive so a relaunched agent runs exactly what the original did, plus the
-   * resume flag when one applies.
+   * What a session's pane runs. The agent itself is the ACP child
+   * {@link startAcpAgent} spawns; the pane only keeps the session's runtime
+   * entry alive for the reconciler, so it does nothing, forever, cheaply.
    */
-  private buildLaunchScript(options: {
-    agentKind: CreateAgentSessionRequest['agentKind'];
-    interactionMode: 'chat' | 'terminal';
-    executablePath: string;
-    launchMode: string;
-    remote: ResolvedRemoteEnvironment;
-    sessionId: string;
-    resumeConversationId?: string;
-    /** AGY only: `--continue`, resuming its most recent conversation. */
-    resumeLatest?: boolean;
-  }): string {
-    const { agentKind, interactionMode, executablePath, launchMode, remote } =
-      options;
-    const argv =
-      agentKind === 'claude'
-        ? buildClaudeStreamingArgv({
-            executable: executablePath,
-            ...(options.resumeConversationId === undefined
-              ? {}
-              : { resumeConversationId: options.resumeConversationId }),
-            ...(launchMode === 'default' || launchMode === 'bypassPermissions'
-              ? {}
-              : {
-                  permissionMode: launchMode as
-                    | 'acceptEdits'
-                    | 'plan'
-                    | 'auto'
-                    | 'dontAsk',
-                }),
-            dangerouslySkipPermissions: launchMode === 'bypassPermissions',
-            ...(['dontAsk', 'bypassPermissions'].includes(launchMode)
-              ? {}
-              : { permissionPromptTool: 'stdio' }),
-          })
-        : agentKind === 'codex'
-          ? [executablePath, 'app-server', '--listen', 'stdio://']
-          : [remote.commandShell, '-lc', 'while :; do sleep 3600; done'];
-    const commandLine = argv.map((argument) => quoteShellArg(argument)).join(' ');
-    const dir = remoteSessionDir(options.sessionId);
-    const launchPath =
-      remote.loginPath === ''
-        ? ''
-        : `PATH=${quoteShellArg(remote.loginPath)}
-export PATH
-`;
-    const agentEnvironment =
-      agentKind === 'claude'
-        ? `unset CLAUDECODE
-export CLAUDE_CODE_ENTRYPOINT=cozypad
-`
-        : '';
-    return agentKind === 'agy'
-      ? `${launchPath}status_file="${dir}/launch-status"
-rm -f "$status_file"
-${commandLine}
-agent_status=$?
-printf '%s\n' "$agent_status" > "$status_file"
-chmod 600 "$status_file" 2>/dev/null || true
-printf '\n[CozyPad] AGY CLI exited with status %s\n' "$agent_status"
-exit "$agent_status"`
-      : `${launchPath}stty -echo 2>/dev/null || true
-${agentEnvironment}
-status_file="${dir}/launch-status"
-rm -f "$status_file"
-${commandLine} >> "${dir}/raw-events.ndjson" 2>> "${dir}/stderr.log"
-agent_status=$?
-printf '%s\n' "$agent_status" > "$status_file"
-chmod 600 "$status_file" 2>/dev/null || true
-printf '\n[CozyPad] ${agentLabelFor(agentKind)} exited during startup with status %s\n' "$agent_status" >> "${dir}/stderr.log"
-exit "$agent_status"`;
+  private buildLaunchScript(): string {
+    return 'while :; do sleep 3600; done';
   }
 
   async create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle> {
@@ -1343,14 +1193,7 @@ exit "$agent_status"`;
     await this.prepareRemoteStorage(id);
     const remote = await this.inspectRemoteEnvironment(request.profileId);
     const agentLabel = agentLabelFor(request.agentKind);
-    const launchScript = this.buildLaunchScript({
-      agentKind: request.agentKind,
-      interactionMode,
-      executablePath: installation.executablePath,
-      launchMode,
-      remote,
-      sessionId: id,
-    });
+    const launchScript = this.buildLaunchScript();
     let runtime: Awaited<ReturnType<AgentTmuxPort['newSession']>>;
     try {
       runtime = await this.options.tmux.newSession({
@@ -1389,9 +1232,6 @@ exit "$agent_status"`;
       project: projectName(request.cwd),
       timeline: [],
       turnCounter: 0,
-      rawLines: 0,
-      pendingControls: {},
-      questionAnswers: {},
       slashCommands: [],
       attachments: {},
       interactionMode,
@@ -1404,16 +1244,9 @@ exit "$agent_status"`;
     this.emitTimeline(stored);
 
     try {
-      await this.startAgentConversation();
       // "Ready" has to mean the agent answered, not that a process was
-      // spawned. followSession used to decide this by watching the agent's
-      // output stream; the ACP equivalent is that initialize and session/new
-      // both returned, which is also when the model list becomes available.
-      // Only on this machine. `acp.start` spawns a child here, in this cwd —
-      // a remote session's cwd belongs to the other host and does not exist
-      // locally. Running the agent over SSH is a separate transport that does
-      // not exist yet, so a remote session says so rather than failing at a
-      // spawn with a message about the wrong thing.
+      // spawned: initialize and session/new both returned, which is also when
+      // the model list becomes available.
       this.assertAcpSupported(stored);
       const started = await this.startAcpAgent(stored);
       if (
@@ -1457,23 +1290,6 @@ exit "$agent_status"`;
       this.emitTimeline(stored);
       throw surfacedError;
     }
-  }
-
-  /**
-   * Bring a freshly launched agent process to a usable state: the protocol
-   * handshake for chat agents, and proof that the process survived startup.
-   * Shared by create and revive.
-   */
-  /**
-   * The handshake belongs to the runtime now, not to the service.
-   *
-   * This used to write an agent-specific initialize frame into a tmux pane:
-   * a `control_request` for claude, a JSON-RPC `initialize` for codex. Both
-   * are `initialize` + `session/new` over ACP, performed when the runtime
-   * starts a session, so there is nothing left to send from here.
-   */
-  private async startAgentConversation(): Promise<void> {
-    return Promise.resolve();
   }
 
   /**
@@ -1705,7 +1521,6 @@ exit "$agent_status"`;
       .catch(() => undefined);
     await this.prepareRemoteStorage(id);
     // The logs were just truncated; the dead run's stream state goes with them.
-    stored.rawLines = 0;
     // The new process is a new execution generation; whatever the old one
     // was still asking or running can never finish now.
     this.finalizeInFlightItems(stored);
@@ -1759,16 +1574,7 @@ exit "$agent_status"`;
         timestamp: new Date().toISOString(),
       });
     }
-    const launchScript = this.buildLaunchScript({
-      agentKind,
-      interactionMode: stored.interactionMode,
-      executablePath: installation.executablePath,
-      launchMode,
-      remote,
-      sessionId: id,
-      ...(resumeConversationId === undefined ? {} : { resumeConversationId }),
-      ...(resumeLatest ? { resumeLatest: true } : {}),
-    });
+    const launchScript = this.buildLaunchScript();
     let runtime: Awaited<ReturnType<AgentTmuxPort['newSession']>>;
     try {
       runtime = await this.options.tmux.newSession({
@@ -1807,7 +1613,6 @@ exit "$agent_status"`;
     await this.persist();
     this.emitSession(stored);
     try {
-      await this.startAgentConversation();
       this.assertAcpSupported(stored);
       const { continued } = await this.startAcpAgent(
         stored,
@@ -1859,82 +1664,6 @@ exit "$agent_status"`;
    * submitted prompt; only a newly written conversation whose latest prompt
    * matches is accepted and bound. This keeps unrelated AGY history private.
    */
-  async readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript> {
-    const stored = this.requireSession(request.sessionId);
-    const profileId = stored.record.provisionalIdentity.connectionProfileId;
-    const isLocal = this.options.isLocalHost?.(profileId) === true;
-    const conversationId = stored.record.identity?.agentConversationId ?? undefined;
-    const isActiveRevived =
-      stored.revived === true && this.activeProfileId === profileId;
-
-    if (
-      stored.record.provisionalIdentity.agentKind !== 'agy' ||
-      !isLocal ||
-      this.options.readLocalAgyTranscript === undefined
-    ) {
-      return { turns: [] };
-    }
-
-    try {
-      let resolvedConversationId = conversationId;
-      let turns: AgyRecoveredTurn[];
-      if (resolvedConversationId !== undefined) {
-        turns = await this.options.readLocalAgyTranscript(resolvedConversationId);
-      } else if (isActiveRevived) {
-        // Preserve restart recovery: revive() already scopes the native store
-        // to the conversation selected for this session.
-        turns = await this.options.readLocalAgyTranscript();
-      } else {
-        if (
-          request.expectedPrompt === undefined ||
-          this.activeProfileId !== profileId ||
-          this.options.getLatestLocalAgyConversationId === undefined
-        ) {
-          return { turns: [] };
-        }
-        const launchMs =
-          stored.record.tmuxCreatedEpoch == null
-            ? Date.parse(stored.record.createdAt)
-            : stored.record.tmuxCreatedEpoch * 1000;
-        const now = Date.now();
-        resolvedConversationId = await this.options.getLatestLocalAgyConversationId({
-          notBefore: (Number.isFinite(launchMs) ? launchMs : now) - 5_000,
-          notAfter: now + 5_000,
-        });
-        if (resolvedConversationId === undefined) return { turns: [] };
-        turns = await this.options.readLocalAgyTranscript(resolvedConversationId);
-      }
-
-      const latest = turns.at(-1);
-      if (
-        request.expectedPrompt !== undefined &&
-        (latest === undefined || !sameAgyPrompt(latest.prompt, request.expectedPrompt))
-      ) {
-        return { turns: [] };
-      }
-
-      if (conversationId === undefined && resolvedConversationId !== undefined) {
-        const fingerprint = this.options.getHostFingerprint(profileId);
-        if (fingerprint !== undefined) {
-          const now = new Date().toISOString();
-          stored.record = bindAgentIdentity(stored.record, {
-            agentConversationId: resolvedConversationId,
-            remoteHostFingerprint: fingerprint,
-            tmuxPaneId: stored.paneId,
-            now,
-          });
-          await this.persist();
-          this.emitSession(stored);
-          await this.writeRemoteMetadata(stored).catch(() => undefined);
-        }
-      }
-
-      return { turns };
-    } catch {
-      return { turns: [] };
-    }
-  }
-
   async rename(request: RenameAgentSessionRequest): Promise<void> {
     const stored = this.requireSession(request.sessionId);
     stored.record = {
@@ -2545,363 +2274,17 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
         item.expired = true;
       }
     }
-    stored.pendingControls = {};
-    stored.questionAnswers = {};
   }
 
-
-  private applyNormalizedEvent(
-    stored: StoredAgentSession,
-    event: NormalizedAgentEvent,
-  ): void {
-    stored.record = {
-      ...stored.record,
-      lastEventSequence: event.sequence,
-      updatedAt: event.timestamp,
-    };
-    const activeTurn = stored.activeTurn;
-    switch (event.kind) {
-      case 'session_initialized': {
-        if (event.slashCommands !== undefined) {
-          stored.slashCommands = normalizeSlashCommands(event.slashCommands);
-        }
-        if (event.agentConversationId === undefined) break;
-        if (stored.record.status === 'starting') {
-          stored.record = { ...stored.record, status: 'ready' };
-        }
-        const profileId = stored.record.provisionalIdentity.connectionProfileId;
-        const fingerprint = this.options.getHostFingerprint(profileId);
-        if (fingerprint === undefined) {
-          this.events.onError({
-            sessionId: stored.record.id,
-            message: 'Cannot bind agent identity without a trusted host fingerprint',
-          });
-          break;
-        }
-        try {
-          stored.record = bindAgentIdentity(stored.record, {
-            agentConversationId: event.agentConversationId,
-            remoteHostFingerprint: fingerprint,
-            tmuxPaneId: stored.paneId,
-            now: event.timestamp,
-          });
-        } catch {
-          // A revived agent can open a NEW conversation — Codex threads die
-          // with their process, and Claude's --resume may fork. The binding's
-          // whole job is to find this session's conversation again, so it
-          // follows the agent rather than pinning the record to a dead id.
-          stored.record = bindAgentIdentity(
-            { ...stored.record, identity: null },
-            {
-              agentConversationId: event.agentConversationId,
-              remoteHostFingerprint: fingerprint,
-              tmuxPaneId: stored.paneId,
-              now: event.timestamp,
-            },
-          );
-          // The old timeline stays, but it is CozyPad history now, not agent
-          // memory (SPEC 275-278): mark the boundary where the new native
-          // conversation begins, in the agent's own terms.
-          stored.resumeContinuity = 'new';
-          stored.timeline.push({
-            id: `notice-${event.eventId}`,
-            kind: 'notice',
-            text:
-              stored.record.provisionalIdentity.agentKind === 'codex'
-                ? '以下開始新的原生對話：Codex 不記得這條分隔線之前的內容。'
-                : `無法確認是否延續同一原生對話：${agentLabelFor(
-                    stored.record.provisionalIdentity.agentKind,
-                  )} 可能不記得這條分隔線之前的內容。`,
-            timestamp: event.timestamp,
-          });
-        }
-        void this.writeRemoteMetadata(stored).catch(() => undefined);
-        break;
-      }
-      case 'assistant_message_started': {
-        if (activeTurn === undefined || activeTurn.assistantItemId !== undefined) break;
-        const id = `assistant-${event.eventId}`;
-        activeTurn.assistantItemId = id;
-        stored.timeline.push({
-          id,
-          kind: 'message',
-          role: 'assistant',
-          text: '',
-          streaming: true,
-          timestamp: event.timestamp,
-        });
-        break;
-      }
-      case 'assistant_text_delta': {
-        if (activeTurn === undefined) break;
-        if (activeTurn.assistantItemId === undefined) {
-          activeTurn.assistantItemId = `assistant-${event.eventId}`;
-          stored.timeline.push({
-            id: activeTurn.assistantItemId,
-            kind: 'message',
-            role: 'assistant',
-            text: event.text,
-            streaming: true,
-            timestamp: event.timestamp,
-          });
-        } else {
-          const item = stored.timeline.find(
-            (candidate) => candidate.id === activeTurn.assistantItemId,
-          );
-          if (item?.kind === 'message') item.text += event.text;
-        }
-        break;
-      }
-      case 'assistant_message_completed': {
-        const current =
-          activeTurn?.assistantItemId === undefined
-            ? undefined
-            : stored.timeline.find(
-                (candidate) => candidate.id === activeTurn.assistantItemId,
-              );
-        if (current?.kind === 'message') {
-          current.text = event.text;
-          current.streaming = false;
-        } else {
-          stored.timeline.push({
-            id: `assistant-${event.eventId}`,
-            kind: 'message',
-            role: 'assistant',
-            text: event.text,
-            timestamp: event.timestamp,
-          });
-        }
-        if (activeTurn !== undefined) activeTurn.assistantItemId = undefined;
-        break;
-      }
-      case 'tool_call_started': {
-        stored.timeline.push({
-          id: `tool-${event.toolCallId}`,
-          kind: 'tool_call',
-          name: event.name,
-          summary: event.inputSummary,
-          status: 'running',
-          timestamp: event.timestamp,
-        });
-        const changedPath = this.pathFromToolInput(event.name, event.inputSummary);
-        if (
-          changedPath !== null &&
-          activeTurn !== undefined &&
-          !activeTurn.changedPaths.includes(changedPath)
-        ) {
-          activeTurn.changedPaths.push(changedPath);
-        }
-        break;
-      }
-      case 'tool_call_updated': {
-        const item = stored.timeline.find(
-          (candidate) => candidate.id === `tool-${event.toolCallId}`,
-        );
-        if (item?.kind === 'tool_call') item.output = event.update;
-        break;
-      }
-      case 'tool_call_completed': {
-        const item = stored.timeline.find(
-          (candidate) => candidate.id === `tool-${event.toolCallId}`,
-        );
-        if (item?.kind === 'tool_call') {
-          item.status = event.isError ? 'error' : 'completed';
-          item.output = event.output;
-        }
-        break;
-      }
-      case 'approval_requested':
-        stored.timeline.push({
-          id: `approval-${event.approvalId}`,
-          kind: 'approval',
-          command: event.command,
-          cwd: stored.record.cwd,
-          machine: stored.host,
-          riskSummary: event.riskSummary,
-          resolution: 'pending',
-          timestamp: event.timestamp,
-        });
-        stored.record = { ...stored.record, status: 'waiting_approval' };
-        break;
-      case 'approval_resolved': {
-        const item = stored.timeline.find(
-          (candidate) => candidate.id === `approval-${event.approvalId}`,
-        );
-        if (item?.kind === 'approval') item.resolution = event.resolution;
-        break;
-      }
-      case 'question_requested': {
-        // `id:index` is the shared question-id shape of both protocols; the
-        // prefix groups one agent request's cards into a batch (SPEC 3.4.6).
-        const separator = event.questionId.lastIndexOf(':');
-        stored.timeline.push({
-          id: `question-${event.questionId}`,
-          kind: 'question',
-          prompt: event.prompt,
-          options: event.options,
-          selectedIndex: null,
-          ...(separator > 0
-            ? { batchId: event.questionId.slice(0, separator) }
-            : {}),
-          ...(event.unrepresentable === true ? { unrepresentable: true } : {}),
-          timestamp: event.timestamp,
-        });
-        stored.record = { ...stored.record, status: 'waiting_approval' };
-        break;
-      }
-      case 'question_resolved': {
-        const item = stored.timeline.find(
-          (candidate) => candidate.id === `question-${event.questionId}`,
-        );
-        if (item?.kind === 'question') item.selectedIndex = event.selectedIndex;
-        break;
-      }
-      case 'file_diff':
-        stored.timeline.push({
-          id: `diff-${event.eventId}`,
-          kind: 'file_diff',
-          path: event.path,
-          additions: event.additions,
-          deletions: event.deletions,
-          diff: event.diff,
-          timestamp: event.timestamp,
-        });
-        break;
-      case 'usage': {
-        // Codex streams several tokenUsage updates within one turn;
-        // consecutive rows collapse so the timeline keeps a turn's final
-        // figures once instead of a ladder of intermediate counts.
-        const lastItem = stored.timeline.at(-1);
-        if (lastItem?.kind === 'usage') {
-          lastItem.inputTokens = event.inputTokens;
-          lastItem.outputTokens = event.outputTokens;
-          lastItem.timestamp = event.timestamp;
-          break;
-        }
-        stored.timeline.push({
-          id: `usage-${event.eventId}`,
-          kind: 'usage',
-          inputTokens: event.inputTokens,
-          outputTokens: event.outputTokens,
-          timestamp: event.timestamp,
-        });
-        break;
-      }
-      case 'agent_error':
-        this.appendError(stored, new Error(event.message), event.timestamp);
-        break;
-      case 'turn_completed':
-        void this.completeTurn(stored);
-        break;
-      case 'activity':
-      case 'command_output':
-      case 'user_message':
-        break;
-    }
-    this.emitSession(stored);
-    this.emitTimeline(stored);
-  }
-
-  private async completeTurn(stored: StoredAgentSession): Promise<void> {
-    if (this.completing.has(stored.record.id)) return;
-    this.completing.add(stored.record.id);
-    try {
-      await this.collectChangedFiles(stored);
-      stored.activeTurn = undefined;
-      stored.activeAgentTurnId = undefined;
-      stored.record = {
-        ...stored.record,
-        status: 'ready',
-        updatedAt: new Date().toISOString(),
-      };
-      await this.persist();
-      this.emitSession(stored);
-      this.emitTimeline(stored);
-    } finally {
-      this.completing.delete(stored.record.id);
-    }
-  }
-
-  private async collectChangedFiles(stored: StoredAgentSession): Promise<void> {
-    const paths = stored.activeTurn?.changedPaths ?? [];
-    for (const changedPath of paths) {
-      const relative = this.relativeProjectPath(stored.record.cwd, changedPath);
-      if (relative === null) continue;
-      const cwd = quoteShellArg(stored.record.cwd);
-      const file = quoteShellArg(relative);
-      const output = await this.options.transport
-        .exec(
-          `cd ${cwd} 2>/dev/null || exit 0
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then exit 0; fi
-if git ls-files --error-unmatch -- ${file} >/dev/null 2>&1; then
-  git diff --no-ext-diff --unified=3 -- ${file}
-elif [ -f ${file} ]; then
-  git diff --no-ext-diff --no-index --unified=3 -- /dev/null ${file} || true
-fi
-`,
-          10_000,
-        )
-        .catch(() => '');
-      if (output.trim() === '') continue;
-      const lines = output.split('\n');
-      stored.timeline.push({
-        id: `diff-${randomUUID()}`,
-        kind: 'file_diff',
-        path: relative,
-        additions: lines.filter(
-          (line) => line.startsWith('+') && !line.startsWith('+++'),
-        ).length,
-        deletions: lines.filter(
-          (line) => line.startsWith('-') && !line.startsWith('---'),
-        ).length,
-        diff: output,
-        timestamp: new Date().toISOString(),
-      });
-    }
-  }
-
-  private pathFromToolInput(toolName: string, summary: string): string | null {
-    const normalizedToolName = toolName.replace(/[^a-z]/giu, '').toLowerCase();
-    if (
-      !['edit', 'write', 'writefile', 'replace', 'notebookedit'].includes(
-        normalizedToolName,
-      )
-    ) {
-      return null;
-    }
-    try {
-      const input = JSON.parse(summary) as Record<string, unknown>;
-      for (const key of ['file_path', 'notebook_path', 'path']) {
-        if (typeof input[key] === 'string') return input[key];
-      }
-    } catch {
-      // Truncated tool input cannot be used safely as a path.
-    }
-    return null;
-  }
-
-  private relativeProjectPath(cwd: string, candidate: string): string | null {
-    const normalizedCwd = cwd.replace(/\\/gu, '/').replace(/\/$/u, '');
-    const normalized = candidate.replace(/\\/gu, '/');
-    const relative = normalized.startsWith(`${normalizedCwd}/`)
-      ? normalized.slice(normalizedCwd.length + 1)
-      : normalized;
-    if (relative.startsWith('/') || relative === '..' || relative.startsWith('../')) {
-      return null;
-    }
-    return relative;
-  }
 
   private async prepareRemoteStorage(sessionId: string): Promise<void> {
     const dir = remoteSessionDir(sessionId);
     await this.options.transport.exec(
       `session_dir="${dir}"
 mkdir -p "$session_dir"
-: > "$session_dir/raw-events.ndjson"
 : > "$session_dir/stderr.log"
-rm -f "$session_dir/launch-status"
 chmod 700 "$session_dir"
-chmod 600 "$session_dir/raw-events.ndjson" "$session_dir/stderr.log"
+chmod 600 "$session_dir/stderr.log"
 `,
       8000,
     );
@@ -3025,37 +2408,6 @@ printf '__COZYPAD_ATTACHMENT_DIR__=%s\n' "$(printf '%s' "$attachment_real" | bas
     return new Error(stderr === '' ? message : `${message}\n\nRemote stderr:\n${stderr}`);
   }
 
-  private async assertAgentStayedAlive(
-    sessionId: string,
-    agentKind: 'claude' | 'codex' | 'agy',
-  ): Promise<void> {
-    const dir = remoteSessionDir(sessionId);
-    const output = await this.options.transport.exec(
-      `status_file="${dir}/launch-status"
-attempt=0
-while [ "$attempt" -lt 10 ]; do
-  if [ -s "$status_file" ]; then
-    status="$(head -n 1 "$status_file" 2>/dev/null || true)"
-    printf '__COZYPAD_AGENT_STATUS__=%s\n' "\${status:-unknown}"
-    exit 0
-  fi
-  attempt=$((attempt + 1))
-  sleep 0.1
-done
-printf '__COZYPAD_AGENT_STATUS__=running\n'
-`,
-      3000,
-    );
-    const status = markerValue(output, '__COZYPAD_AGENT_STATUS__');
-    if (status === undefined) {
-      throw new Error('Remote agent startup probe returned no status');
-    }
-    if (status !== 'running') {
-      const label =
-        agentKind === 'claude' ? 'Claude' : agentKind === 'codex' ? 'Codex' : 'AGY';
-      throw new Error(`${label} exited during startup with status ${status}`);
-    }
-  }
 
   private async withStartupDiagnostics(
     sessionId: string,
@@ -3148,21 +2500,6 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
     );
   }
 
-
-  private writeControlResponse(
-    stored: StoredAgentSession,
-    requestId: string,
-    response: Record<string, unknown>,
-  ): Promise<void> {
-    // ACP answers a control request by returning a value, so this resolves
-    // the promise the runtime is holding rather than writing a frame back.
-    this.options.acp?.resolveControl(
-      stored.record.id,
-      requestId,
-      typeof response['optionId'] === 'string' ? response['optionId'] : null,
-    );
-    return Promise.resolve();
-  }
 
   private appendError(
     stored: StoredAgentSession,
