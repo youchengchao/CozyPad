@@ -24,6 +24,7 @@ import {
   RemoteSettingsPatchSchema,
   RenameAgentSessionRequestSchema,
   ResolveAgentApprovalRequestSchema,
+  SetAgentSessionConfigOptionRequestSchema,
   SendAgentMessageRequestSchema,
   UploadAgentAttachmentsRequestSchema,
   TerminalCloseRequestSchema,
@@ -533,6 +534,19 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     }
     return agentCommunication.interrupt(AgentSessionRequestSchema.parse(raw));
   });
+
+  ipcMain.handle(
+    IpcChannels.agentSessionSetConfigOption,
+    (event, raw: unknown) => {
+      assertSender(event);
+      if (agentCommunication === null) {
+        throw new Error('Agent communication is unavailable in mock desktop mode');
+      }
+      return agentCommunication.setConfigOption(
+        SetAgentSessionConfigOptionRequestSchema.parse(raw),
+      );
+    },
+  );
 
   ipcMain.handle(IpcChannels.agentApprovalResolve, (event, raw: unknown) => {
     assertSender(event);

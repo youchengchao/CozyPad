@@ -558,6 +558,8 @@ export function createCapacitorBridge(
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     interruptAgentSession: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
+    setAgentSessionConfigOption: () =>
+      Promise.reject(new Error('Agent communication is not available on mobile yet')),
     resolveAgentApproval: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     answerAgentQuestion: () =>

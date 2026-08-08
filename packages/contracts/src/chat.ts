@@ -18,6 +18,24 @@ export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
 export const AgentInteractionModeSchema = z.enum(['chat', 'terminal']);
 export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>;
 
+/**
+ * One setting the agent advertised for this session — the model picker on all
+ * three shipping agents, plus codex's reasoning effort. `session/new` reports
+ * them and `session/set_config_option` changes them.
+ */
+export const AgentConfigOptionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  type: z.string().optional(),
+  category: z.string().optional(),
+  description: z.string().optional(),
+  currentValue: z.string().optional(),
+  options: z
+    .array(z.object({ value: z.string(), name: z.string() }))
+    .default([]),
+});
+export type AgentConfigOption = z.infer<typeof AgentConfigOptionSchema>;
+
 export const AgentSessionSummarySchema = z.object({
   id: z.string().min(1),
   agentKind: AgentKindSchema,
@@ -27,6 +45,7 @@ export const AgentSessionSummarySchema = z.object({
   cwd: z.string().min(1),
   interactionMode: AgentInteractionModeSchema.optional(),
   status: AgentSessionStatusSchema,
+  configOptions: z.array(AgentConfigOptionSchema).optional(),
   unread: z.number().int().min(0).default(0),
   slashCommands: z.array(z.string().trim().min(1)).default([]),
   slashCommandDescriptions: z.record(z.string(), z.string()).optional(),

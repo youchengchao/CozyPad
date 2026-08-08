@@ -18,6 +18,7 @@ import {
 import {
   approvalItemFor,
   defaultClock,
+  elicitationQuestion,
   emptyAcpTimeline,
   reduceAcpEvent,
   settleAcpTimeline,
@@ -164,6 +165,41 @@ function configOptionsOf(response: unknown): unknown {
   return (response as Record<string, unknown> | null)?.['configOptions'] ?? [];
 }
 
+/** The session modes an open-session response advertised, if any. */
+function modesOf(response: unknown): SessionModes {
+  const modes = (response as Record<string, unknown> | null)?.['modes'];
+  if (typeof modes !== 'object' || modes === null) return { availableModes: [] };
+  const raw = modes as { currentModeId?: unknown; availableModes?: unknown };
+  const availableModes = Array.isArray(raw.availableModes)
+    ? raw.availableModes.flatMap((entry) => {
+        const mode = entry as { id?: unknown; name?: unknown };
+        if (typeof mode.id !== 'string' || mode.id === '') return [];
+        return [
+          {
+            id: mode.id,
+            ...(typeof mode.name === 'string' ? { name: mode.name } : {}),
+          },
+        ];
+      })
+    : [];
+  return {
+    ...(typeof raw.currentModeId === 'string'
+      ? { currentModeId: raw.currentModeId }
+      : {}),
+    availableModes,
+  };
+}
+
+/** 'accept-edits' and 'acceptEdits' are the same mode in two vocabularies. */
+function normalizeModeId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/gu, '');
+}
+
+export interface SessionModes {
+  readonly currentModeId?: string;
+  readonly availableModes: readonly { id: string; name?: string }[];
+}
+
 /** The commands an `available_commands_update` carries, shape-checked. */
 function commandsIn(event: AcpSessionEvent): { name: string; description?: string }[] {
   const list = (event.update as { availableCommands?: unknown }).availableCommands;
@@ -184,11 +220,14 @@ function commandsIn(event: AcpSessionEvent): { name: string; description?: strin
 }
 
 /** What opening a session established, whichever wire method opened it. */
-interface OpenedSession {
+export interface OpenedSession {
   readonly acpSessionId: string;
   readonly configOptions: unknown;
   /** True when the agent really continued the previous conversation. */
   readonly continued: boolean;
+  readonly modes: SessionModes;
+  /** The advertised mode `desiredModeId` matched and pinned, if any. */
+  readonly appliedModeId?: string;
 }
 
 export class AcpAgentRuntime {
@@ -226,6 +265,13 @@ export class AcpAgentRuntime {
     rawCwd: string,
     agentKind = 'agy',
     continuation?: AcpSessionContinuation,
+    /**
+     * The permission mode the user chose, matched loosely against the modes
+     * the agent advertises and pinned via `session/set_mode`. The result says
+     * whether it took — a mode silently not applied is a permission the user
+     * believes is in force and is not.
+     */
+    desiredModeId?: string,
     // Translated once, here, so the spawn and the agent agree. Getting this
     // wrong is quiet rather than loud: the child would start in the right place
     // while `--add-dir /c/Users/name` told agy to look somewhere that does not
@@ -298,6 +344,45 @@ export class AcpAgentRuntime {
           ? { outcome: { outcome: 'cancelled' } }
           : { outcome: { outcome: 'selected', optionId } };
       },
+      elicitation: {
+        modes: { form: true },
+        // The question card. Blocks like a permission request: the agent is
+        // waiting on this return value, and `resolveControl` (driven by the
+        // user's click) is what settles it.
+        create: async (request) => {
+          const running = this.#sessions.get(sessionId);
+          if (running === undefined) return { action: 'decline' } as never;
+          const question = elicitationQuestion(request as never, running.clock);
+          running.state = {
+            ...running.state,
+            items: [...running.state.items, question.item],
+          };
+          this.callbacks.onTimeline(sessionId, running.state.items);
+
+          const answer = await new Promise<string | null>((resolve) => {
+            running.pending.set(question.item.id, { resolve });
+          });
+          const after = this.#sessions.get(sessionId);
+          if (after !== undefined) {
+            const index = answer === null ? Number.NaN : Number.parseInt(answer, 10);
+            after.state = {
+              ...after.state,
+              items: after.state.items.map((existing) =>
+                existing.id === question.item.id && existing.kind === 'question'
+                  ? {
+                      ...existing,
+                      ...(Number.isNaN(index)
+                        ? { declined: true }
+                        : { selectedIndex: index }),
+                    }
+                  : existing,
+              ),
+            };
+            this.callbacks.onTimeline(sessionId, after.state.items);
+          }
+          return question.respond(answer) as never;
+        },
+      },
     };
 
     const child = this.spawn(spec, handlers);
@@ -338,11 +423,41 @@ export class AcpAgentRuntime {
         continuation,
       );
       running.acpSessionId = opened.acpSessionId;
-      return opened;
+      const appliedModeId = await this.#applySessionMode(running, opened, desiredModeId);
+      return appliedModeId === undefined ? opened : { ...opened, appliedModeId };
     } catch (error) {
       this.stop(sessionId);
       throw error;
     }
+  }
+
+  /**
+   * Pins the advertised session mode matching what the user chose, if any.
+   *
+   * Permission flags used to ride the CLI argv, which the ACP spawn never
+   * sees; `session/set_mode` against the agent's advertised modes is the
+   * protocol-native channel for the same choice.
+   */
+  async #applySessionMode(
+    running: Running,
+    opened: OpenedSession,
+    desiredModeId: string | undefined,
+  ): Promise<string | undefined> {
+    if (desiredModeId === undefined) return undefined;
+    const desired = normalizeModeId(desiredModeId);
+    const match = opened.modes.availableModes.find(
+      (mode) =>
+        normalizeModeId(mode.id) === desired ||
+        (mode.name !== undefined && normalizeModeId(mode.name) === desired),
+    );
+    if (match === undefined) return undefined;
+    if (opened.modes.currentModeId !== match.id) {
+      await running.child.handle.setSessionMode({
+        sessionId: running.acpSessionId,
+        modeId: match.id,
+      });
+    }
+    return match.id;
   }
 
   /**
@@ -371,6 +486,7 @@ export class AcpAgentRuntime {
       acpSessionId: opened.sessionId,
       configOptions: configOptionsOf(opened),
       continued: false,
+      modes: modesOf(opened),
     };
   }
 
@@ -403,6 +519,7 @@ export class AcpAgentRuntime {
             acpSessionId: continuation.acpSessionId,
             configOptions: configOptionsOf(loaded),
             continued: true,
+            modes: modesOf(loaded),
           };
         } finally {
           running.replaying = false;
@@ -420,6 +537,7 @@ export class AcpAgentRuntime {
           acpSessionId: continuation.acpSessionId,
           configOptions: configOptionsOf(resumed),
           continued: true,
+          modes: modesOf(resumed),
         };
       }
     } catch (error) {
@@ -489,14 +607,23 @@ export class AcpAgentRuntime {
     await running.child.handle.cancel({ sessionId: running.acpSessionId });
   }
 
-  /** Pins a model, or any other config option the agent advertised. */
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<void> {
+  /**
+   * Pins a model, or any other config option the agent advertised. Returns
+   * the agent's refreshed option set — setting one option can change what is
+   * available on another, so the caller renders what came back.
+   */
+  async setConfigOption(
+    sessionId: string,
+    configId: string,
+    value: string,
+  ): Promise<unknown> {
     const running = this.#requireSession(sessionId);
-    await running.child.handle.setSessionConfigOption({
+    const response = await running.child.handle.setSessionConfigOption({
       sessionId: running.acpSessionId,
       configId,
       value,
     });
+    return configOptionsOf(response);
   }
 
   /**

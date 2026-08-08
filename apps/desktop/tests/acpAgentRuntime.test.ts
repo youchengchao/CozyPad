@@ -166,6 +166,7 @@ function continuableChild(options: {
   loadFails?: boolean;
   replayOnLoad?: string;
   promptMeta?: Record<string, unknown>;
+  newSessionModes?: unknown;
 }): {
   child: AcpChild;
   captured: { handlers?: AcpClientHandlers };
@@ -191,7 +192,16 @@ function continuableChild(options: {
       }),
       newSession: async (params: Record<string, unknown>) => {
         calls.push({ method: 'session/new', params });
-        return { sessionId: 'fresh-1' };
+        return {
+          sessionId: 'fresh-1',
+          ...(options.newSessionModes === undefined
+            ? {}
+            : { modes: options.newSessionModes }),
+        };
+      },
+      setSessionMode: async (params: Record<string, unknown>) => {
+        calls.push({ method: 'session/set_mode', params });
+        return {};
       },
       loadSession: async (params: Record<string, unknown>) => {
         calls.push({ method: 'session/load', params });
@@ -367,6 +377,137 @@ describe('continuing a previous conversation', () => {
 
     expect(commands).toEqual([{ sessionId: 's1', names: ['usage', 'compact'] }]);
     expect(runtime.itemsFor('s1')).toEqual([]);
+  });
+
+  it('pins the advertised mode matching the launch mode, across vocabularies', async () => {
+    const { child, captured, calls } = continuableChild({
+      newSessionModes: {
+        currentModeId: 'default',
+        availableModes: [
+          { id: 'default', name: 'Default' },
+          { id: 'acceptEdits', name: 'Accept Edits' },
+        ],
+      },
+    });
+    const { runtime } = runtimeFor(child, captured);
+
+    const opened = await runtime.start(
+      's1',
+      '/workspace',
+      'claude',
+      undefined,
+      'accept-edits',
+    );
+
+    expect(opened.appliedModeId).toBe('acceptEdits');
+    expect(calls.at(-1)).toEqual({
+      method: 'session/set_mode',
+      params: { sessionId: 'fresh-1', modeId: 'acceptEdits' },
+    });
+  });
+
+  it('reports no applied mode when the agent offers nothing that matches', async () => {
+    const { child, captured, calls } = continuableChild({
+      newSessionModes: {
+        currentModeId: 'always-proceed',
+        availableModes: [{ id: 'always-proceed' }],
+      },
+    });
+    const { runtime } = runtimeFor(child, captured);
+
+    const opened = await runtime.start('s1', '/workspace', 'agy', undefined, 'plan');
+
+    expect(opened.appliedModeId).toBeUndefined();
+    expect(opened.modes.currentModeId).toBe('always-proceed');
+    expect(calls.map((call) => call.method)).toEqual(['session/new']);
+  });
+
+  it('renders an enum elicitation as a question card and answers with the choice', async () => {
+    const { child, captured } = continuableChild({});
+    const timelines: ChatItem[][] = [];
+    const runtime = new AcpAgentRuntime(
+      {
+        onTimeline: (_sessionId, items) => {
+          timelines.push([...items]);
+        },
+        onPermission: () => new Promise<string | null>(() => undefined),
+        onError: () => undefined,
+      },
+      (_spec, handlers) => {
+        captured.handlers = handlers;
+        return child;
+      },
+    );
+    await runtime.start('s1', '/workspace');
+
+    const pending = captured.handlers!.elicitation!.create({
+      mode: 'form',
+      message: 'Which branch?',
+      sessionId: 'fresh-1',
+      requestedSchema: {
+        type: 'object',
+        properties: { branch: { enum: ['main', 'dev'] } },
+      },
+    } as never);
+
+    let question: Extract<ChatItem, { kind: 'question' }> | undefined;
+    await vi.waitFor(() => {
+      question = runtime
+        .itemsFor('s1')
+        .find(
+          (item): item is Extract<ChatItem, { kind: 'question' }> =>
+            item.kind === 'question',
+        );
+      expect(question).toBeDefined();
+    });
+    expect(question!.prompt).toBe('Which branch?');
+    expect(question!.options.map((option) => option.label)).toEqual(['main', 'dev']);
+
+    runtime.resolveControl('s1', question!.id, '1');
+    await expect(pending).resolves.toEqual({
+      action: 'accept',
+      content: { branch: 'dev' },
+    });
+    const settled = runtime
+      .itemsFor('s1')
+      .find((item) => item.kind === 'question');
+    expect(settled).toMatchObject({ selectedIndex: 1 });
+    expect(timelines.length).toBeGreaterThan(1);
+  });
+
+  it('declines an elicitation nobody can render, keeping the card honest', async () => {
+    const { child, captured } = continuableChild({});
+    const { runtime } = runtimeFor(child, captured);
+    await runtime.start('s1', '/workspace');
+
+    const pending = captured.handlers!.elicitation!.create({
+      mode: 'form',
+      message: 'Fill in the deployment matrix',
+      sessionId: 'fresh-1',
+      requestedSchema: {
+        type: 'object',
+        properties: { region: { type: 'string' }, replicas: { type: 'number' } },
+      },
+    } as never);
+
+    let question: Extract<ChatItem, { kind: 'question' }> | undefined;
+    await vi.waitFor(() => {
+      question = runtime
+        .itemsFor('s1')
+        .find(
+          (item): item is Extract<ChatItem, { kind: 'question' }> =>
+            item.kind === 'question',
+        );
+      expect(question).toBeDefined();
+    });
+    expect(question!.unrepresentable).toBe(true);
+    expect(question!.options).toEqual([]);
+
+    runtime.resolveControl('s1', question!.id, null);
+    await expect(pending).resolves.toEqual({ action: 'decline' });
+    expect(
+      runtime.itemsFor('s1').find((item) => item.kind === 'question'),
+    ).toMatchObject({ declined: true });
   });
 
   it('reports an unexpected child death, but not a deliberate stop', async () => {

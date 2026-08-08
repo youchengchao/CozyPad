@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   AgentAttachmentSchema,
+  AgentConfigOptionSchema,
   AgentSessionSummarySchema,
   ChatItemSchema,
   MAX_AGENT_ATTACHMENT_BYTES,
@@ -39,6 +40,7 @@ import type {
   RenameAgentSessionRequest,
   ResolveAgentApprovalRequest,
   SendAgentMessageRequest,
+  SetAgentSessionConfigOptionRequest,
   UploadAgentAttachmentsRequest,
   TerminalOpened,
 } from '@cozypad/contracts';
@@ -80,6 +82,12 @@ interface StoredAgentSession {
   slashCommands: string[];
   /** Per-command help, shown next to the name in the composer's menu. */
   slashCommandDescriptions?: Record<string, string>;
+  /**
+   * What the agent said it can be configured with (model, codex effort),
+   * verbatim from the last session open or set_config_option response.
+   * Runtime state: refreshed on every start, so never persisted.
+   */
+  configOptions?: unknown;
   attachments: Record<string, AgentAttachment>;
   interactionMode: 'chat' | 'terminal';
   launchMode?: string;
@@ -150,6 +158,7 @@ export interface AgentCommunicationPort {
   ): Promise<AgentAttachment[]>;
   send(request: SendAgentMessageRequest): Promise<void>;
   interrupt(request: AgentSessionRequest): Promise<void>;
+  setConfigOption(request: SetAgentSessionConfigOptionRequest): Promise<void>;
   resolveApproval(request: ResolveAgentApprovalRequest): Promise<void>;
   answerQuestion(request: AnswerAgentQuestionRequest): Promise<void>;
   declineQuestion(request: DeclineAgentQuestionRequest): Promise<void>;
@@ -200,7 +209,22 @@ export interface AgentCommunicationServiceOptions {
       cwd: string,
       agentKind: string,
       continuation?: AcpSessionContinuation,
-    ): Promise<{ acpSessionId: string; continued: boolean }>;
+      desiredModeId?: string,
+    ): Promise<{
+      acpSessionId: string;
+      continued: boolean;
+      configOptions: unknown;
+      modes: {
+        currentModeId?: string;
+        availableModes: readonly { id: string; name?: string }[];
+      };
+      appliedModeId?: string;
+    }>;
+    setConfigOption(
+      sessionId: string,
+      configId: string,
+      value: string,
+    ): Promise<unknown>;
     prompt(sessionId: string, text: string): Promise<string>;
     cancel(sessionId: string): Promise<void>;
     /**
@@ -1407,7 +1431,21 @@ exit "$agent_status"`;
       // not exist yet, so a remote session says so rather than failing at a
       // spawn with a message about the wrong thing.
       this.assertAcpSupported(stored);
-      await this.startAcpAgent(stored);
+      const started = await this.startAcpAgent(stored);
+      if (
+        stored.launchMode !== undefined &&
+        stored.launchMode !== 'default' &&
+        started.appliedModeId === undefined
+      ) {
+        // A permission mode the user believes is in force and is not would be
+        // the worst kind of silence.
+        stored.timeline.push({
+          kind: 'notice',
+          id: `notice-mode-${randomUUID()}`,
+          timestamp: new Date().toISOString(),
+          text: `此 agent 未提供「${stored.launchMode}」對應的 session 模式，本次以其預設權限執行。`,
+        });
+      }
       stored.record = {
         ...stored.record,
         status: 'ready',
@@ -1415,6 +1453,7 @@ exit "$agent_status"`;
       };
       await this.persist();
       this.emitSession(stored);
+      this.emitTimeline(stored);
       return this.bundle(stored);
     } catch (error) {
       const surfacedError = await this.withStartupDiagnostics(
@@ -1463,14 +1502,18 @@ exit "$agent_status"`;
   private async startAcpAgent(
     stored: StoredAgentSession,
     continuation?: AcpSessionContinuation,
-  ): Promise<boolean> {
-    if (this.options.acp === undefined) return false;
+  ): Promise<{ continued: boolean; appliedModeId?: string }> {
+    if (this.options.acp === undefined) return { continued: false };
     const agentKind = stored.record.provisionalIdentity.agentKind;
+    const launchMode = stored.launchMode;
     const started = await this.options.acp.start(
       stored.record.id,
       stored.record.cwd,
       agentKind,
       continuation,
+      // 'default' means "whatever the agent starts in"; anything else is a
+      // choice the agent must be asked to honour.
+      launchMode === undefined || launchMode === 'default' ? undefined : launchMode,
     );
     // For claude the ACP session id IS the CLI's conversation id — the one
     // `--resume` takes — so learning it at start is what makes a later revive
@@ -1479,7 +1522,29 @@ exit "$agent_status"`;
     if (agentKind === 'claude') {
       this.bindAgentConversation(stored, started.acpSessionId);
     }
-    return started.continued;
+    stored.configOptions = started.configOptions;
+    // agy's single session mode is 'always-proceed': tools run without ever
+    // asking. The adapter says so on every session open; the user is told
+    // once per session record.
+    if (
+      started.modes.currentModeId === 'always-proceed' &&
+      !stored.timeline.some(
+        (item) => item.kind === 'notice' && item.id.startsWith('notice-permission-'),
+      )
+    ) {
+      stored.timeline.push({
+        kind: 'notice',
+        id: `notice-permission-${randomUUID()}`,
+        timestamp: new Date().toISOString(),
+        text: '此 agent 不會請求審批：工具呼叫全部自動執行，且不受工作區範圍限制。',
+      });
+    }
+    return {
+      continued: started.continued,
+      ...(started.appliedModeId === undefined
+        ? {}
+        : { appliedModeId: started.appliedModeId }),
+    };
   }
 
   /**
@@ -1760,7 +1825,7 @@ exit "$agent_status"`;
     try {
       await this.startAgentConversation();
       this.assertAcpSupported(stored);
-      const continued = await this.startAcpAgent(
+      const { continued } = await this.startAcpAgent(
         stored,
         this.acpContinuationFor(stored, resumeConversationId),
       );
@@ -2385,6 +2450,29 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
   }
 
   /**
+   * Changes one of the settings the agent advertised — the model picker.
+   * The agent answers with its refreshed option set, which replaces ours:
+   * setting one option can change what is available on another.
+   */
+  async setConfigOption(
+    request: SetAgentSessionConfigOptionRequest,
+  ): Promise<void> {
+    const stored = this.requireSession(request.sessionId);
+    this.assertSessionConnected(stored);
+    if (this.options.acp === undefined) {
+      throw new Error('No ACP runtime is available for this agent');
+    }
+    stored.configOptions = await this.options.acp.setConfigOption(
+      stored.record.id,
+      request.configId,
+      request.value,
+    );
+    stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
+    await this.persist();
+    this.emitSession(stored);
+  }
+
+  /**
    * Answers a permission request the agent is blocked on.
    *
    * ACP models permission as a *request*, so the agent is genuinely waiting
@@ -2451,92 +2539,38 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
   async answerQuestion(request: AnswerAgentQuestionRequest): Promise<void> {
     const stored = this.requireSession(request.sessionId);
     this.assertSessionConnected(stored);
-    const item = stored.timeline.find(
-      (candidate): candidate is Extract<ChatItem, { kind: 'question' }> =>
-        candidate.id === request.itemId && candidate.kind === 'question',
+    const item = this.requirePendingQuestion(stored, request.itemId);
+    if (item.options[request.optionIndex] === undefined) {
+      throw new Error('Question option not found');
+    }
+    // The runtime holds the elicitation promise keyed by the card's id; the
+    // answer rides back as the option index, and the runtime updates the
+    // timeline it owns — which lands here again via replaceTimeline.
+    this.options.acp?.resolveControl(
+      stored.record.id,
+      item.id,
+      String(request.optionIndex),
     );
-    if (
-      item === undefined ||
-      item.selectedIndex !== null ||
-      item.expired === true ||
-      item.declined === true
-    ) {
-      throw new Error('Pending agent question not found');
-    }
-    const option = item.options[request.optionIndex];
-    if (option === undefined) throw new Error('Question option not found');
-    const rawQuestionId = request.itemId.replace(/^question-/u, '');
-    const separator = rawQuestionId.lastIndexOf(':');
-    if (separator < 1) throw new Error('Question control request is invalid');
-    const requestId = rawQuestionId.slice(0, separator);
-    const questionIndex = Number.parseInt(rawQuestionId.slice(separator + 1), 10);
-    const pending = stored.pendingControls[requestId];
-    if (
-      pending === undefined ||
-      !['AskUserQuestion', 'RequestUserInput'].includes(pending.toolName)
-    ) {
-      throw new Error('Question control request has expired');
-    }
-    const questions = Array.isArray(pending.input.questions)
-      ? pending.input.questions
-      : [];
-    const rawQuestion = questions[questionIndex];
-    if (!isRecord(rawQuestion) || typeof rawQuestion.question !== 'string') {
-      throw new Error('Question payload is invalid');
-    }
-    item.selectedIndex = request.optionIndex;
-    const answers = (stored.questionAnswers[requestId] ??= {});
-    const answerKey =
-      pending.protocol === 'codex' && typeof rawQuestion.id === 'string'
-        ? rawQuestion.id
-        : rawQuestion.question;
-    answers[answerKey] = option.label;
-
-    const relatedItems = stored.timeline.filter(
-      (candidate): candidate is Extract<ChatItem, { kind: 'question' }> =>
-        candidate.kind === 'question' &&
-        candidate.id.startsWith(`question-${requestId}:`),
-    );
-    // The agent's request is the denominator, not the surviving cards: when a
-    // question could not be rendered, `every` over the cards alone became
-    // true early and a *partial* answer set was sent as the final result.
-    if (
-      relatedItems.length === questions.length &&
-      relatedItems.every((candidate) => candidate.selectedIndex !== null)
-    ) {
-      if (pending.protocol === 'codex') {
-        // Answered through ACP's own return value; see AcpAgentRuntime.
-        this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
-      } else {
-        await this.writeControlResponse(stored, requestId, {
-          behavior: 'allow',
-          updatedInput: { ...pending.input, answers },
-        });
-      }
-      delete stored.pendingControls[requestId];
-      delete stored.questionAnswers[requestId];
-      stored.record = {
-        ...stored.record,
-        status: 'running',
-        updatedAt: new Date().toISOString(),
-      };
-    }
-    await this.persist();
-    this.emitSession(stored);
-    this.emitTimeline(stored);
   }
 
   /**
    * Refuse a whole question request (SPEC 3.4.6): the fallback for questions
-   * CozyPad cannot represent. One reply answers the entire JSON-RPC request /
-   * control request, so every sibling card of the batch closes with it.
+   * CozyPad cannot represent.
    */
   async declineQuestion(request: DeclineAgentQuestionRequest): Promise<void> {
     const stored = this.requireSession(request.sessionId);
     this.assertSessionConnected(stored);
+    const item = this.requirePendingQuestion(stored, request.itemId);
+    this.options.acp?.resolveControl(stored.record.id, item.id, null);
+  }
+
+  private requirePendingQuestion(
+    stored: StoredAgentSession,
+    itemId: string,
+  ): Extract<ChatItem, { kind: 'question' }> {
     const item = stored.timeline.find(
       (candidate): candidate is Extract<ChatItem, { kind: 'question' }> =>
-        candidate.id === request.itemId && candidate.kind === 'question',
+        candidate.id === itemId && candidate.kind === 'question',
     );
     if (
       item === undefined ||
@@ -2546,45 +2580,7 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     ) {
       throw new Error('Pending agent question not found');
     }
-    const rawQuestionId = request.itemId.replace(/^question-/u, '');
-    const separator = rawQuestionId.lastIndexOf(':');
-    if (separator < 1) throw new Error('Question control request is invalid');
-    const requestId = rawQuestionId.slice(0, separator);
-    const pending = stored.pendingControls[requestId];
-    if (
-      pending === undefined ||
-      !['AskUserQuestion', 'RequestUserInput'].includes(pending.toolName)
-    ) {
-      throw new Error('Question control request has expired');
-    }
-    if (pending.protocol === 'codex') {
-      // Answered through ACP's own return value; see AcpAgentRuntime.
-      this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
-    } else {
-      await this.writeControlResponse(stored, requestId, {
-        behavior: 'deny',
-        message: 'Declined by the CozyPad user',
-      });
-    }
-    delete stored.pendingControls[requestId];
-    delete stored.questionAnswers[requestId];
-    for (const candidate of stored.timeline) {
-      if (
-        candidate.kind === 'question' &&
-        candidate.id.startsWith(`question-${requestId}:`) &&
-        candidate.selectedIndex === null
-      ) {
-        candidate.declined = true;
-      }
-    }
-    stored.record = {
-      ...stored.record,
-      status: 'running',
-      updatedAt: new Date().toISOString(),
-    };
-    await this.persist();
-    this.emitSession(stored);
-    this.emitTimeline(stored);
+    return item;
   }
 
   /**
@@ -3263,7 +3259,16 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
   private summary(stored: StoredAgentSession): AgentSessionSummary {
     const agentKind = stored.record.provisionalIdentity.agentKind;
     const slashCommands = normalizeSlashCommands(stored.slashCommands);
+    // Whatever the agent sent that parses; a malformed entry drops alone
+    // instead of taking the whole summary down.
+    const configOptions = Array.isArray(stored.configOptions)
+      ? stored.configOptions.flatMap((option) => {
+          const parsed = AgentConfigOptionSchema.safeParse(option);
+          return parsed.success ? [parsed.data] : [];
+        })
+      : [];
     return AgentSessionSummarySchema.parse({
+      ...(configOptions.length === 0 ? {} : { configOptions }),
       id: stored.record.id,
       agentKind,
       title: stored.record.title,

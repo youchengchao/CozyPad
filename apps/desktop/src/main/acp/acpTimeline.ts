@@ -13,6 +13,7 @@
 import type {
   ApprovalOption,
   ChatItem,
+  QuestionItem,
   ToolCallItem,
 } from '@cozypad/contracts';
 import type { AcpSessionEvent } from '@cozypad/acp-client';
@@ -126,6 +127,71 @@ export function approvalItemFor(
     riskSummary: typeof title === 'string' && title !== '' ? title : 'The agent is asking permission.',
     options: approvalOptions(request.options),
     resolution: 'pending',
+  };
+}
+
+/**
+ * An `elicitation/create` request as a question card, plus the translation
+ * back to the wire answer.
+ *
+ * Only the shape CozyPad can honestly render becomes options: an object
+ * schema with exactly one property whose `enum` lists up to six strings.
+ * Anything else is an unrepresentable question — shown raw with a decline
+ * button — because guessing at a free-form schema would send the agent an
+ * answer the user never gave.
+ */
+export function elicitationQuestion(
+  request: {
+    message?: unknown;
+    requestedSchema?: unknown;
+  },
+  clock: AcpTimelineClock,
+): {
+  item: QuestionItem;
+  /** `answer` is the chosen option index as text; null declines. */
+  respond(answer: string | null):
+    | { action: 'accept'; content: Record<string, unknown> }
+    | { action: 'decline' };
+} {
+  const message = typeof request.message === 'string' ? request.message : '';
+  const schema =
+    typeof request.requestedSchema === 'object' && request.requestedSchema !== null
+      ? (request.requestedSchema as Record<string, unknown>)
+      : {};
+  const properties =
+    typeof schema['properties'] === 'object' && schema['properties'] !== null
+      ? (schema['properties'] as Record<string, unknown>)
+      : {};
+  const keys = Object.keys(properties);
+  const soleProperty =
+    keys.length === 1 ? (properties[keys[0]!] as Record<string, unknown>) : undefined;
+  const enumValues = Array.isArray(soleProperty?.['enum'])
+    ? soleProperty['enum'].filter(
+        (value): value is string => typeof value === 'string' && value !== '',
+      )
+    : [];
+  const representable = enumValues.length > 0 && enumValues.length <= 6;
+
+  const item: QuestionItem = {
+    kind: 'question',
+    id: clock.nextId('question'),
+    timestamp: clock.now(),
+    prompt: representable
+      ? (message === '' ? '請選擇一項' : message)
+      : `${message === '' ? 'Agent 送出了一個表單詢問' : message}\n${JSON.stringify(schema, null, 2)}`,
+    options: representable ? enumValues.map((value) => ({ label: value })) : [],
+    selectedIndex: null,
+    ...(representable ? {} : { unrepresentable: true }),
+  };
+
+  return {
+    item,
+    respond: (answer) => {
+      const index = answer === null ? Number.NaN : Number.parseInt(answer, 10);
+      const chosen = enumValues[index];
+      if (chosen === undefined) return { action: 'decline' };
+      return { action: 'accept', content: { [keys[0]!]: chosen } };
+    },
   };
 }
 
@@ -350,6 +416,14 @@ export function settleAcpTimeline(state: AcpTimelineState): AcpTimelineState {
       // would keep the session labelled as needing input forever.
       if (item.kind === 'approval' && item.resolution === 'pending') {
         return { ...item, resolution: 'expired' as const };
+      }
+      if (
+        item.kind === 'question' &&
+        item.selectedIndex === null &&
+        item.declined !== true &&
+        item.expired !== true
+      ) {
+        return { ...item, expired: true };
       }
       return item;
     }),

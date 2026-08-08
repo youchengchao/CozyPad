@@ -33,6 +33,7 @@ import {
   RemoteSettingsPatchSchema,
   RenameAgentSessionRequestSchema,
   ResolveAgentApprovalRequestSchema,
+  SetAgentSessionConfigOptionRequestSchema,
   SendAgentMessageRequestSchema,
   UploadAgentAttachmentsRequestSchema,
   TelemetrySnapshotSchema,
@@ -283,6 +284,12 @@ const bridge: PlatformBridge = {
     ipcRenderer.invoke(
       IpcChannels.agentSessionInterrupt,
       AgentSessionRequestSchema.parse(request),
+    ),
+
+  setAgentSessionConfigOption: (request) =>
+    ipcRenderer.invoke(
+      IpcChannels.agentSessionSetConfigOption,
+      SetAgentSessionConfigOptionRequestSchema.parse(request),
     ),
 
   resolveAgentApproval: (request) =>

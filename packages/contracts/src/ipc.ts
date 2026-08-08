@@ -45,6 +45,7 @@ export const IpcChannels = {
   agentAttachmentsUpload: 'cozypad:agent:attachments:upload',
   agentSessionSend: 'cozypad:agent:session:send',
   agentSessionInterrupt: 'cozypad:agent:session:interrupt',
+  agentSessionSetConfigOption: 'cozypad:agent:session:set-config-option',
   agentApprovalResolve: 'cozypad:agent:approval:resolve',
   agentQuestionAnswer: 'cozypad:agent:question:answer',
   agentQuestionDecline: 'cozypad:agent:question:decline',

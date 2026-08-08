@@ -49,6 +49,7 @@ import type {
   DeleteAgentSessionResult,
   RenameAgentSessionRequest,
   ResolveAgentApprovalRequest,
+  SetAgentSessionConfigOptionRequest,
   SendAgentMessageRequest,
   UploadAgentAttachmentsRequest,
 } from './agentCommunication';
@@ -172,6 +173,10 @@ export interface PlatformBridge {
   ): Promise<AgentAttachment[]>;
   sendAgentMessage(request: SendAgentMessageRequest): Promise<void>;
   interruptAgentSession(request: AgentSessionRequest): Promise<void>;
+  /** `session/set_config_option` — how the model (and codex effort) is picked. */
+  setAgentSessionConfigOption(
+    request: SetAgentSessionConfigOptionRequest,
+  ): Promise<void>;
   resolveAgentApproval(request: ResolveAgentApprovalRequest): Promise<void>;
   answerAgentQuestion(request: AnswerAgentQuestionRequest): Promise<void>;
   declineAgentQuestion(request: DeclineAgentQuestionRequest): Promise<void>;

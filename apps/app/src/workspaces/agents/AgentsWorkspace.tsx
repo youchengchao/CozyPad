@@ -1513,6 +1513,20 @@ export function AgentsWorkspace({
     }
   };
 
+  const setSessionConfigOption = async (configId: string, value: string) => {
+    if (selectedSessionId === null) return;
+    setError(null);
+    try {
+      await bridge.setAgentSessionConfigOption({
+        sessionId: selectedSessionId,
+        configId,
+        value,
+      });
+    } catch (configError) {
+      setError(errorText(configError));
+    }
+  };
+
   const resumeSession = async (session: AgentSessionSummary) => {
     const sessionId = session.id;
     if (resuming[sessionId] === true) return;
@@ -1868,6 +1882,33 @@ export function AgentsWorkspace({
                   </div>
                   {selectedSessionEntered ? (
                     <div className="chat-session-actions">
+                      {(selectedSession.configOptions ?? [])
+                        .filter((option) => option.options.length > 0)
+                        .map((option) => (
+                          <label
+                            key={option.id}
+                            className="config-option"
+                            title={option.description}
+                          >
+                            <span className="config-option-name">{option.name}</span>
+                            <select
+                              value={option.currentValue ?? ''}
+                              disabled={!connected}
+                              onChange={(event) =>
+                                void setSessionConfigOption(
+                                  option.id,
+                                  event.target.value,
+                                )
+                              }
+                            >
+                              {option.options.map((choice) => (
+                                <option key={choice.value} value={choice.value}>
+                                  {choice.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ))}
                       {selectedSession.status === 'running' ||
                       selectedSession.status === 'waiting_approval' ? (
                         <button

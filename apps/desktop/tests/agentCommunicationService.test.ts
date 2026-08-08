@@ -257,7 +257,17 @@ describe('AgentCommunicationService', () => {
     start(
       sessionId: string,
       cwd: string,
-    ): Promise<{ acpSessionId: string; continued: boolean }>;
+    ): Promise<{
+      acpSessionId: string;
+      continued: boolean;
+      configOptions: unknown;
+      modes: { currentModeId?: string; availableModes: { id: string; name?: string }[] };
+    }>;
+    setConfigOption(
+      sessionId: string,
+      configId: string,
+      value: string,
+    ): Promise<unknown>;
     prompt(sessionId: string, text: string): Promise<string>;
     cancel(sessionId: string): Promise<void>;
     resolveControl(sessionId: string, requestId: string, optionId?: string | null): void;
@@ -273,7 +283,13 @@ describe('AgentCommunicationService', () => {
     acpPromptError = null;
     acpRuntime = {
       has: () => true,
-      start: async () => ({ acpSessionId: 'acp-test', continued: false }),
+      start: async () => ({
+        acpSessionId: 'acp-test',
+        continued: false,
+        configOptions: [],
+        modes: { availableModes: [] },
+      }),
+      setConfigOption: async () => [],
       prompt: async (sessionId, text) => {
         acpPrompts.push({ sessionId, text });
         if (acpPromptError !== null) throw acpPromptError;
@@ -1136,7 +1152,13 @@ describe('a remote session is not spawned as a local child', () => {
       getHostFingerprint: () => 'SHA256:test',
       acp: {
         has: () => false,
-        start: async () => ({ acpSessionId: 'acp-test', continued: false }),
+        start: async () => ({
+          acpSessionId: 'acp-test',
+          continued: false,
+          configOptions: [],
+          modes: { availableModes: [] },
+        }),
+        setConfigOption: async () => [],
         prompt: async () => 'end_turn',
         cancel: async () => undefined,
         resolveControl: () => undefined,

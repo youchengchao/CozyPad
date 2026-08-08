@@ -202,6 +202,15 @@ export type ResolveAgentApprovalRequest = z.infer<
   typeof ResolveAgentApprovalRequestSchema
 >;
 
+export const SetAgentSessionConfigOptionRequestSchema =
+  AgentSessionRequestSchema.extend({
+    configId: z.string().min(1),
+    value: z.string(),
+  });
+export type SetAgentSessionConfigOptionRequest = z.infer<
+  typeof SetAgentSessionConfigOptionRequestSchema
+>;
+
 export const AnswerAgentQuestionRequestSchema = AgentSessionRequestSchema.extend({
   itemId: z.string().min(1),
   optionIndex: z.number().int().min(0),
