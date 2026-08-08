@@ -1,4 +1,4 @@
-import type { TerminalOpenRequest } from '@cozypad/contracts';
+import type { DirectoryListing, TerminalOpenRequest } from '@cozypad/contracts';
 import type { TransportEvents, TransportPort } from './TransportPort';
 import { isLocalProfile } from './localTransport';
 
@@ -55,8 +55,8 @@ export class RoutingTransport implements TransportPort {
     await this.forProfile(profileId).disconnect(profileId);
   }
 
-  exec(command: string, timeoutMs?: number): Promise<string> {
-    return this.active.exec(command, timeoutMs);
+  exec(command: string, timeoutMs?: number, signal?: AbortSignal): Promise<string> {
+    return this.active.exec(command, timeoutMs, signal);
   }
 
   execStream(
@@ -64,12 +64,53 @@ export class RoutingTransport implements TransportPort {
     onLine: (line: string) => void,
     timeoutMs?: number,
     collectOutput?: boolean,
+    signal?: AbortSignal,
   ): Promise<string> {
-    return this.active.execStream(command, onLine, timeoutMs, collectOutput);
+    return this.active.execStream(command, onLine, timeoutMs, collectOutput, signal);
   }
 
   writeFile(path: string, data: Uint8Array): Promise<void> {
     return this.active.writeFile(path, data);
+  }
+
+  fsList(path: string): Promise<DirectoryListing> {
+    return this.active.fsList(path);
+  }
+
+  fsReadText(path: string, maxBytes: number, offset: number): Promise<string> {
+    return this.active.fsReadText(path, maxBytes, offset);
+  }
+
+  fsReadBytes(path: string): Promise<string> {
+    return this.active.fsReadBytes(path);
+  }
+
+  fsWrite(path: string, data: Uint8Array): Promise<void> {
+    return this.active.fsWrite(path, data);
+  }
+
+  fsCreate(directory: string, name: string, kind: 'file' | 'directory'): Promise<void> {
+    return this.active.fsCreate(directory, name, kind);
+  }
+
+  fsRename(path: string, newName: string): Promise<void> {
+    return this.active.fsRename(path, newName);
+  }
+
+  fsDuplicate(path: string): Promise<string> {
+    return this.active.fsDuplicate(path);
+  }
+
+  fsCopyTo(sourcePath: string, destinationDirectory: string): Promise<string> {
+    return this.active.fsCopyTo(sourcePath, destinationDirectory);
+  }
+
+  fsMoveTo(sourcePath: string, destinationDirectory: string): Promise<string> {
+    return this.active.fsMoveTo(sourcePath, destinationDirectory);
+  }
+
+  fsRemove(path: string): Promise<void> {
+    return this.active.fsRemove(path);
   }
 
   openTerminal(request: TerminalOpenRequest, command?: string): Promise<string> {

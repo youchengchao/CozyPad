@@ -45,6 +45,11 @@ lib/graphify-out/
 
 # Agent orchestration notes: local working record, not product.
 .agents/
+.codex/
+.gemini/
+.claude/
+.github/
+.probe/
 
 # Session/process records: kept locally, not part of the product.
 /DEVELOPMENT_GUIDE.md

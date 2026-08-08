@@ -90,6 +90,10 @@ class FakeExecStream implements Ssh2ExecStreamLike {
   emitClose(code: number | null): void {
     this.closeListeners.forEach((listener) => listener(code));
   }
+
+  close(): void {
+    // mock close
+  }
 }
 
 class FakeSftp implements Ssh2SftpLike {

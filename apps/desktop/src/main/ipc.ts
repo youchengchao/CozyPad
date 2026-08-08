@@ -212,6 +212,32 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     if (event.sender !== win.webContents) throw new Error('unauthorized IPC sender');
   };
 
+  const activeRequests = new Map<string, AbortController>();
+
+  const runCancellable = async <T>(
+    requestId: string | undefined,
+    fn: (signal?: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
+    if (!requestId) return fn();
+    const controller = new AbortController();
+    activeRequests.set(requestId, controller);
+    try {
+      return await fn(controller.signal);
+    } finally {
+      activeRequests.delete(requestId);
+    }
+  };
+
+  ipcMain.handle(IpcChannels.cancelRequest, (event, requestId: unknown) => {
+    assertSender(event);
+    if (typeof requestId === 'string') {
+      const controller = activeRequests.get(requestId);
+      if (controller) {
+        controller.abort();
+      }
+    }
+  });
+
   ipcMain.handle(IpcChannels.appInfo, (event) => {
     assertSender(event);
     return { startupWarnings: [...startupWarnings] };
@@ -234,7 +260,8 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
 
   ipcMain.handle(IpcChannels.connect, (event, raw: unknown) => {
     assertSender(event);
-    return transport.connect(ConnectRequestSchema.parse(raw).profileId);
+    const request = ConnectRequestSchema.parse(raw);
+    return runCancellable(request.requestId, () => transport.connect(request.profileId));
   });
 
   ipcMain.handle(IpcChannels.disconnect, (event, raw: unknown) => {
@@ -268,58 +295,72 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
 
   ipcMain.handle(IpcChannels.fsList, (event, raw: unknown) => {
     assertSender(event);
-    return files.list(FsPathRequestSchema.parse(raw).path);
+    const request = FsPathRequestSchema.parse(raw);
+    return runCancellable(request.requestId, (signal) => files.list(request.path, signal));
   });
 
   ipcMain.handle(IpcChannels.fsRead, async (event, raw: unknown) => {
     assertSender(event);
     const request = FsReadRequestSchema.parse(raw);
-    return { content: await files.readText(request.path, request.maxBytes, request.offset) };
+    return runCancellable(request.requestId, async (signal) => {
+      return { content: await files.readText(request.path, request.maxBytes, request.offset, signal) };
+    });
   });
 
   ipcMain.handle(IpcChannels.fsReadBytes, async (event, raw: unknown) => {
     assertSender(event);
-    return { dataBase64: await files.readBytes(FsPathRequestSchema.parse(raw).path) };
+    const request = FsPathRequestSchema.parse(raw);
+    return runCancellable(request.requestId, async (signal) => {
+      return { dataBase64: await files.readBytes(request.path, undefined, signal) };
+    });
   });
 
   ipcMain.handle(IpcChannels.fsWrite, (event, raw: unknown) => {
     assertSender(event);
     const request = FsWriteRequestSchema.parse(raw);
-    return files.write(request.path, request.contentBase64);
+    return runCancellable(request.requestId, (signal) => files.write(request.path, request.contentBase64, undefined, signal));
   });
 
   ipcMain.handle(IpcChannels.fsCreate, (event, raw: unknown) => {
     assertSender(event);
     const request = FsCreateRequestSchema.parse(raw);
-    return files.create(request.directory, request.name, request.kind);
+    return runCancellable(request.requestId, (signal) => files.create(request.directory, request.name, request.kind, signal));
   });
 
   ipcMain.handle(IpcChannels.fsRename, (event, raw: unknown) => {
     assertSender(event);
     const request = FsRenameRequestSchema.parse(raw);
-    return files.rename(request.path, request.newName);
+    return runCancellable(request.requestId, (signal) => files.rename(request.path, request.newName, signal));
   });
 
   ipcMain.handle(IpcChannels.fsDuplicate, async (event, raw: unknown) => {
     assertSender(event);
-    return { path: await files.duplicate(FsPathRequestSchema.parse(raw).path) };
+    const request = FsPathRequestSchema.parse(raw);
+    return runCancellable(request.requestId, async (signal) => {
+      return { path: await files.duplicate(request.path, signal) };
+    });
   });
 
   ipcMain.handle(IpcChannels.fsCopy, async (event, raw: unknown) => {
     assertSender(event);
     const request = FsTransferRequestSchema.parse(raw);
-    return { path: await files.copyTo(request.sourcePath, request.destinationDirectory) };
+    return runCancellable(request.requestId, async (signal) => {
+      return { path: await files.copyTo(request.sourcePath, request.destinationDirectory, signal) };
+    });
   });
 
   ipcMain.handle(IpcChannels.fsMove, async (event, raw: unknown) => {
     assertSender(event);
     const request = FsTransferRequestSchema.parse(raw);
-    return { path: await files.moveTo(request.sourcePath, request.destinationDirectory) };
+    return runCancellable(request.requestId, async (signal) => {
+      return { path: await files.moveTo(request.sourcePath, request.destinationDirectory, signal) };
+    });
   });
 
   ipcMain.handle(IpcChannels.fsDelete, (event, raw: unknown) => {
     assertSender(event);
-    return files.remove(FsPathRequestSchema.parse(raw).path);
+    const request = FsPathRequestSchema.parse(raw);
+    return runCancellable(request.requestId, (signal) => files.remove(request.path, signal));
   });
 
   ipcMain.handle(IpcChannels.remoteSettingsGet, (event) => {

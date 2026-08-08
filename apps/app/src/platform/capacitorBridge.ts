@@ -570,5 +570,7 @@ export function createCapacitorBridge(
     onAgentCommunicationError: () => () => undefined,
 
     cleanupRemote: (removeTmuxBinary) => provisioner.cleanup(removeTmuxBinary),
+
+    cancelRequest: () => Promise.resolve(),
   };
 }

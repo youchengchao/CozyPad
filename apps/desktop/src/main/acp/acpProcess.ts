@@ -38,6 +38,15 @@ export function agyAcpEntryPath(): string {
   return path.join(__dirname.replace('app.asar', 'app.asar.unpacked'), 'agy-acp.cjs');
 }
 
+const DEFAULT_ACP_ENV = {
+  ELECTRON_RUN_AS_NODE: '1',
+  NO_COLOR: '1',
+  LANG: 'zh_TW.UTF-8',
+  LC_ALL: 'zh_TW.UTF-8',
+  PYTHONIOENCODING: 'utf-8',
+  PYTHONUTF8: '1',
+};
+
 /**
  * The launch spec for our own agy adapter.
  *
@@ -51,7 +60,7 @@ export function agyLaunchSpec(cwd: string): AcpLaunchSpec {
     command: process.execPath,
     args: [agyAcpEntryPath()],
     cwd,
-    env: { ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' },
+    env: DEFAULT_ACP_ENV,
   };
 }
 
@@ -92,7 +101,7 @@ export function launchSpecFor(agentKind: string, cwd: string): AcpLaunchSpec {
         command: process.execPath,
         args: [publishedAgentEntry('@zed-industries/claude-agent-acp')],
         cwd,
-        env: { ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' },
+        env: DEFAULT_ACP_ENV,
       };
     case 'codex':
       return {
@@ -100,7 +109,7 @@ export function launchSpecFor(agentKind: string, cwd: string): AcpLaunchSpec {
         command: process.execPath,
         args: [publishedAgentEntry('@agentclientprotocol/codex-acp')],
         cwd,
-        env: { ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' },
+        env: DEFAULT_ACP_ENV,
       };
     default:
       return agyLaunchSpec(cwd);

@@ -29,6 +29,7 @@ export type DirectoryListing = z.infer<typeof DirectoryListingSchema>;
 
 export const FsPathRequestSchema = z.object({
   path: z.string().min(1),
+  requestId: z.string().optional(),
 });
 export type FsPathRequest = z.infer<typeof FsPathRequestSchema>;
 
@@ -36,12 +37,14 @@ export const FsReadRequestSchema = z.object({
   path: z.string().min(1),
   maxBytes: z.number().int().positive().default(2 * 1024 * 1024),
   offset: z.number().int().min(0).default(0),
+  requestId: z.string().optional(),
 });
 export type FsReadRequest = z.infer<typeof FsReadRequestSchema>;
 
 export const FsWriteRequestSchema = z.object({
   path: z.string().min(1),
   contentBase64: z.string(),
+  requestId: z.string().optional(),
 });
 export type FsWriteRequest = z.infer<typeof FsWriteRequestSchema>;
 
@@ -49,18 +52,21 @@ export const FsCreateRequestSchema = z.object({
   directory: z.string().min(1),
   name: z.string().min(1),
   kind: z.enum(['file', 'directory']),
+  requestId: z.string().optional(),
 });
 export type FsCreateRequest = z.infer<typeof FsCreateRequestSchema>;
 
 export const FsRenameRequestSchema = z.object({
   path: z.string().min(1),
   newName: z.string().min(1),
+  requestId: z.string().optional(),
 });
 export type FsRenameRequest = z.infer<typeof FsRenameRequestSchema>;
 
 export const FsTransferRequestSchema = z.object({
   sourcePath: z.string().min(1),
   destinationDirectory: z.string().min(1),
+  requestId: z.string().optional(),
 });
 export type FsTransferRequest = z.infer<typeof FsTransferRequestSchema>;
 

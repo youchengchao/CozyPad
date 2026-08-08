@@ -7,8 +7,9 @@ import {
   nativeTheme,
   safeStorage,
   session,
+  shell,
 } from 'electron';
-import { IpcChannels } from '@cozypad/contracts';
+import { IpcChannels, base64ToBytes } from '@cozypad/contracts';
 import { TmuxRuntime } from '@cozypad/tmux-runtime';
 import { TmuxRemoteSettings } from '@cozypad/remote-services';
 import type { RemoteSettingsPort } from '@cozypad/remote-services';
@@ -265,7 +266,7 @@ async function createServices(
   }
   return {
     transport,
-    files: new ShellRemoteFiles(exec),
+    files: new TransportRemoteFiles(transport),
     telemetry: new ShellTelemetry(exec),
     hostKeys,
     remoteSettings: new TmuxRemoteSettings(remoteTmux),
@@ -296,9 +297,19 @@ function createWindow(): BrowserWindow {
     },
   });
 
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.setWindowOpenHandler((details) => {
+    if (details.url.startsWith('http://') || details.url.startsWith('https://')) {
+      void shell.openExternal(details.url);
+    }
+    return { action: 'deny' };
+  });
   win.webContents.on('will-navigate', (event, url) => {
-    if (!DEV_URL || !url.startsWith(DEV_URL)) event.preventDefault();
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      event.preventDefault();
+      void shell.openExternal(url);
+    } else if (!DEV_URL || !url.startsWith(DEV_URL)) {
+      event.preventDefault();
+    }
   });
 
   if (DEV_URL) {
@@ -1772,3 +1783,38 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   app.quit();
 });
+
+class TransportRemoteFiles implements RemoteFilesPort {
+  constructor(private readonly transport: TransportPort) {}
+
+  list(path: string) {
+    return this.transport.fsList(path);
+  }
+  readText(path: string, maxBytes: number, offset: number) {
+    return this.transport.fsReadText(path, maxBytes, offset);
+  }
+  async readBytes(path: string, maxBytes?: number, signal?: AbortSignal) {
+    return this.transport.fsReadBytes(path);
+  }
+  write(path: string, contentBase64: string, maxBytes?: number, signal?: AbortSignal) {
+    return this.transport.fsWrite(path, base64ToBytes(contentBase64));
+  }
+  create(directory: string, name: string, kind: 'file' | 'directory') {
+    return this.transport.fsCreate(directory, name, kind);
+  }
+  rename(path: string, newName: string) {
+    return this.transport.fsRename(path, newName);
+  }
+  duplicate(path: string) {
+    return this.transport.fsDuplicate(path);
+  }
+  copyTo(sourcePath: string, destinationDirectory: string) {
+    return this.transport.fsCopyTo(sourcePath, destinationDirectory);
+  }
+  moveTo(sourcePath: string, destinationDirectory: string) {
+    return this.transport.fsMoveTo(sourcePath, destinationDirectory);
+  }
+  remove(path: string) {
+    return this.transport.fsRemove(path);
+  }
+}

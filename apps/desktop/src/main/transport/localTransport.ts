@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ConnectionProfile, TerminalOpenRequest } from '@cozypad/contracts';
+import type { ConnectionProfile, DirectoryListing, TerminalOpenRequest } from '@cozypad/contracts';
 import type { TransportEvents, TransportPort } from './TransportPort';
 
 /**
@@ -121,8 +121,8 @@ export class LocalTransport implements TransportPort {
     };
   }
 
-  exec(command: string, timeoutMs = 15_000): Promise<string> {
-    return this.execStream(command, () => undefined, timeoutMs, true);
+  exec(command: string, timeoutMs = 15_000, signal?: AbortSignal): Promise<string> {
+    return this.execStream(command, () => undefined, timeoutMs, true, signal);
   }
 
   execStream(
@@ -130,12 +130,19 @@ export class LocalTransport implements TransportPort {
     onLine: (line: string) => void,
     timeoutMs = 15_000,
     collectOutput = false,
+    signal?: AbortSignal,
   ): Promise<string> {
     // Rejected rather than thrown: an async method that sometimes throws
     // synchronously forces every caller to guard twice.
     if (!this.connected) return Promise.reject(new Error('not connected'));
     const shell = this.shell();
     return new Promise<string>((resolve, reject) => {
+      if (signal) {
+        if (signal.aborted) {
+          reject(new Error('command aborted'));
+          return;
+        }
+      }
       const child = spawn(shell.command, shell.args(command), {
         windowsHide: true,
       });
@@ -143,14 +150,25 @@ export class LocalTransport implements TransportPort {
       let output = '';
       let pending = '';
       let settled = false;
-      const timer =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              settled = true;
-              child.kill();
-              reject(new Error(`local command timed out after ${timeoutMs}ms`));
-            }, timeoutMs)
-          : null;
+
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          settled = true;
+          child.kill();
+          reject(new Error(`local command timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          if (settled) return;
+          settled = true;
+          if (timer !== null) clearTimeout(timer);
+          child.kill();
+          reject(new Error('command aborted'));
+        });
+      }
 
       const consume = (chunk: Buffer) => {
         const text = chunk.toString('utf8');
@@ -292,6 +310,167 @@ export class LocalTransport implements TransportPort {
     terminal.kill();
   }
 
+  async fsList(dirPath: string): Promise<DirectoryListing> {
+    this.assertConnected();
+    const resolvedPath = path.resolve(resolveHome(dirPath));
+    const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+    const items = [];
+    const limit = 2000;
+    const truncated = entries.length > limit;
+    const capped = truncated ? entries.slice(0, limit) : entries;
+
+    for (const entry of capped) {
+      const entryPath = path.join(resolvedPath, entry.name);
+      try {
+        const lstat = await fs.lstat(entryPath);
+        let type = 'f';
+        if (lstat.isDirectory()) type = 'd';
+        else if (lstat.isSymbolicLink()) type = 'l';
+        
+        let linkTarget: string | undefined;
+        let targetType: string | undefined;
+        if (lstat.isSymbolicLink()) {
+          try {
+            linkTarget = await fs.readlink(entryPath);
+            const stat = await fs.stat(entryPath);
+            targetType = stat.isDirectory() ? 'd' : 'f';
+          } catch {
+            targetType = 'N'; // broken link
+          }
+        }
+
+        const isExecutable = !lstat.isDirectory() && ((lstat.mode & 0o111) > 0);
+
+        items.push({
+          name: entry.name,
+          path: entryPath,
+          type,
+          sizeBytes: lstat.size,
+          modified: formatMtime(lstat.mtime),
+          ...(linkTarget ? { linkTarget } : {}),
+          ...(targetType ? { targetType } : {}),
+          executable: isExecutable,
+        });
+      } catch (err) {
+        // Skip files we cannot access
+      }
+    }
+
+    items.sort((a, b) => {
+      const aDir = a.type === 'd' || (a.type === 'l' && a.targetType === 'd');
+      const bDir = b.type === 'd' || (b.type === 'l' && b.targetType === 'd');
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    });
+
+    return { path: resolvedPath, items, truncated };
+  }
+
+  async fsReadText(filePath: string, maxBytes: number, offset: number): Promise<string> {
+    this.assertConnected();
+    const resolved = path.resolve(resolveHome(filePath));
+    const handle = await fs.open(resolved, 'r');
+    try {
+      const stat = await handle.stat();
+      const buffer = Buffer.alloc(maxBytes);
+      const { bytesRead } = await handle.read(buffer, 0, maxBytes, offset);
+      let content = buffer.subarray(0, bytesRead).toString('utf8');
+      if (stat.size > offset + maxBytes) {
+        content += `\n\n[Preview truncated: showing bytes ${offset + 1} to ${offset + maxBytes} of ${stat.size} bytes]`;
+      }
+      return content;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async fsReadBytes(filePath: string): Promise<string> {
+    this.assertConnected();
+    const resolved = path.resolve(resolveHome(filePath));
+    const content = await fs.readFile(resolved);
+    return content.toString('base64');
+  }
+
+  async fsWrite(filePath: string, data: Uint8Array): Promise<void> {
+    this.assertConnected();
+    const resolved = path.resolve(resolveHome(filePath));
+    const dir = path.dirname(resolved);
+    await fs.mkdir(dir, { recursive: true });
+    // Atomic write by creating temporary file and renaming it
+    const base = path.basename(resolved);
+    const tmpPath = path.join(dir, `.${base}.tmp.${Math.random().toString(36).substring(2)}`);
+    await fs.writeFile(tmpPath, data);
+    try {
+      await fs.rename(tmpPath, resolved);
+    } catch (err) {
+      await fs.unlink(tmpPath).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  async fsCreate(directory: string, name: string, kind: 'file' | 'directory'): Promise<void> {
+    this.assertConnected();
+    const resolvedDir = path.resolve(resolveHome(directory));
+    const target = path.join(resolvedDir, name);
+    if (kind === 'file') {
+      const handle = await fs.open(target, 'w');
+      await handle.close();
+    } else {
+      await fs.mkdir(target, { recursive: true });
+    }
+  }
+
+  async fsRename(filePath: string, newName: string): Promise<void> {
+    this.assertConnected();
+    const resolved = path.resolve(resolveHome(filePath));
+    const dir = path.dirname(resolved);
+    const target = path.join(dir, newName);
+    await fs.rename(resolved, target);
+  }
+
+  async fsDuplicate(filePath: string): Promise<string> {
+    this.assertConnected();
+    const resolved = path.resolve(resolveHome(filePath));
+    const dir = path.dirname(resolved);
+    const base = path.basename(resolved);
+    let dest = path.join(dir, `${base}_copy`);
+    try {
+      await fs.access(dest);
+      const dateStr = new Date().toISOString().replace(/[-T:.Z]/g, '').slice(0, 14);
+      dest = path.join(dir, `${base}_copy_${dateStr}`);
+    } catch {
+      // Destination doesn't exist, proceed
+    }
+    await fs.cp(resolved, dest, { recursive: true });
+    return dest;
+  }
+
+  async fsCopyTo(sourcePath: string, destinationDirectory: string): Promise<string> {
+    this.assertConnected();
+    const src = path.resolve(resolveHome(sourcePath));
+    const destDir = path.resolve(resolveHome(destinationDirectory));
+    const base = path.basename(src);
+    const dest = path.join(destDir, base);
+    await fs.cp(src, dest, { recursive: true });
+    return dest;
+  }
+
+  async fsMoveTo(sourcePath: string, destinationDirectory: string): Promise<string> {
+    this.assertConnected();
+    const src = path.resolve(resolveHome(sourcePath));
+    const destDir = path.resolve(resolveHome(destinationDirectory));
+    const base = path.basename(src);
+    const dest = path.join(destDir, base);
+    await fs.rename(src, dest);
+    return dest;
+  }
+
+  async fsRemove(filePath: string): Promise<void> {
+    this.assertConnected();
+    const resolved = path.resolve(resolveHome(filePath));
+    await fs.rm(resolved, { recursive: true, force: true });
+  }
+
   dispose(): void {
     for (const terminal of this.terminals.values()) terminal.kill();
     this.terminals.clear();
@@ -300,4 +479,19 @@ export class LocalTransport implements TransportPort {
     this.execChildren.clear();
     this.connected = false;
   }
+}
+
+function resolveHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function formatMtime(mtime: Date): string {
+  const y = mtime.getFullYear();
+  const m = String(mtime.getMonth() + 1).padStart(2, '0');
+  const d = String(mtime.getDate()).padStart(2, '0');
+  const h = String(mtime.getHours()).padStart(2, '0');
+  const min = String(mtime.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d} ${h}:${min}`;
 }

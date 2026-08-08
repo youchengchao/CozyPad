@@ -104,6 +104,7 @@ export type RenameAgentSessionRequest = z.infer<typeof RenameAgentSessionRequest
 
 export const AgentSessionRequestSchema = z.object({
   sessionId: z.string().min(1),
+  requestId: z.string().optional(),
 });
 export type AgentSessionRequest = z.infer<typeof AgentSessionRequestSchema>;
 

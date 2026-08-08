@@ -33,6 +33,46 @@ class RecordingTransport implements TransportPort {
     this.calls.push(`write:${path}`);
     return Promise.resolve();
   }
+  fsList(path: string): Promise<any> {
+    this.calls.push(`fsList:${path}`);
+    return Promise.resolve({ path, items: [], truncated: false });
+  }
+  fsReadText(path: string): Promise<string> {
+    this.calls.push(`fsReadText:${path}`);
+    return Promise.resolve('');
+  }
+  fsReadBytes(path: string): Promise<string> {
+    this.calls.push(`fsReadBytes:${path}`);
+    return Promise.resolve('');
+  }
+  fsWrite(path: string): Promise<void> {
+    this.calls.push(`fsWrite:${path}`);
+    return Promise.resolve();
+  }
+  fsCreate(directory: string, name: string): Promise<void> {
+    this.calls.push(`fsCreate:${directory}/${name}`);
+    return Promise.resolve();
+  }
+  fsRename(path: string, newName: string): Promise<void> {
+    this.calls.push(`fsRename:${path}->${newName}`);
+    return Promise.resolve();
+  }
+  fsDuplicate(path: string): Promise<string> {
+    this.calls.push(`fsDuplicate:${path}`);
+    return Promise.resolve('');
+  }
+  fsCopyTo(sourcePath: string, destinationDirectory: string): Promise<string> {
+    this.calls.push(`fsCopyTo:${sourcePath}->${destinationDirectory}`);
+    return Promise.resolve('');
+  }
+  fsMoveTo(sourcePath: string, destinationDirectory: string): Promise<string> {
+    this.calls.push(`fsMoveTo:${sourcePath}->${destinationDirectory}`);
+    return Promise.resolve('');
+  }
+  fsRemove(path: string): Promise<void> {
+    this.calls.push(`fsRemove:${path}`);
+    return Promise.resolve();
+  }
   openTerminal(request: TerminalOpenRequest): Promise<string> {
     this.calls.push(`open:${request.profileId}`);
     return Promise.resolve(`${this.prefix}-term-1`);

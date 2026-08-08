@@ -258,6 +258,61 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .catch(report);
   };
 
+  const openFileByPath = useCallback(
+    (absolute: string) => {
+      const parent = parentOf(absolute);
+      bridge
+        .fsList({ path: parent })
+        .then((listing) => {
+          const found = listing.items.find((entry) => entry.path === absolute);
+          if (found) {
+            if (found.type === 'd') {
+              void openPath(absolute);
+            } else {
+              openFile(found);
+            }
+          } else {
+            bridge
+              .fsList({ path: absolute })
+              .then(() => {
+                void openPath(absolute);
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {
+          bridge
+            .fsList({ path: absolute })
+            .then(() => {
+              void openPath(absolute);
+            })
+            .catch(() => {});
+        });
+    },
+    [bridge, openPath, openFile]
+  );
+
+  useEffect(() => {
+    const handleOpenFile = (e: Event) => {
+      const customEvent = e as CustomEvent<{ path: string }>;
+      if (customEvent.detail && customEvent.detail.path) {
+        let filePath = customEvent.detail.path;
+        if (filePath.startsWith('file:///')) {
+          filePath = filePath.slice(8);
+        }
+        filePath = filePath.replace(/\\/g, '/');
+        if (/^\/[A-Za-z]:/u.test(filePath)) {
+          filePath = filePath.slice(1);
+        }
+        openFileByPath(filePath);
+      }
+    };
+    window.addEventListener('cozypad:open-file', handleOpenFile);
+    return () => {
+      window.removeEventListener('cozypad:open-file', handleOpenFile);
+    };
+  }, [openFileByPath]);
+
   const refreshDirs = async (...paths: (string | null)[]) => {
     for (const path of paths) {
       if (path !== null && (children[path] !== undefined || path === currentPath)) {

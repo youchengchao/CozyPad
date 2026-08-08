@@ -96,6 +96,16 @@ export function App() {
 
 
   useEffect(() => {
+    const handleOpenFile = () => {
+      setWorkspace('files');
+    };
+    window.addEventListener('cozypad:open-file', handleOpenFile);
+    return () => {
+      window.removeEventListener('cozypad:open-file', handleOpenFile);
+    };
+  }, []);
+
+  useEffect(() => {
     void bridge.getAppInfo().then((info) => {
       setStartupWarnings(info.startupWarnings ?? []);
     });

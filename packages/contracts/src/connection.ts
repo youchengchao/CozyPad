@@ -66,6 +66,7 @@ export type ConnectionState = z.infer<typeof ConnectionStateSchema>;
 
 export const ConnectRequestSchema = z.object({
   profileId: z.string().min(1),
+  requestId: z.string().optional(),
 });
 export type ConnectRequest = z.infer<typeof ConnectRequestSchema>;
 

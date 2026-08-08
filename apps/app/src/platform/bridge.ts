@@ -61,6 +61,16 @@ function wrapResilientBridge(rawBridge: PlatformBridge): PlatformBridge {
 
       (rawBridge as unknown as Record<string, unknown>)[propName] = (...args: unknown[]) => {
         try {
+          let requestId: string | undefined;
+          if (
+            args.length > 0 &&
+            args[0] !== null &&
+            typeof args[0] === 'object' &&
+            !Array.isArray(args[0])
+          ) {
+            requestId = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+            args[0] = { ...(args[0] as Record<string, unknown>), requestId };
+          }
           const result = (original as Function).apply(rawBridge, args);
           if (
             result !== null &&
@@ -71,6 +81,9 @@ function wrapResilientBridge(rawBridge: PlatformBridge): PlatformBridge {
             let timer: ReturnType<typeof setTimeout>;
             const timeoutPromise = new Promise<never>((_, reject) => {
               timer = setTimeout(() => {
+                if (requestId) {
+                  rawBridge.cancelRequest(requestId).catch(() => undefined);
+                }
                 reject(
                   new CozyPadIPCError(
                     'TIMEOUT',

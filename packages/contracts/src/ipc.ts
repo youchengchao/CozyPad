@@ -55,6 +55,7 @@ export const IpcChannels = {
   clipboardRead: 'cozypad:clipboard:read',
   clipboardWrite: 'cozypad:clipboard:write',
   clipboardWriteImage: 'cozypad:clipboard:write-image',
+  cancelRequest: 'cozypad:request:cancel',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

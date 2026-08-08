@@ -44,18 +44,11 @@ import type {
 } from '@cozypad/contracts';
 import {
   buildClaudeStreamingArgv,
-  parseClaudeStreamLine,
 } from '@cozypad/adapter-claude';
-import type { ClaudeParseContext } from '@cozypad/adapter-claude';
 import { reconcileSessions } from '@cozypad/tmux-runtime';
 import type { TmuxRuntime } from '@cozypad/tmux-runtime';
 import type { ProfileStorePort } from './profileStore';
 import type { TransportPort } from './transport/TransportPort';
-import {
-  CODEX_CONTROL_METHODS,
-  parseCodexAppServerLine,
-  type CodexParseContext,
-} from './adapters/codexAppServer';
 
 interface ActiveTurn {
   id: string;
@@ -834,78 +827,6 @@ function parseStoredSession(value: unknown): StoredAgentSession | null {
   };
 }
 
-function parseControlRequest(line: string): PendingControlRequest | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || value.type !== 'control_request') return null;
-  if (typeof value.request_id !== 'string' || !isRecord(value.request)) return null;
-  if (value.request.subtype !== 'can_use_tool') return null;
-  return {
-    requestId: value.request_id,
-    toolName:
-      typeof value.request.tool_name === 'string'
-        ? value.request.tool_name
-        : 'unknown tool',
-    input: isRecord(value.request.input) ? value.request.input : {},
-    protocol: 'claude',
-  };
-}
-
-function parseCodexControlRequest(line: string): PendingControlRequest | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (
-    !isRecord(value) ||
-    (typeof value.id !== 'string' && typeof value.id !== 'number') ||
-    typeof value.method !== 'string' ||
-    !isRecord(value.params)
-  ) {
-    return null;
-  }
-  // The whitelist is shared with the adapter that renders the cards, so a
-  // method can never be registered as a pending control without also having
-  // a card that answers it.
-  if (!(CODEX_CONTROL_METHODS as readonly string[]).includes(value.method)) {
-    return null;
-  }
-  return {
-    requestId: String(value.id),
-    toolName:
-      value.method === 'item/tool/requestUserInput'
-        ? 'RequestUserInput'
-        : value.method,
-    input: value.params,
-    protocol: 'codex',
-    rpcId: value.id,
-    method: value.method,
-  };
-}
-
-function parseCodexTurnId(line: string): string | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return undefined;
-  }
-  if (!isRecord(value)) return undefined;
-  const container =
-    value.method === 'turn/started' && isRecord(value.params)
-      ? value.params
-      : isRecord(value.result)
-        ? value.result
-        : undefined;
-  if (container === undefined || !isRecord(container.turn)) return undefined;
-  return typeof container.turn.id === 'string' ? container.turn.id : undefined;
-}
 
 export class AgentCommunicationService implements AgentCommunicationPort {
   private events: AgentCommunicationEvents = EMPTY_EVENTS;
@@ -1693,6 +1614,19 @@ exit "$agent_status"`;
     this.emitSession(stored);
     try {
       await this.startAgentConversation();
+      this.assertAcpSupported(stored);
+      if (this.options.acp !== undefined) {
+        await this.options.acp.start(
+          stored.record.id,
+          stored.record.cwd,
+          stored.record.provisionalIdentity.agentKind,
+        );
+      }
+      stored.record = {
+        ...stored.record,
+        status: 'ready',
+        updatedAt: new Date().toISOString(),
+      };
       await this.persist();
       this.emitSession(stored);
       return this.bundle(stored);

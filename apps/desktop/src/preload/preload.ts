@@ -185,6 +185,9 @@ const bridge: PlatformBridge = {
   cleanupRemote: (removeTmuxBinary) =>
     ipcRenderer.invoke(IpcChannels.remoteCleanup, removeTmuxBinary),
 
+  cancelRequest: (requestId) =>
+    ipcRenderer.invoke(IpcChannels.cancelRequest, requestId),
+
   onTmuxStatus: (listener) =>
     subscribe(IpcChannels.tmuxStatusChanged, TmuxStatusSchema, listener),
 

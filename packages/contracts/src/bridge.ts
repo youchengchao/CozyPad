@@ -190,4 +190,7 @@ export interface PlatformBridge {
 
   /** 移除 CozyPad 在遠端主機留下的痕跡（建置暫存、PATH／tmux 設定區塊）。 */
   cleanupRemote(removeTmuxBinary: boolean): Promise<string>;
+
+  /** 取消指定的背景請求 */
+  cancelRequest(requestId: string): Promise<void>;
 }

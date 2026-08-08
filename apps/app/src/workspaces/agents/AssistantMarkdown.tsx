@@ -240,6 +240,28 @@ export interface MarkdownViewProps {
  * GFM/KaTeX/highlight plugins, the same Mermaid hook, the same error boundary.
  * A user pasting a mermaid fence should get the same diagram the agent would.
  */
+function MarkdownLink({ href, children, ...props }: ComponentPropsWithoutRef<'a'>) {
+  const handleClick = (e: React.MouseEvent) => {
+    if (href) {
+      const isExternal = href.startsWith('http://') || href.startsWith('https://');
+      const isFileScheme = href.startsWith('file:///');
+      if (isFileScheme || !isExternal) {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent('cozypad:open-file', {
+            detail: { path: href },
+          })
+        );
+      }
+    }
+  };
+  return (
+    <a href={href} onClick={handleClick} {...props}>
+      {children}
+    </a>
+  );
+}
+
 export function MarkdownView({
   children,
   streaming = false,
@@ -259,6 +281,11 @@ export function MarkdownView({
         return (
           <MarkdownPre {...props} fallbackPre={fallbackPre} streaming={streaming} />
         );
+      },
+      a: (componentProps) => {
+        const { node, ...props } = componentProps;
+        void node;
+        return <MarkdownLink {...props} />;
       },
     }),
     [fallbackPre, streaming],
@@ -324,6 +351,11 @@ export function AssistantMarkdown({
             streaming={streaming}
           />
         );
+      },
+      a: (componentProps) => {
+        const { node, ...props } = componentProps;
+        void node;
+        return <MarkdownLink {...props} />;
       },
     }),
     [fallbackPre, streaming],
