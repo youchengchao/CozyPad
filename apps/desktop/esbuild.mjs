@@ -6,6 +6,7 @@ if (!includeSourceMap) {
   await Promise.all([
     rm('dist/main.cjs.map', { force: true }),
     rm('dist/preload.cjs.map', { force: true }),
+    rm('dist/agy-acp.cjs.map', { force: true }),
   ]);
 }
 
@@ -31,4 +32,16 @@ await build({
   entryPoints: ['src/preload/preload.ts'],
   outfile: 'dist/preload.cjs',
   external: ['electron'],
+});
+
+// The agy ACP adapter, spawned by the main process as its own Node child.
+// Nothing is external: this runs outside Electron's module system, so an
+// `external: ['electron']` here would leave a require() that resolves to
+// nothing at runtime. It is also why the file must stay outside the asar —
+// see `asarUnpack` in package.json.
+await build({
+  ...shared,
+  entryPoints: ['src/agent/agyAcpEntry.ts'],
+  outfile: 'dist/agy-acp.cjs',
+  external: [],
 });

@@ -114,6 +114,12 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@cozypad/acp-client':
+        specifier: workspace:*
+        version: link:../../packages/acp-client
+      '@cozypad/adapter-agy':
+        specifier: workspace:*
+        version: link:../../packages/adapter-agy
       '@cozypad/adapter-claude':
         specifier: workspace:*
         version: link:../../packages/adapter-claude
