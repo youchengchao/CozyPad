@@ -1,0 +1,14 @@
+# Later rules win, so the general case goes first and the exceptions follow.
+* text=auto
+
+# Recorded agent output is byte-pinned evidence, not source.
+#
+# `tests/provenance.test.ts` fails a fixture whose md5 or size stops matching
+# the table in its README, which is what stops a hand-edited "recording" from
+# passing review. With `core.autocrlf=true` — the Windows default — git was
+# rewriting every LF in these files on checkout, so the bytes on disk were not
+# the bytes that were recorded, and provenance failed for anyone who cloned.
+#
+# Found the first time these files went through a real checkout: eight lines,
+# eight extra bytes.
+*.ndjson -text
