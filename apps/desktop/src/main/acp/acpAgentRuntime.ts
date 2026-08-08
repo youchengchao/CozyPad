@@ -57,6 +57,12 @@ export interface AcpRuntimeCallbacks {
    */
   onPromptMeta?(sessionId: string, meta: Readonly<Record<string, unknown>>): void;
   /**
+   * The agent process ended on its own — crash or clean exit, but not a
+   * deliberate `stop()`. The local runtime tracks only the placeholder pane,
+   * so without this a dead agent's session stays 'ready' forever.
+   */
+  onExit?(sessionId: string, detail: string): void;
+  /**
    * The agent's slash commands, whenever it announces them.
    *
    * Sent on `session/new` and again whenever they change — a mode switch
@@ -307,6 +313,20 @@ export class AcpAgentRuntime {
       running.state = { ...running.state, items: [...continuation.history] };
     }
     this.#sessions.set(sessionId, running);
+    child.onExit(({ code, signal }) => {
+      const current = this.#sessions.get(sessionId);
+      // A deliberate stop (or a restart that replaced the child) already
+      // removed or superseded this entry; only an unexpected death remains.
+      if (current === undefined || current.child !== child) return;
+      this.#drainPending(current);
+      this.#sessions.delete(sessionId);
+      this.callbacks.onExit?.(
+        sessionId,
+        signal !== null
+          ? `killed by signal ${signal}`
+          : `exited with code ${String(code)}`,
+      );
+    });
 
     try {
       const initialized = await child.handle.initialize();

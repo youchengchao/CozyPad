@@ -209,6 +209,9 @@ async function createServices(
     onPromptMeta: (sessionId, meta) => {
       agentCommunication.notePromptMeta(sessionId, meta);
     },
+    onExit: (sessionId, detail) => {
+      agentCommunication.noteAgentExit(sessionId, detail);
+    },
     onError: (sessionId, message) => {
       console.error('[cozypad] acp session', sessionId, message);
     },

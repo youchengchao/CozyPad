@@ -23,6 +23,7 @@ function fakeChild(): { child: AcpChild; captured: { handlers?: AcpClientHandler
       setSessionConfigOption: async () => ({}),
     } as never,
     kill: () => undefined,
+    onExit: () => undefined,
   };
   return { child, captured };
 }
@@ -212,6 +213,7 @@ function continuableChild(options: {
       setSessionConfigOption: async () => ({}),
     } as never,
     kill: () => undefined,
+    onExit: () => undefined,
   };
   return { child, captured, calls };
 }
@@ -365,6 +367,43 @@ describe('continuing a previous conversation', () => {
 
     expect(commands).toEqual([{ sessionId: 's1', names: ['usage', 'compact'] }]);
     expect(runtime.itemsFor('s1')).toEqual([]);
+  });
+
+  it('reports an unexpected child death, but not a deliberate stop', async () => {
+    const exits: string[] = [];
+    let fireExit!: (detail: { code: number | null; signal: string | null }) => void;
+    const { child, captured } = continuableChild({});
+    const observable: AcpChild = {
+      ...child,
+      onExit: (listener) => {
+        fireExit = listener;
+      },
+    };
+    const runtime = new AcpAgentRuntime(
+      {
+        onTimeline: () => undefined,
+        onPermission: () => new Promise<string | null>(() => undefined),
+        onError: () => undefined,
+        onExit: (sessionId, detail) => {
+          exits.push(`${sessionId}: ${detail}`);
+        },
+      },
+      (_spec, handlers) => {
+        captured.handlers = handlers;
+        return observable;
+      },
+    );
+
+    await runtime.start('s1', '/workspace');
+    fireExit({ code: 1, signal: null });
+    expect(exits).toEqual(['s1: exited with code 1']);
+    expect(runtime.has('s1')).toBe(false);
+
+    // A stop removes the session first, so the same exit stays silent.
+    await runtime.start('s1', '/workspace');
+    runtime.stop('s1');
+    fireExit({ code: null, signal: 'SIGTERM' });
+    expect(exits).toHaveLength(1);
   });
 
   it('forwards a prompt response _meta block, verbatim', async () => {

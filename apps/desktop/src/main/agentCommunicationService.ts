@@ -840,12 +840,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
   private sessions = new Map<string, StoredAgentSession>();
   private activeProfileId: string | null = null;
   private persistQueue = Promise.resolve();
-  /**
-   * The launch generation currently being followed for each CozyPad session.
-   * A session id survives Resume, while its runtime does not; keying only by
-   * session id lets a late old follower overwrite the replacement runtime.
-   */
-  private readonly following = new Map<string, string>();
   private readonly completing = new Set<string>();
   private readonly installations = new Map<string, AgentInstallation>();
   private readonly remoteEnvironments = new Map<
@@ -977,6 +971,13 @@ export class AgentCommunicationService implements AgentCommunicationPort {
         stored.record.provisionalIdentity.connectionProfileId === profileId &&
         stored.record.status !== 'exited'
       ) {
+        // Leaving the host ends its agents; the bound conversation survives
+        // and Resume continues it.
+        this.options.acp?.stop(stored.record.id);
+        this.finalizeInFlightItems(stored);
+        this.expirePendingInteractions(stored);
+        stored.activeTurn = undefined;
+        stored.activeAgentTurnId = undefined;
         stored.record = { ...stored.record, status: 'disconnected', updatedAt: now };
         this.emitSession(stored);
       }
@@ -1546,6 +1547,40 @@ exit "$agent_status"`;
    * is what lets a later Resume reopen the same conversation instead of
    * guessing from the disk.
    */
+  /**
+   * Records that a session's agent process ended on its own.
+   *
+   * The runtime has already dropped the child, so everything still waiting on
+   * it — the active turn, pending approvals — can never finish and is closed
+   * out here rather than left dangling until the next app restart.
+   */
+  noteAgentExit(sessionId: string, detail: string): void {
+    const stored = this.sessions.get(sessionId);
+    if (stored === undefined) return;
+    const status = stored.record.status;
+    if (status === 'exited' || status === 'error' || status === 'disconnected') {
+      return;
+    }
+    this.finalizeInFlightItems(stored);
+    this.expirePendingInteractions(stored);
+    stored.activeTurn = undefined;
+    stored.activeAgentTurnId = undefined;
+    stored.record = {
+      ...stored.record,
+      status: 'exited',
+      updatedAt: new Date().toISOString(),
+    };
+    stored.timeline.push({
+      kind: 'notice',
+      id: `notice-exit-${randomUUID()}`,
+      timestamp: new Date().toISOString(),
+      text: `Agent 程序已結束（${detail}）。按 Resume 重新啟動。`,
+    });
+    void this.persist();
+    this.emitSession(stored);
+    this.emitTimeline(stored);
+  }
+
   notePromptMeta(sessionId: string, meta: Readonly<Record<string, unknown>>): void {
     const conversationId = meta[AGY_CONVERSATION_META_KEY];
     if (typeof conversationId !== 'string' || conversationId === '') return;
@@ -1873,8 +1908,10 @@ exit "$agent_status"`;
     // dropped the row and putting it straight back. Their `sessions.get()`
     // guard only works if the record is gone first.
     this.sessions.delete(stored.record.id);
-    this.following.delete(stored.record.id);
     this.completing.delete(stored.record.id);
+    // The ACP child is a local process the tmux teardown below never touches;
+    // without this, every deleted session left its agent running until quit.
+    this.options.acp?.stop(stored.record.id);
     await this.persist();
     this.events.onSessionDeleted({
       sessionId: stored.record.id,
@@ -2291,8 +2328,15 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
         ...stored.record,
         // A rejected frame is a turn-level delivery failure. Only a tmux
         // liveness check that proves the runtime is gone may poison the whole
-        // session; otherwise it remains ready for an immediate retry.
-        status: runtimeAlive ? 'ready' : 'error',
+        // session; otherwise it remains ready for an immediate retry. An
+        // 'exited' verdict is stronger than either: the agent's own death was
+        // observed, and the placeholder pane being alive must not veto it.
+        status:
+          stored.record.status === 'exited'
+            ? 'exited'
+            : runtimeAlive
+              ? 'ready'
+              : 'error',
         updatedAt: new Date().toISOString(),
       };
       this.appendError(stored, error);

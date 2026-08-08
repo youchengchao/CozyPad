@@ -141,6 +141,13 @@ export interface AcpChild {
   readonly handle: AcpAgentHandle;
   /** Ends the agent. Safe to call more than once. */
   kill(): void;
+  /**
+   * Reports the process ending, however it ended — crash, kill, or clean
+   * exit. Fires each listener at most once.
+   */
+  onExit(
+    listener: (detail: { code: number | null; signal: string | null }) => void,
+  ): void;
 }
 
 /**
@@ -206,12 +213,22 @@ export function spawnAcpAgent(
   });
 
   let killed = false;
+  const exitListeners: ((detail: {
+    code: number | null;
+    signal: string | null;
+  }) => void)[] = [];
+  child.once('exit', (code, signal) => {
+    for (const listener of exitListeners.splice(0)) listener({ code, signal });
+  });
   return {
     handle,
     kill: () => {
       if (killed) return;
       killed = true;
       child.kill();
+    },
+    onExit: (listener) => {
+      exitListeners.push(listener);
     },
   };
 }
