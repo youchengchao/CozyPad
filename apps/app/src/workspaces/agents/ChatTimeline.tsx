@@ -15,10 +15,17 @@ import { MessageAttachments } from './MessageAttachments';
 export interface ChatTimelineProps {
   sessionId: string;
   items: ChatItem[];
-  interactive?: boolean;
   sessionStatus?: string;
   sessionError?: string;
-  onResolveApproval(itemId: string, resolution: 'allowed' | 'denied'): void;
+  /**
+   * `optionId` names the agent's own option when the card rendered one;
+   * absent on the two-button fallback.
+   */
+  onResolveApproval(
+    itemId: string,
+    resolution: 'allowed' | 'denied',
+    optionId?: string,
+  ): void;
   onAnswerQuestion(itemId: string, optionIndex: number): void;
   /** Refuses a whole question request; used by unrepresentable questions. */
   onDeclineQuestion?(itemId: string): void;
@@ -240,7 +247,6 @@ function ChatTimelineMarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) 
 export function ChatTimeline({
   sessionId,
   items,
-  interactive = true,
   sessionStatus,
   sessionError,
   onResolveApproval,
@@ -343,45 +349,78 @@ export function ChatTimeline({
                 <DiffBody diff={item.diff} />
               </details>
             );
-          case 'approval':
+          case 'approval': {
+            const options = item.options ?? [];
+            const isReject = (kind?: string) =>
+              kind !== undefined && (kind.startsWith('reject') || kind.startsWith('deny'));
+            const chosenName = options.find(
+              (option) => option.optionId === item.selectedOptionId,
+            )?.name;
             return (
               <div key={item.id} className={`card approval-card approval-${item.resolution}`}>
                 <div className="approval-head">
                   <span className="approval-title">需要核准</span>
                   <span className="approval-risk">{item.riskSummary}</span>
                 </div>
-                <code className="approval-command">{item.command}</code>
-                <div className="approval-meta mono">
-                  {item.machine === undefined ? '' : `${item.machine} · `}cwd: {item.cwd}
-                </div>
+                {item.command === undefined ? null : (
+                  <code className="approval-command">{item.command}</code>
+                )}
+                {item.machine === undefined && item.cwd === undefined ? null : (
+                  <div className="approval-meta mono">
+                    {item.machine === undefined ? '' : `${item.machine} · `}
+                    {item.cwd === undefined ? '' : `cwd: ${item.cwd}`}
+                  </div>
+                )}
                 {item.resolution === 'pending' ? (
                   <div className="approval-actions">
-                    <button
-                      className="btn-allow"
-                      disabled={!interactive}
-                      onClick={() => onResolveApproval(item.id, 'allowed')}
-                    >
-                      Allow once
-                    </button>
-                    <button
-                      className="btn-deny"
-                      disabled={!interactive}
-                      onClick={() => onResolveApproval(item.id, 'denied')}
-                    >
-                      Deny
-                    </button>
+                    {options.length > 0 ? (
+                      // The agent's own options, in its own words — claude's
+                      // "Always Allow" and plan-mode choices included. Two
+                      // hardcoded buttons silently dropped all of these.
+                      options.map((option) => (
+                        <button
+                          key={option.optionId}
+                          className={isReject(option.kind) ? 'btn-deny' : 'btn-allow'}
+                          onClick={() =>
+                            onResolveApproval(
+                              item.id,
+                              isReject(option.kind) ? 'denied' : 'allowed',
+                              option.optionId,
+                            )
+                          }
+                        >
+                          {option.name}
+                        </button>
+                      ))
+                    ) : (
+                      <>
+                        <button
+                          className="btn-allow"
+                          onClick={() => onResolveApproval(item.id, 'allowed')}
+                        >
+                          Allow once
+                        </button>
+                        <button
+                          className="btn-deny"
+                          onClick={() => onResolveApproval(item.id, 'denied')}
+                        >
+                          Deny
+                        </button>
+                      </>
+                    )}
                   </div>
                 ) : (
                   <span className={`chip chip-${item.resolution}`}>
                     {item.resolution === 'allowed'
-                      ? 'Allowed'
+                      ? (chosenName ?? 'Allowed')
                       : item.resolution === 'denied'
-                        ? 'Denied'
+                        ? (chosenName ?? 'Denied')
                         : 'Expired'}
                   </span>
                 )}
               </div>
             );
+          }
           case 'question': {
             const batch =
               item.batchId === undefined
@@ -422,7 +461,7 @@ export function ChatTimeline({
                     <div className="question-actions">
                       <button
                         className="btn-deny"
-                        disabled={!interactive || onDeclineQuestion === undefined}
+                        disabled={onDeclineQuestion === undefined}
                         onClick={() => onDeclineQuestion?.(item.id)}
                       >
                         拒絕整個詢問
@@ -446,7 +485,6 @@ export function ChatTimeline({
                         className={`question-option${chosen ? ' question-option-chosen' : ''}`}
                         disabled={
                           answered ||
-                          !interactive ||
                           item.expired === true ||
                           item.declined === true
                         }

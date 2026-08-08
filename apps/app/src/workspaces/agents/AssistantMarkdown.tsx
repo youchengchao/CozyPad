@@ -322,8 +322,10 @@ export function AssistantMarkdown({
   streaming = false,
   fallbackPre,
 }: AssistantMarkdownProps) {
-  if (children === '') return null;
-
+  // The empty-text check lives BELOW the hooks: an assistant message's first
+  // render is reliably `text: ''` (claude's first chunk is empty), and an
+  // early return here changes the hook count between renders — React throws
+  // and the whole timeline is replaced by the error card.
   const { thoughts, mainText } = useMemo(
     () => parseAssistantText(children),
     [children],
@@ -360,6 +362,8 @@ export function AssistantMarkdown({
     }),
     [fallbackPre, streaming],
   );
+
+  if (children === '') return null;
 
   return (
     <MarkdownErrorBoundary rawText={children}>

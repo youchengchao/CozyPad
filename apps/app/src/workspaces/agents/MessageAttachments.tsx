@@ -243,7 +243,9 @@ export function MessageAttachments({
 }: {
   attachments: ChatAttachment[];
 }) {
-  if (attachments.length === 0) return null;
+  // Below-hooks on purpose: an early return before useMemo/useState changes
+  // the hook count between renders when the list goes 0 → n, and React
+  // replaces the timeline with an error card.
   const bridge = useMemo(() => {
     try {
       return getBridge();
@@ -252,6 +254,8 @@ export function MessageAttachments({
     }
   }, []);
   const [selected, setSelected] = useState<ChatAttachment | null>(null);
+
+  if (attachments.length === 0) return null;
 
   return (
     <>

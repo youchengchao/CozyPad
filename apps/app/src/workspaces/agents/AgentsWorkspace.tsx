@@ -473,7 +473,36 @@ export function AgentsWorkspace({
   });
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * The last surfaced error, tagged with the session it belongs to (null for
+   * host-level failures). One global string used to leak into whichever
+   * session happened to be selected.
+   */
+  const [errorState, setErrorState] = useState<{
+    text: string;
+    sessionId: string | null;
+  } | null>(null);
+  const error = errorState === null ? null : errorState.text;
+  const selectedSessionIdRef = useRef<string | null>(null);
+  const setError = useCallback(
+    (text: string | null, sessionId?: string | null) =>
+      setErrorState(
+        text === null
+          ? null
+          : {
+              text,
+              sessionId:
+                sessionId !== undefined ? sessionId : selectedSessionIdRef.current,
+            },
+      ),
+    [],
+  );
+  const errorFor = (sessionId: string): string | undefined =>
+    errorState !== null && errorState.sessionId === sessionId
+      ? errorState.text
+      : undefined;
+  /** Sessions whose timeline advanced while another one was on screen. */
+  const [unreadIds, setUnreadIds] = useState<Record<string, true>>({});
   const [createOpen, setCreateOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState('');
   const [launchMode, setLaunchMode] = useState('default');
@@ -607,6 +636,7 @@ export function AgentsWorkspace({
     setUploading(drop);
     setResuming(drop);
     setInterrupting(drop);
+    setUnreadIds(drop);
     setAgyActivity(drop);
     // A pending delivery timer must not write back a key that is gone.
     const timer = sendTimersRef.current[sessionId];
@@ -646,6 +676,11 @@ export function AgentsWorkspace({
         // SPEC 1514-1515: late events must not resurrect a deleted session.
         if (forgotten.current.has(sessionId)) return;
         setTimelines((current) => ({ ...current, [sessionId]: items }));
+        if (sessionId !== selectedSessionIdRef.current) {
+          setUnreadIds((current) =>
+            current[sessionId] === undefined ? { ...current, [sessionId]: true } : current,
+          );
+        }
       },
     );
     const unsubscribeDeleted = bridge.onAgentSessionDeleted(
@@ -656,7 +691,7 @@ export function AgentsWorkspace({
       if (event.sessionId !== undefined && forgotten.current.has(event.sessionId)) {
         return;
       }
-      setError(event.message);
+      setError(event.message, event.sessionId ?? null);
     });
     return () => {
       unsubscribeSession();
@@ -821,6 +856,16 @@ export function AgentsWorkspace({
   const selectedSessionEntered =
     selectedSession !== null &&
     sessionView.entered[agent] === selectedSession.id;
+  useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId;
+    if (selectedSessionId === null) return;
+    setUnreadIds((current) => {
+      if (current[selectedSessionId] === undefined) return current;
+      const next = { ...current };
+      delete next[selectedSessionId];
+      return next;
+    });
+  }, [selectedSessionId]);
   const timeline = selectedSessionId ? (timelines[selectedSessionId] ?? []) : [];
   const promptHistory = useMemo(
     () =>
@@ -885,7 +930,12 @@ export function AgentsWorkspace({
     return {
       waiting: mine.some((session) => liveStatus(session) === 'waiting_approval'),
       running: mine.some((session) => liveStatus(session) === 'running'),
-      unread: mine.reduce((sum, session) => sum + session.unread, 0),
+      // Tracked by the renderer: it is this window's reading position, not a
+      // fact about the session, so the summary cannot know it.
+      unread: mine.reduce(
+        (sum, session) => sum + (unreadIds[session.id] === undefined ? 0 : 1),
+        0,
+      ),
     };
   };
 
@@ -1416,6 +1466,7 @@ export function AgentsWorkspace({
   const resolveApproval = async (
     itemId: string,
     resolution: 'allowed' | 'denied',
+    optionId?: string,
   ) => {
     if (selectedSessionId === null) return;
     setError(null);
@@ -1424,6 +1475,7 @@ export function AgentsWorkspace({
         sessionId: selectedSessionId,
         itemId,
         resolution,
+        ...(optionId === undefined ? {} : { optionId }),
       });
     } catch (approvalError) {
       setError(errorText(approvalError));
@@ -1776,9 +1828,8 @@ export function AgentsWorkspace({
                   </div>
                   {selectedSessionEntered ? (
                     <div className="chat-session-actions">
-                      {selectedSession.agentKind !== 'agy' &&
-                      (selectedSession.status === 'running' ||
-                        selectedSession.status === 'waiting_approval') ? (
+                      {selectedSession.status === 'running' ||
+                      selectedSession.status === 'waiting_approval' ? (
                         <button
                           className="ghost"
                           disabled={interrupting[selectedSession.id] === true}
@@ -1787,6 +1838,23 @@ export function AgentsWorkspace({
                           {interrupting[selectedSession.id] === true
                             ? 'Stopping…'
                             : 'Stop'}
+                        </button>
+                      ) : null}
+                      {selectedSession.status === 'disconnected' ||
+                      selectedSession.status === 'exited' ||
+                      selectedSession.status === 'error' ? (
+                        // The composer's hint says "按 Resume"; the button has
+                        // to exist in the same view the hint appears in.
+                        <button
+                          className="ghost"
+                          disabled={
+                            !connected || resuming[selectedSession.id] === true
+                          }
+                          onClick={() => void resumeSession(selectedSession)}
+                        >
+                          {resuming[selectedSession.id] === true
+                            ? 'Resuming…'
+                            : 'Resume'}
                         </button>
                       ) : null}
                       <button
@@ -1818,11 +1886,18 @@ export function AgentsWorkspace({
                         <ChatTimeline
                           sessionId={selectedSession.id}
                           items={timeline}
-                          interactive={false}
                           sessionStatus={selectedSession.status}
-                          sessionError={error ?? undefined}
-                          onResolveApproval={() => undefined}
-                          onAnswerQuestion={() => undefined}
+                          sessionError={errorFor(selectedSession.id)}
+                          // A blocked agent must be answerable where its card
+                          // is seen — the service does not care whether the
+                          // renderer has "entered" the session.
+                          onResolveApproval={(itemId, resolution, optionId) =>
+                            void resolveApproval(itemId, resolution, optionId)
+                          }
+                          onAnswerQuestion={(itemId, optionIndex) =>
+                            void answerQuestion(itemId, optionIndex)
+                          }
+                          onDeclineQuestion={(itemId) => void declineQuestion(itemId)}
                           onRetrySession={() => void resumeSession(selectedSession)}
                         />
                       </TimelineErrorBoundary>
@@ -1861,11 +1936,10 @@ export function AgentsWorkspace({
                         <ChatTimeline
                           sessionId={selectedSession.id}
                           items={timeline}
-                          interactive
                           sessionStatus={selectedSession.status}
-                          sessionError={error ?? undefined}
-                          onResolveApproval={(itemId, resolution) =>
-                            void resolveApproval(itemId, resolution)
+                          sessionError={errorFor(selectedSession.id)}
+                          onResolveApproval={(itemId, resolution, optionId) =>
+                            void resolveApproval(itemId, resolution, optionId)
                           }
                           onAnswerQuestion={(itemId, optionIndex) =>
                             void answerQuestion(itemId, optionIndex)
