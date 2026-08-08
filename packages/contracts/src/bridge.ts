@@ -41,7 +41,6 @@ import type {
   AgentSessionDeletedEvent,
   AgentSessionListRequest,
   AgentSessionRequest,
-  AgentTerminalOpenRequest,
   AgentTimelineChangedEvent,
   AnswerAgentQuestionRequest,
   CreateAgentSessionRequest,
@@ -163,7 +162,6 @@ export interface PlatformBridge {
    * can bind the correct native conversation without exposing other history.
    */
   readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript>;
-  openAgentTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
   renameAgentSession(request: RenameAgentSessionRequest): Promise<void>;
   deleteAgentSession(
     request: AgentSessionRequest,

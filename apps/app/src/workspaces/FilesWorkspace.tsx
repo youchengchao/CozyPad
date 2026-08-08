@@ -294,18 +294,25 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
 
   useEffect(() => {
     const handleOpenFile = (e: Event) => {
-      const customEvent = e as CustomEvent<{ path: string }>;
-      if (customEvent.detail && customEvent.detail.path) {
-        let filePath = customEvent.detail.path;
-        if (filePath.startsWith('file:///')) {
-          filePath = filePath.slice(8);
-        }
-        filePath = filePath.replace(/\\/g, '/');
-        if (/^\/[A-Za-z]:/u.test(filePath)) {
-          filePath = filePath.slice(1);
-        }
-        openFileByPath(filePath);
+      const customEvent = e as CustomEvent<{ path: string; cwd?: string }>;
+      if (!customEvent.detail?.path) return;
+      let filePath = customEvent.detail.path;
+      if (filePath.startsWith('file:///')) {
+        filePath = filePath.slice(8);
       }
+      filePath = filePath.replace(/\\/g, '/');
+      if (/^\/[A-Za-z]:/u.test(filePath)) {
+        filePath = filePath.slice(1);
+      }
+      const isAbsolute = filePath.startsWith('/') || /^[A-Za-z]:\//u.test(filePath);
+      if (!isAbsolute) {
+        // Agents link repo-relative paths; the dispatching session sent its
+        // cwd along so they resolve. Without one there is nothing to open.
+        const cwd = customEvent.detail.cwd?.replace(/\\/g, '/');
+        if (cwd === undefined || cwd === '') return;
+        filePath = `${cwd.replace(/\/+$/u, '')}/${filePath.replace(/^\.\//u, '')}`;
+      }
+      openFileByPath(filePath);
     };
     window.addEventListener('cozypad:open-file', handleOpenFile);
     return () => {

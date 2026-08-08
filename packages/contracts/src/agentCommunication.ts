@@ -62,7 +62,6 @@ export const CreateAgentSessionRequestSchema = z.object({
   profileId: z.string().min(1),
   agentKind: AgentKindSchema,
   cwd: z.string().trim().min(1),
-  interactionMode: AgentInteractionModeSchema.optional(),
   title: z.string().trim().min(1).max(160).optional(),
   launchMode: z.string().trim().min(1).optional(),
   /** @deprecated Read only for persisted callers created before launchMode. */
@@ -113,14 +112,6 @@ export const AgyTranscriptRequestSchema = AgentSessionRequestSchema.extend({
   expectedPrompt: z.string().min(1).optional(),
 });
 export type AgyTranscriptRequest = z.infer<typeof AgyTranscriptRequestSchema>;
-
-export const AgentTerminalOpenRequestSchema = AgentSessionRequestSchema.extend({
-  cols: z.number().int().min(1).max(1000),
-  rows: z.number().int().min(1).max(1000),
-});
-export type AgentTerminalOpenRequest = z.infer<
-  typeof AgentTerminalOpenRequestSchema
->;
 
 export const MAX_AGENT_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_AGENT_ATTACHMENTS = 10;

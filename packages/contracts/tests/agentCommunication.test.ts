@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AgentTerminalOpenRequestSchema,
   AgentSessionDeletedEventSchema,
   ChatItemSchema,
   CreateAgentSessionRequestSchema,
@@ -46,22 +45,18 @@ describe('agent communication attachment contracts', () => {
     ).not.toHaveProperty('attachments');
   });
 
-  it('distinguishes structured chat from native AGY terminal sessions', () => {
+  it('accepts a create request without any interaction mode — every session is chat', () => {
+    // The terminal mode and its open-terminal request left with the
+    // screen-scraping path; a request that still carries the old field is
+    // tolerated (unknown keys strip) but nothing reads it.
     expect(
       CreateAgentSessionRequestSchema.parse({
         profileId: 'profile-1',
         agentKind: 'agy',
         cwd: '/srv/project',
         interactionMode: 'terminal',
-      }).interactionMode,
-    ).toBe('terminal');
-    expect(
-      AgentTerminalOpenRequestSchema.parse({
-        sessionId: 'session-1',
-        cols: 120,
-        rows: 36,
       }),
-    ).toEqual({ sessionId: 'session-1', cols: 120, rows: 36 });
+    ).not.toHaveProperty('interactionMode');
   });
 
   it('identifies the agent whose session was deleted', () => {

@@ -1016,7 +1016,6 @@ export function AgentsWorkspace({
         profileId,
         agentKind: agent,
         cwd: createCwd.trim(),
-        interactionMode: agent === 'agy' ? 'terminal' : 'chat',
         launchMode,
         ...(createTitle.trim() === '' ? {} : { title: createTitle.trim() }),
       });
@@ -1966,6 +1965,7 @@ export function AgentsWorkspace({
                       <TimelineErrorBoundary>
                         <ChatTimeline
                           sessionId={selectedSession.id}
+                          sessionCwd={selectedSession.cwd}
                           items={timeline}
                           sessionStatus={selectedSession.status}
                           sessionError={errorFor(selectedSession.id)}
@@ -2016,6 +2016,7 @@ export function AgentsWorkspace({
                       <TimelineErrorBoundary>
                         <ChatTimeline
                           sessionId={selectedSession.id}
+                          sessionCwd={selectedSession.cwd}
                           items={timeline}
                           sessionStatus={selectedSession.status}
                           sessionError={errorFor(selectedSession.id)}

@@ -224,6 +224,8 @@ export interface MarkdownViewProps {
   /** AGY keeps its existing diff/git-log code-block cards through this hook. */
   fallbackPre?: PreComponent;
   className?: string;
+  /** What relative paths in links are relative to — the session's cwd. */
+  cwd?: string;
 }
 
 /**
@@ -240,20 +242,47 @@ export interface MarkdownViewProps {
  * GFM/KaTeX/highlight plugins, the same Mermaid hook, the same error boundary.
  * A user pasting a mermaid fence should get the same diagram the agent would.
  */
-function MarkdownLink({ href, children, ...props }: ComponentPropsWithoutRef<'a'>) {
+/**
+ * The href, when it names something the Files workspace could open; null for
+ * everything else. `#anchor`, `mailto:` and other schemes used to dispatch
+ * too, yanking the user out of the chat with nothing to show for it.
+ */
+function pathTargetOf(href: string): string | null {
+  if (href.startsWith('file:///')) return href;
+  // Checked before the scheme test: `C:\notes.md` is a drive path, not a URL.
+  if (/^[A-Za-z]:[\\/]/u.test(href)) return href;
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(href)) return null;
+  if (href.startsWith('#')) return null;
+  if (
+    href.startsWith('/') ||
+    href.startsWith('./') ||
+    href.startsWith('../') ||
+    href.includes('/') ||
+    href.includes('\\')
+  ) {
+    return href;
+  }
+  return null;
+}
+
+function MarkdownLink({
+  href,
+  cwd,
+  children,
+  ...props
+}: ComponentPropsWithoutRef<'a'> & { cwd?: string }) {
   const handleClick = (e: React.MouseEvent) => {
-    if (href) {
-      const isExternal = href.startsWith('http://') || href.startsWith('https://');
-      const isFileScheme = href.startsWith('file:///');
-      if (isFileScheme || !isExternal) {
-        e.preventDefault();
-        window.dispatchEvent(
-          new CustomEvent('cozypad:open-file', {
-            detail: { path: href },
-          })
-        );
-      }
-    }
+    if (!href) return;
+    const target = pathTargetOf(href);
+    if (target === null) return;
+    e.preventDefault();
+    window.dispatchEvent(
+      new CustomEvent('cozypad:open-file', {
+        // The session's cwd rides along: agents emit repo-relative paths,
+        // and only the sender knows what they are relative to.
+        detail: { path: target, ...(cwd === undefined ? {} : { cwd }) },
+      }),
+    );
   };
   return (
     <a href={href} onClick={handleClick} {...props}>
@@ -267,6 +296,7 @@ export function MarkdownView({
   streaming = false,
   fallbackPre,
   className = 'assistant-markdown-container',
+  cwd,
 }: MarkdownViewProps) {
   const normalized = useMemo(
     () => normalizeHackmdDisplayMath(children),
@@ -285,10 +315,10 @@ export function MarkdownView({
       a: (componentProps) => {
         const { node, ...props } = componentProps;
         void node;
-        return <MarkdownLink {...props} />;
+        return <MarkdownLink {...props} cwd={cwd} />;
       },
     }),
-    [fallbackPre, streaming],
+    [fallbackPre, streaming, cwd],
   );
 
   if (children === '') return null;
@@ -315,12 +345,15 @@ export interface AssistantMarkdownProps {
   streaming?: boolean;
   /** AGY keeps its existing diff/git-log code-block cards through this hook. */
   fallbackPre?: PreComponent;
+  /** What relative paths in links are relative to — the session's cwd. */
+  cwd?: string;
 }
 
 export function AssistantMarkdown({
   children,
   streaming = false,
   fallbackPre,
+  cwd,
 }: AssistantMarkdownProps) {
   // The empty-text check lives BELOW the hooks: an assistant message's first
   // render is reliably `text: ''` (claude's first chunk is empty), and an
@@ -357,10 +390,10 @@ export function AssistantMarkdown({
       a: (componentProps) => {
         const { node, ...props } = componentProps;
         void node;
-        return <MarkdownLink {...props} />;
+        return <MarkdownLink {...props} cwd={cwd} />;
       },
     }),
-    [fallbackPre, streaming],
+    [fallbackPre, streaming, cwd],
   );
 
   if (children === '') return null;

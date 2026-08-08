@@ -12,7 +12,6 @@ import {
   AgentSessionDeletedEventSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
-  AgentTerminalOpenRequestSchema,
   AgentTimelineChangedEventSchema,
   AnswerAgentQuestionRequestSchema,
   DeclineAgentQuestionRequestSchema,
@@ -44,7 +43,6 @@ import {
   TerminalClosedEventSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
-  TerminalOpenedSchema,
   TerminalOutputEventSchema,
   TerminalResizeRequestSchema,
 } from '@cozypad/contracts';
@@ -243,14 +241,6 @@ const bridge: PlatformBridge = {
       await ipcRenderer.invoke(
         IpcChannels.agentAgyTranscript,
         AgyTranscriptRequestSchema.parse(request),
-      ),
-    ),
-
-  openAgentTerminal: async (request) =>
-    TerminalOpenedSchema.parse(
-      await ipcRenderer.invoke(
-        IpcChannels.agentTerminalOpen,
-        AgentTerminalOpenRequestSchema.parse(request),
       ),
     ),
 

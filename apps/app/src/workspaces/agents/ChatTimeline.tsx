@@ -15,6 +15,8 @@ import { MessageAttachments } from './MessageAttachments';
 export interface ChatTimelineProps {
   sessionId: string;
   items: ChatItem[];
+  /** What relative paths in message links resolve against. */
+  sessionCwd?: string;
   sessionStatus?: string;
   sessionError?: string;
   /**
@@ -247,6 +249,7 @@ function ChatTimelineMarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) 
 export function ChatTimeline({
   sessionId,
   items,
+  sessionCwd,
   sessionStatus,
   sessionError,
   onResolveApproval,
@@ -306,6 +309,7 @@ export function ChatTimeline({
                         <AssistantMarkdown
                           streaming={item.streaming}
                           fallbackPre={ChatTimelineMarkdownPre}
+                          cwd={sessionCwd}
                         >
                           {item.text}
                         </AssistantMarkdown>
@@ -320,6 +324,7 @@ export function ChatTimeline({
                         <MarkdownView
                           fallbackPre={ChatTimelineMarkdownPre}
                           className="user-markdown-container"
+                          cwd={sessionCwd}
                         >
                           {item.text}
                         </MarkdownView>

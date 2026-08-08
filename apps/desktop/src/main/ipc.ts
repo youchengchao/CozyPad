@@ -6,7 +6,6 @@ import {
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
   AgyTranscriptRequestSchema,
-  AgentTerminalOpenRequestSchema,
   AnswerAgentQuestionRequestSchema,
   DeclineAgentQuestionRequestSchema,
   ConnectRequestSchema,
@@ -470,27 +469,6 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     return agentCommunication.readAgyTranscript(
       AgyTranscriptRequestSchema.parse(raw),
     );
-  });
-
-  ipcMain.handle(IpcChannels.agentTerminalOpen, async (event, raw: unknown) => {
-    assertSender(event);
-    if (agentCommunication === null) {
-      throw new Error('Agent communication is unavailable in mock desktop mode');
-    }
-    const opened = await agentCommunication.openTerminal(
-      AgentTerminalOpenRequestSchema.parse(raw),
-    );
-    // Include every chunk emitted before this response. The renderer already
-    // subscribed, so sequence numbers prevent the replay/live overlap from
-    // being applied twice.
-    flushTerminalOutput();
-    const replay = terminalReplayBuffers.get(opened.terminalId);
-    if (replay === undefined || replay.data.length === 0) return opened;
-    return {
-      ...opened,
-      replayDataBase64: bytesToBase64(replay.data),
-      replayThroughSequence: replay.throughSequence,
-    };
   });
 
   ipcMain.handle(IpcChannels.agentSessionRename, (event, raw: unknown) => {

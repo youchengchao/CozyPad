@@ -521,12 +521,10 @@ describe('AgentCommunicationService', () => {
       agentKind: 'agy',
       cwd: '/srv/deep-learning',
       launchMode: 'sandbox',
-      interactionMode: 'chat',
     });
 
     expect(bundle.session).toMatchObject({
       agentKind: 'agy',
-      interactionMode: 'chat',
       status: 'ready',
     });
 
@@ -572,7 +570,6 @@ describe('AgentCommunicationService', () => {
       agentKind: 'agy',
       cwd: '/srv/deep-learning',
       launchMode: 'default',
-      interactionMode: 'chat',
     });
     let release: ((stopReason: string) => void) | undefined;
     acpRuntime.prompt = () =>
@@ -619,7 +616,6 @@ describe('AgentCommunicationService', () => {
       agentKind: 'agy',
       cwd: '/srv/deep-learning',
       launchMode: 'default',
-      interactionMode: 'chat',
     });
     const resolved: { requestId: string; optionId: string | null | undefined }[] = [];
     acpRuntime.resolveControl = (_sessionId, requestId, optionId) => {
@@ -642,7 +638,6 @@ describe('AgentCommunicationService', () => {
       agentKind: 'agy',
       cwd: '/srv/deep-learning',
       launchMode: 'default',
-      interactionMode: 'chat',
     });
     const resolved: (string | null | undefined)[] = [];
     acpRuntime.resolveControl = (_sessionId, _requestId, optionId) => {
@@ -1173,7 +1168,6 @@ describe('a remote session is not spawned as a local child', () => {
         agentKind: 'agy',
         cwd: '/srv/deep-learning',
         launchMode: 'default',
-        interactionMode: 'chat',
       }),
     ).rejects.toThrow(/remote host are not available yet/u);
   });

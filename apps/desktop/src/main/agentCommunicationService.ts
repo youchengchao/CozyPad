@@ -27,7 +27,6 @@ import type {
   AgentSessionListRequest,
   AgentSessionRequest,
   AgentSessionSummary,
-  AgentTerminalOpenRequest,
   AgentTimelineChangedEvent,
   AnswerAgentQuestionRequest,
   ChatItem,
@@ -42,7 +41,6 @@ import type {
   SendAgentMessageRequest,
   SetAgentSessionConfigOptionRequest,
   UploadAgentAttachmentsRequest,
-  TerminalOpened,
 } from '@cozypad/contracts';
 import {
   buildClaudeStreamingArgv,
@@ -150,7 +148,6 @@ export interface AgentCommunicationPort {
   create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle>;
   revive(request: AgentSessionRequest): Promise<AgentSessionBundle>;
   readAgyTranscript(request: AgyTranscriptRequest): Promise<AgyTranscript>;
-  openTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened>;
   rename(request: RenameAgentSessionRequest): Promise<void>;
   delete(request: AgentSessionRequest): Promise<DeleteAgentSessionResult>;
   uploadAttachments(
@@ -1259,20 +1256,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
           })
         : agentKind === 'codex'
           ? [executablePath, 'app-server', '--listen', 'stdio://']
-          : interactionMode === 'terminal'
-            ? [
-                executablePath,
-                ...(options.resumeConversationId !== undefined
-                  ? ['--conversation', options.resumeConversationId]
-                  : options.resumeLatest === true
-                    ? ['--continue']
-                    : []),
-                ...(launchMode === 'sandbox' ? ['--sandbox'] : []),
-                ...(launchMode === 'bypassPermissions'
-                  ? ['--dangerously-skip-permissions']
-                  : []),
-              ]
-            : [remote.commandShell, '-lc', 'while :; do sleep 3600; done'];
+          : [remote.commandShell, '-lc', 'while :; do sleep 3600; done'];
     const commandLine = argv.map((argument) => quoteShellArg(argument)).join(' ');
     const dir = remoteSessionDir(options.sessionId);
     const launchPath =
@@ -2060,55 +2044,6 @@ exit "$agent_status"`;
     return { scopes };
   }
 
-  async openTerminal(request: AgentTerminalOpenRequest): Promise<TerminalOpened> {
-    const stored = this.requireSession(request.sessionId);
-    this.assertSessionConnected(stored);
-    if (
-      stored.record.provisionalIdentity.agentKind !== 'agy' ||
-      stored.interactionMode !== 'terminal'
-    ) {
-      throw new Error('This session does not expose a native AGY terminal');
-    }
-    const profileId = stored.record.provisionalIdentity.connectionProfileId;
-    // A local session already owns a pseudo-console — there is nothing to
-    // attach to, and spawning a second one would start a second agent.
-    const existing = this.options.attachExisting?.(
-      stored.record.provisionalIdentity.tmuxSessionId,
-    );
-    if (existing !== undefined) return { terminalId: existing };
-    // A local session IS its console; with the console gone there is nothing
-    // to attach to, and the tmux command below would just fail in the shell.
-    if (this.options.isLocalHost?.(profileId) === true) {
-      throw new Error(
-        'This session\'s process has ended — select the session again to wake it.',
-      );
-    }
-
-    const tmux =
-      this.options.tmux.socketName === 'default'
-        ? 'tmux'
-        : `tmux -L ${quoteShellArg(this.options.tmux.socketName)} -f /dev/null`;
-    const target = quoteShellArg(
-      stored.record.provisionalIdentity.tmuxSessionId,
-    );
-    // Start tmux as the PTY channel's command. Typing `exec tmux ...` into a
-    // login shell races shell startup and, on some SSH servers, leaves tmux
-    // connected to a non-TTY stdin even though a shell channel was requested.
-    //
-    // The status line is turned off first. CozyPad parses this screen as AGY's
-    // UI, so tmux's own row would both be read as agent output and push AGY's
-    // prompt out of the bottom rows the parser inspects.
-    const terminalId = await this.options.transport.openTerminal(
-      {
-        profileId,
-        cols: request.cols,
-        rows: request.rows,
-      },
-      `${tmux} set-option -t ${target} status off >/dev/null 2>&1; exec ${tmux} attach-session -t ${target}`,
-    );
-    return { terminalId };
-  }
-
   async uploadAttachments(
     request: UploadAgentAttachmentsRequest,
   ): Promise<AgentAttachment[]> {
@@ -2201,9 +2136,6 @@ exit "$agent_status"`;
   async send(request: SendAgentMessageRequest): Promise<void> {
     const stored = this.requireSession(request.sessionId);
     this.assertSessionConnected(stored);
-    if (stored.interactionMode === 'terminal') {
-      throw new Error('This AGY session uses the native CLI; send input in its terminal');
-    }
     if (
       stored.activeTurn !== undefined ||
       stored.record.status === 'running' ||

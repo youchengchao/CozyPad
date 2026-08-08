@@ -546,8 +546,6 @@ export function createCapacitorBridge(
     reviveAgentSession: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     readAgyTranscript: () => Promise.resolve({ turns: [] }),
-    openAgentTerminal: () =>
-      Promise.reject(new Error('Native AGY terminal sessions are not available on mobile yet')),
     renameAgentSession: () =>
       Promise.reject(new Error('Agent communication is not available on mobile yet')),
     deleteAgentSession: () =>
