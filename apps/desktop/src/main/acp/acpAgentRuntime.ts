@@ -25,12 +25,37 @@ import {
   type AcpTimelineState,
 } from './acpTimeline';
 
+/**
+ * How a session continues where a previous agent process left off.
+ *
+ * `acpSessionId` names the conversation to reopen — the ACP session id for
+ * agents where it survives the process (claude), or the agent's own
+ * conversation id for adapters that accept one in that position (agy).
+ * `resumeMeta` rides on `session/resume` for adapters that carry the
+ * conversation id in `_meta`. `history` is the transcript CozyPad itself
+ * persisted; it seeds the timeline so the user keeps seeing the conversation
+ * the agent is rejoining.
+ */
+export interface AcpSessionContinuation {
+  readonly acpSessionId: string;
+  readonly resumeMeta?: Readonly<Record<string, unknown>>;
+  readonly history?: readonly ChatItem[];
+}
+
 export interface AcpRuntimeCallbacks {
   /** Called whenever the timeline changed, already coalesced by the caller. */
   onTimeline(sessionId: string, items: readonly ChatItem[]): void;
   /** A permission request the user has to answer. Resolve with an optionId. */
   onPermission(sessionId: string, item: ChatItem): Promise<string | null>;
   onError(sessionId: string, message: string): void;
+  /**
+   * `_meta` from a prompt response, verbatim.
+   *
+   * This is where adapters report identity — agy names its conversation id
+   * here on every turn — and the service is the one that knows which keys to
+   * persist, so the block is forwarded rather than interpreted.
+   */
+  onPromptMeta?(sessionId: string, meta: Readonly<Record<string, unknown>>): void;
   /**
    * The agent's slash commands, whenever it announces them.
    *
@@ -56,6 +81,12 @@ interface Running {
   acpSessionId: string;
   state: AcpTimelineState;
   readonly clock: AcpTimelineClock;
+  /**
+   * True while `session/load` replays the stored conversation. CozyPad
+   * persisted its own transcript, so the replayed notifications are dropped —
+   * reducing them would duplicate what the continuation's history seeded.
+   */
+  replaying: boolean;
   /**
    * Every control request currently awaiting an answer, keyed by the id the
    * timeline item carries.
@@ -98,6 +129,43 @@ function describeAgentError(error: unknown): string {
   return parts.join(' — ');
 }
 
+/** Whether the agent said it can replay a stored conversation (`session/load`). */
+function offersLoad(capabilities: unknown): boolean {
+  return (
+    typeof capabilities === 'object' &&
+    capabilities !== null &&
+    (capabilities as { loadSession?: unknown }).loadSession === true
+  );
+}
+
+/**
+ * Whether the agent said it can continue a conversation without replaying it
+ * (`session/resume`). A wire extension not every SDK types, so this reads the
+ * shape rather than trusting a declaration.
+ */
+function offersResume(capabilities: unknown): boolean {
+  if (typeof capabilities !== 'object' || capabilities === null) return false;
+  const sessions = (capabilities as { sessionCapabilities?: unknown }).sessionCapabilities;
+  return (
+    typeof sessions === 'object' &&
+    sessions !== null &&
+    (sessions as { resume?: unknown }).resume !== undefined
+  );
+}
+
+/** The config options an open-session response carried, if any. */
+function configOptionsOf(response: unknown): unknown {
+  return (response as Record<string, unknown> | null)?.['configOptions'] ?? [];
+}
+
+/** What opening a session established, whichever wire method opened it. */
+interface OpenedSession {
+  readonly acpSessionId: string;
+  readonly configOptions: unknown;
+  /** True when the agent really continued the previous conversation. */
+  readonly continued: boolean;
+}
+
 export class AcpAgentRuntime {
   readonly #sessions = new Map<string, Running>();
 
@@ -121,27 +189,32 @@ export class AcpAgentRuntime {
   /**
    * Starts an agent for a session and opens an ACP session on it.
    *
-   * `session/new` is where an agent reports what it can do and which models it
-   * offers, so the caller gets that back rather than having to ask again.
+   * With a continuation, the previous conversation is reopened when the agent
+   * offers a way to; without one — or when the agent cannot — this falls back
+   * to `session/new`, and `continued` in the result says which happened.
+   * Opening a session is also where an agent reports what it can do and which
+   * models it offers, so the caller gets that back rather than having to ask
+   * again.
    */
   async start(
     sessionId: string,
     rawCwd: string,
     agentKind = 'agy',
+    continuation?: AcpSessionContinuation,
     // Translated once, here, so the spawn and the agent agree. Getting this
     // wrong is quiet rather than loud: the child would start in the right place
     // while `--add-dir /c/Users/name` told agy to look somewhere that does not
     // exist on Windows, and it would answer confidently about nothing.
     cwd: string = toLocalPath(rawCwd),
     spec: AcpLaunchSpec = launchSpecFor(agentKind, cwd),
-  ): Promise<{ acpSessionId: string; configOptions: unknown }> {
+  ): Promise<OpenedSession> {
     this.stop(sessionId);
 
     const clock = defaultClock();
     const handlers: AcpClientHandlers = {
       onSessionUpdate: (event: AcpSessionEvent) => {
         const running = this.#sessions.get(sessionId);
-        if (running === undefined) return;
+        if (running === undefined || running.replaying) return;
         running.state = reduceAcpEvent(running.state, event, running.clock);
         this.callbacks.onTimeline(sessionId, running.state.items);
       },
@@ -202,21 +275,114 @@ export class AcpAgentRuntime {
       state: emptyAcpTimeline(),
       clock,
       pending: new Map(),
+      replaying: false,
     };
+    if (continuation?.history !== undefined) {
+      running.state = { ...running.state, items: [...continuation.history] };
+    }
     this.#sessions.set(sessionId, running);
 
     try {
-      await child.handle.initialize();
-      const opened = await child.handle.newSession({ cwd, mcpServers: [] });
-      running.acpSessionId = opened.sessionId;
-      return {
-        acpSessionId: opened.sessionId,
-        configOptions: (opened as unknown as Record<string, unknown>)['configOptions'] ?? [],
-      };
+      const initialized = await child.handle.initialize();
+      const opened = await this.#openSession(
+        sessionId,
+        running,
+        cwd,
+        initialized.agentCapabilities,
+        continuation,
+      );
+      running.acpSessionId = opened.acpSessionId;
+      return opened;
     } catch (error) {
       this.stop(sessionId);
       throw error;
     }
+  }
+
+  /**
+   * Opens the conversation on a freshly spawned agent.
+   *
+   * Continuing beats starting over, so a continuation is tried first; the
+   * fallback is the same honest new conversation a capability-less agent gets.
+   * The caller learns which happened through `continued`, because "the user
+   * resumed" and "the agent actually continued" are different facts and only
+   * the agent knows the second one.
+   */
+  async #openSession(
+    sessionId: string,
+    running: Running,
+    cwd: string,
+    capabilities: unknown,
+    continuation: AcpSessionContinuation | undefined,
+  ): Promise<OpenedSession> {
+    const continued =
+      continuation === undefined
+        ? null
+        : await this.#continueSession(sessionId, running, cwd, capabilities, continuation);
+    if (continued !== null) return continued;
+    const opened = await running.child.handle.newSession({ cwd, mcpServers: [] });
+    return {
+      acpSessionId: opened.sessionId,
+      configOptions: configOptionsOf(opened),
+      continued: false,
+    };
+  }
+
+  /**
+   * Reopens the previous conversation, or returns null when the agent cannot.
+   *
+   * `session/load` replays the whole conversation and is preferred;
+   * `session/resume` continues without replaying. A conversation the agent no
+   * longer has must not stop the session from opening at all, so a refusal is
+   * reported and answered with null rather than thrown.
+   */
+  async #continueSession(
+    sessionId: string,
+    running: Running,
+    cwd: string,
+    capabilities: unknown,
+    continuation: AcpSessionContinuation,
+  ): Promise<OpenedSession | null> {
+    const handle = running.child.handle;
+    try {
+      if (offersLoad(capabilities)) {
+        running.replaying = true;
+        try {
+          const loaded = await handle.loadSession({
+            sessionId: continuation.acpSessionId,
+            cwd,
+            mcpServers: [],
+          });
+          return {
+            acpSessionId: continuation.acpSessionId,
+            configOptions: configOptionsOf(loaded),
+            continued: true,
+          };
+        } finally {
+          running.replaying = false;
+        }
+      }
+      if (offersResume(capabilities)) {
+        const resumed = await handle.resumeSession({
+          sessionId: continuation.acpSessionId,
+          cwd,
+          ...(continuation.resumeMeta === undefined
+            ? {}
+            : { _meta: { ...continuation.resumeMeta } }),
+        });
+        return {
+          acpSessionId: continuation.acpSessionId,
+          configOptions: configOptionsOf(resumed),
+          continued: true,
+        };
+      }
+    } catch (error) {
+      this.callbacks.onError(
+        sessionId,
+        `could not continue the previous conversation: ${describeAgentError(error)}`,
+      );
+    }
+    return null;
   }
 
   /**
@@ -250,6 +416,8 @@ export class AcpAgentRuntime {
         sessionId: running.acpSessionId,
         prompt: [{ type: 'text', text }],
       });
+      const meta = (response as { _meta?: Record<string, unknown> })._meta;
+      if (meta !== undefined) this.callbacks.onPromptMeta?.(sessionId, meta);
       running.state = settleAcpTimeline(running.state);
       this.callbacks.onTimeline(sessionId, running.state.items);
       return response.stopReason;
@@ -300,13 +468,6 @@ export class AcpAgentRuntime {
     if (running === undefined || pending === undefined) return;
     running.pending.delete(requestId);
     pending.resolve(optionId);
-  }
-
-  /** Seeds a restored transcript so history survives a restart. */
-  seed(sessionId: string, items: readonly ChatItem[]): void {
-    const running = this.#sessions.get(sessionId);
-    if (running === undefined) return;
-    running.state = { ...running.state, items: [...items] };
   }
 
   stop(sessionId: string): void {

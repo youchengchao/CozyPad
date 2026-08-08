@@ -155,6 +155,195 @@ describe('two permission requests open at once', () => {
   }, 15_000);
 });
 
+/**
+ * A child whose capabilities the test scripts, recording every open-session
+ * call. `replayOnLoad` imitates what `session/load` really does: stream the
+ * stored conversation back as notifications while the request is in flight.
+ */
+function continuableChild(options: {
+  capabilities?: unknown;
+  loadFails?: boolean;
+  replayOnLoad?: string;
+  promptMeta?: Record<string, unknown>;
+}): {
+  child: AcpChild;
+  captured: { handlers?: AcpClientHandlers };
+  calls: { method: string; params: Record<string, unknown> }[];
+} {
+  const captured: { handlers?: AcpClientHandlers } = {};
+  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  const replay = (sessionId: string, text: string) => {
+    captured.handlers?.onSessionUpdate(
+      {
+        sessionId,
+        kind: 'agent_message_chunk',
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+      } as never,
+    );
+  };
+  const child: AcpChild = {
+    handle: {
+      initialize: async () => ({
+        protocolVersion: 1,
+        agentCapabilities: options.capabilities ?? {},
+        authMethods: [],
+      }),
+      newSession: async (params: Record<string, unknown>) => {
+        calls.push({ method: 'session/new', params });
+        return { sessionId: 'fresh-1' };
+      },
+      loadSession: async (params: Record<string, unknown>) => {
+        calls.push({ method: 'session/load', params });
+        if (options.loadFails === true) throw new Error('no such session');
+        if (options.replayOnLoad !== undefined) {
+          replay(params['sessionId'] as string, options.replayOnLoad);
+        }
+        return {};
+      },
+      resumeSession: async (params: Record<string, unknown>) => {
+        calls.push({ method: 'session/resume', params });
+        return {};
+      },
+      prompt: async () => ({
+        stopReason: 'end_turn',
+        ...(options.promptMeta === undefined ? {} : { _meta: options.promptMeta }),
+      }),
+      cancel: async () => undefined,
+      setSessionConfigOption: async () => ({}),
+    } as never,
+    kill: () => undefined,
+  };
+  return { child, captured, calls };
+}
+
+function runtimeFor(child: AcpChild, captured: { handlers?: AcpClientHandlers }): {
+  runtime: AcpAgentRuntime;
+  promptMeta: { sessionId: string; meta: Record<string, unknown> }[];
+} {
+  const promptMeta: { sessionId: string; meta: Record<string, unknown> }[] = [];
+  const runtime = new AcpAgentRuntime(
+    {
+      onTimeline: () => undefined,
+      onPermission: () => new Promise<string | null>(() => undefined),
+      onError: () => undefined,
+      onPromptMeta: (sessionId, meta) => {
+        promptMeta.push({ sessionId, meta: { ...meta } });
+      },
+    },
+    (_spec, handlers) => {
+      captured.handlers = handlers;
+      return child;
+    },
+  );
+  return { runtime, promptMeta };
+}
+
+const historyItem: ChatItem = {
+  kind: 'message',
+  id: 'old-1',
+  timestamp: '2026-08-08T00:00:00.000Z',
+  role: 'assistant',
+  text: 'the previous conversation',
+} as ChatItem;
+
+describe('continuing a previous conversation', () => {
+  it('loads the old session when the agent can replay, and drops the replay', async () => {
+    // CozyPad persisted its own transcript, seeded as `history`. Reducing the
+    // replay as well would show the whole conversation twice.
+    const { child, captured, calls } = continuableChild({
+      capabilities: { loadSession: true },
+      replayOnLoad: 'replayed text the timeline must not duplicate',
+    });
+    const { runtime } = runtimeFor(child, captured);
+
+    const opened = await runtime.start('s1', '/workspace', 'claude', {
+      acpSessionId: 'conv-42',
+      history: [historyItem],
+    });
+
+    expect(opened).toMatchObject({ acpSessionId: 'conv-42', continued: true });
+    expect(calls).toEqual([
+      {
+        method: 'session/load',
+        params: { sessionId: 'conv-42', cwd: '/workspace', mcpServers: [] },
+      },
+    ]);
+    expect(runtime.itemsFor('s1')).toEqual([historyItem]);
+  });
+
+  it('resumes without replay when that is all the agent offers, carrying _meta', async () => {
+    const { child, captured, calls } = continuableChild({
+      capabilities: { loadSession: false, sessionCapabilities: { resume: {} } },
+    });
+    const { runtime } = runtimeFor(child, captured);
+
+    const opened = await runtime.start('s1', '/workspace', 'agy', {
+      acpSessionId: 'conv-7',
+      resumeMeta: { 'cozypad.dev/agy-conversation-id': 'conv-7' },
+      history: [historyItem],
+    });
+
+    expect(opened).toMatchObject({ acpSessionId: 'conv-7', continued: true });
+    expect(calls).toEqual([
+      {
+        method: 'session/resume',
+        params: {
+          sessionId: 'conv-7',
+          cwd: '/workspace',
+          _meta: { 'cozypad.dev/agy-conversation-id': 'conv-7' },
+        },
+      },
+    ]);
+    expect(runtime.itemsFor('s1')).toEqual([historyItem]);
+  });
+
+  it('falls back to a new session when the agent cannot continue', async () => {
+    const { child, captured, calls } = continuableChild({ capabilities: {} });
+    const { runtime } = runtimeFor(child, captured);
+
+    const opened = await runtime.start('s1', '/workspace', 'codex', {
+      acpSessionId: 'conv-dead',
+      history: [historyItem],
+    });
+
+    // `continued: false` is the honest answer the service turns into its
+    // "the agent does not remember this" notice.
+    expect(opened).toMatchObject({ acpSessionId: 'fresh-1', continued: false });
+    expect(calls.map((call) => call.method)).toEqual(['session/new']);
+    expect(runtime.itemsFor('s1')).toEqual([historyItem]);
+  });
+
+  it('falls back to a new session when the old conversation is gone', async () => {
+    // A conversation the agent no longer has must not stop the session from
+    // opening at all.
+    const { child, captured, calls } = continuableChild({
+      capabilities: { loadSession: true },
+      loadFails: true,
+    });
+    const { runtime } = runtimeFor(child, captured);
+
+    const opened = await runtime.start('s1', '/workspace', 'claude', {
+      acpSessionId: 'conv-gone',
+    });
+
+    expect(opened).toMatchObject({ acpSessionId: 'fresh-1', continued: false });
+    expect(calls.map((call) => call.method)).toEqual(['session/load', 'session/new']);
+  });
+
+  it('forwards a prompt response _meta block, verbatim', async () => {
+    // This is the only place agy names its conversation id; dropping it is
+    // what forced Resume to guess from the disk.
+    const meta = { 'cozypad.dev/agy-conversation-id': 'conv-observed' };
+    const { child, captured } = continuableChild({ promptMeta: meta });
+    const { runtime, promptMeta } = runtimeFor(child, captured);
+
+    await runtime.start('s1', '/workspace');
+    await runtime.prompt('s1', 'hello');
+
+    expect(promptMeta).toEqual([{ sessionId: 's1', meta }]);
+  });
+});
+
 describe('a permission request waits for the user, and only for the user', () => {
   it('does not settle on its own', async () => {
     // main.ts used to answer `null` here, which declined every tool claude and

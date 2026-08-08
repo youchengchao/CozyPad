@@ -45,8 +45,10 @@ import type {
 import {
   buildClaudeStreamingArgv,
 } from '@cozypad/adapter-claude';
+import { AGY_CONVERSATION_META_KEY } from '@cozypad/adapter-agy';
 import { reconcileSessions } from '@cozypad/tmux-runtime';
 import type { TmuxRuntime } from '@cozypad/tmux-runtime';
+import type { AcpSessionContinuation } from './acp/acpAgentRuntime';
 import type { ProfileStorePort } from './profileStore';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -193,7 +195,12 @@ export interface AgentCommunicationServiceOptions {
    */
   acp?: {
     has(sessionId: string): boolean;
-    start(sessionId: string, cwd: string, agentKind: string): Promise<unknown>;
+    start(
+      sessionId: string,
+      cwd: string,
+      agentKind: string,
+      continuation?: AcpSessionContinuation,
+    ): Promise<{ acpSessionId: string; continued: boolean }>;
     prompt(sessionId: string, text: string): Promise<string>;
     cancel(sessionId: string): Promise<void>;
     /**
@@ -1398,13 +1405,7 @@ exit "$agent_status"`;
       // not exist yet, so a remote session says so rather than failing at a
       // spawn with a message about the wrong thing.
       this.assertAcpSupported(stored);
-      if (this.options.acp !== undefined) {
-        await this.options.acp.start(
-          stored.record.id,
-          stored.record.cwd,
-          stored.record.provisionalIdentity.agentKind,
-        );
-      }
+      await this.startAcpAgent(stored);
       stored.record = {
         ...stored.record,
         status: 'ready',
@@ -1448,6 +1449,113 @@ exit "$agent_status"`;
    */
   private async startAgentConversation(): Promise<void> {
     return Promise.resolve();
+  }
+
+  /**
+   * Starts the session's ACP agent, continuing the given conversation when one
+   * is offered. Returns whether the agent actually continued it.
+   *
+   * Shared by create, revive and the lazy start in send, so a session cannot
+   * lose its context just because of which door the restart came through.
+   */
+  private async startAcpAgent(
+    stored: StoredAgentSession,
+    continuation?: AcpSessionContinuation,
+  ): Promise<boolean> {
+    if (this.options.acp === undefined) return false;
+    const agentKind = stored.record.provisionalIdentity.agentKind;
+    const started = await this.options.acp.start(
+      stored.record.id,
+      stored.record.cwd,
+      agentKind,
+      continuation,
+    );
+    // For claude the ACP session id IS the CLI's conversation id — the one
+    // `--resume` takes — so learning it at start is what makes a later revive
+    // able to continue instead of starting over. agy's id is not knowable
+    // here; it arrives in the first prompt response's `_meta` instead.
+    if (agentKind === 'claude') {
+      this.bindAgentConversation(stored, started.acpSessionId);
+    }
+    return started.continued;
+  }
+
+  /**
+   * What a session hands the ACP runtime to continue its old conversation.
+   *
+   * The bound identity is the source of truth; revive passes a disk-guessed
+   * AGY id when no binding exists yet. `undefined` means there is nothing to
+   * continue and the agent starts fresh — which is honest for codex, whose
+   * thread died with its process.
+   */
+  private acpContinuationFor(
+    stored: StoredAgentSession,
+    conversationId = stored.record.identity?.agentConversationId,
+  ): AcpSessionContinuation | undefined {
+    if (conversationId === undefined || conversationId === null) return undefined;
+    const agentKind = stored.record.provisionalIdentity.agentKind;
+    return {
+      acpSessionId: conversationId,
+      ...(agentKind === 'agy'
+        ? { resumeMeta: { [AGY_CONVERSATION_META_KEY]: conversationId } }
+        : {}),
+      history: [...stored.timeline],
+    };
+  }
+
+  /**
+   * Binds the conversation the agent is actually in.
+   *
+   * A revived agent can end up in a NEW conversation — Claude's `--resume` may
+   * fork, a guessed AGY id may miss — and the binding's whole job is to find
+   * this session's conversation again, so it follows the agent rather than
+   * pinning the record to a dead id (SPEC 275-278).
+   */
+  private bindAgentConversation(
+    stored: StoredAgentSession,
+    agentConversationId: string,
+  ): void {
+    if (stored.record.identity?.agentConversationId === agentConversationId) return;
+    const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    const fingerprint = this.options.getHostFingerprint(profileId);
+    if (fingerprint === undefined) {
+      this.events.onError({
+        sessionId: stored.record.id,
+        message: 'Cannot bind agent identity without a trusted host fingerprint',
+      });
+      return;
+    }
+    const binding = {
+      agentConversationId,
+      remoteHostFingerprint: fingerprint,
+      tmuxPaneId: stored.paneId,
+      now: new Date().toISOString(),
+    };
+    try {
+      stored.record = bindAgentIdentity(stored.record, binding);
+    } catch {
+      stored.record = bindAgentIdentity({ ...stored.record, identity: null }, binding);
+      stored.resumeContinuity = 'new';
+    }
+  }
+
+  /**
+   * Learns the conversation id an agent reported in a turn's `_meta`.
+   *
+   * AGY names its conversation this way on every prompt response; binding it
+   * is what lets a later Resume reopen the same conversation instead of
+   * guessing from the disk.
+   */
+  notePromptMeta(sessionId: string, meta: Readonly<Record<string, unknown>>): void {
+    const conversationId = meta[AGY_CONVERSATION_META_KEY];
+    if (typeof conversationId !== 'string' || conversationId === '') return;
+    const stored = this.sessions.get(sessionId);
+    if (stored === undefined) return;
+    if (stored.record.identity?.agentConversationId === conversationId) return;
+    this.bindAgentConversation(stored, conversationId);
+    stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
+    void this.persist();
+    this.emitSession(stored);
   }
 
   /**
@@ -1615,12 +1723,20 @@ exit "$agent_status"`;
     try {
       await this.startAgentConversation();
       this.assertAcpSupported(stored);
-      if (this.options.acp !== undefined) {
-        await this.options.acp.start(
-          stored.record.id,
-          stored.record.cwd,
-          stored.record.provisionalIdentity.agentKind,
-        );
+      const continued = await this.startAcpAgent(
+        stored,
+        this.acpContinuationFor(stored, resumeConversationId),
+      );
+      // The labels above were computed from what this side hoped for; the
+      // agent has now said what it could actually do (SPEC 274-278).
+      if (!continued && stored.resumeContinuity !== 'new') {
+        stored.resumeContinuity = 'new';
+        stored.timeline.push({
+          id: `notice-${randomUUID()}`,
+          kind: 'notice',
+          text: '接不回先前的原生對話，這次是新的對話；分隔線之前的內容 agent 不記得。',
+          timestamp: new Date().toISOString(),
+        });
       }
       stored.record = {
         ...stored.record,
@@ -1629,6 +1745,7 @@ exit "$agent_status"`;
       };
       await this.persist();
       this.emitSession(stored);
+      this.emitTimeline(stored);
       return this.bundle(stored);
     } catch (error) {
       const surfacedError = await this.withStartupDiagnostics(
@@ -2128,11 +2245,10 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       }
       this.assertAcpSupported(stored);
       if (!this.options.acp.has(stored.record.id)) {
-        await this.options.acp.start(
-          stored.record.id,
-          stored.record.cwd,
-          stored.record.provisionalIdentity.agentKind,
-        );
+        // The app restarted since this session last spoke: the agent process
+        // is gone, but the bound conversation is not. Continuing it here is
+        // what makes "reopen the app and keep talking" work.
+        await this.startAcpAgent(stored, this.acpContinuationFor(stored));
       }
       const stopReason = await this.options.acp.prompt(stored.record.id, messageText);
       // The turn is over, so the session is usable again.

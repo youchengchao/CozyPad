@@ -253,7 +253,10 @@ describe('AgentCommunicationService', () => {
   let acpPromptError: Error | null;
   let acpRuntime: {
     has(sessionId: string): boolean;
-    start(sessionId: string, cwd: string): Promise<unknown>;
+    start(
+      sessionId: string,
+      cwd: string,
+    ): Promise<{ acpSessionId: string; continued: boolean }>;
     prompt(sessionId: string, text: string): Promise<string>;
     cancel(sessionId: string): Promise<void>;
     resolveControl(sessionId: string, requestId: string, optionId?: string | null): void;
@@ -269,7 +272,7 @@ describe('AgentCommunicationService', () => {
     acpPromptError = null;
     acpRuntime = {
       has: () => true,
-      start: async () => ({}),
+      start: async () => ({ acpSessionId: 'acp-test', continued: false }),
       prompt: async (sessionId, text) => {
         acpPrompts.push({ sessionId, text });
         if (acpPromptError !== null) throw acpPromptError;
@@ -980,7 +983,7 @@ describe('a remote session is not spawned as a local child', () => {
       getHostFingerprint: () => 'SHA256:test',
       acp: {
         has: () => false,
-        start: async () => ({}),
+        start: async () => ({ acpSessionId: 'acp-test', continued: false }),
         prompt: async () => 'end_turn',
         cancel: async () => undefined,
         resolveControl: () => undefined,

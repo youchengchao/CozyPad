@@ -204,6 +204,11 @@ async function createServices(
     onCommands: (sessionId, commands) => {
       agentCommunication.setSlashCommands(sessionId, commands);
     },
+    // Adapters report identity here — agy names its conversation id on every
+    // prompt response — and binding it is what a later Resume continues from.
+    onPromptMeta: (sessionId, meta) => {
+      agentCommunication.notePromptMeta(sessionId, meta);
+    },
     onError: (sessionId, message) => {
       console.error('[cozypad] acp session', sessionId, message);
     },
