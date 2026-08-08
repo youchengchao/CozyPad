@@ -49,9 +49,6 @@ export const AgentSessionSummarySchema = z.object({
   unread: z.number().int().min(0).default(0),
   slashCommands: z.array(z.string().trim().min(1)).default([]),
   slashCommandDescriptions: z.record(z.string(), z.string()).optional(),
-  slashCommandBehaviors: z
-    .record(z.string(), z.enum(['insert', 'submit', 'picker']))
-    .optional(),
   /** SPEC 1445: which side completes each command — CozyPad or the Agent. */
   slashCommandOwners: z
     .record(z.string(), z.enum(['cozypad', 'agent']))
@@ -254,7 +251,6 @@ export type ChatItem = z.infer<typeof ChatItemSchema>;
 export interface SlashCommand {
   name: string;
   description: string;
-  behavior?: 'insert' | 'submit' | 'picker';
   /** Who completes it: CozyPad locally, or the Agent (SPEC 1445). */
   owner?: 'cozypad' | 'agent';
 }

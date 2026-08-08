@@ -31,7 +31,6 @@ import type { TelemetrySnapshot } from './telemetry';
 import type {
   AgentCommunicationErrorEvent,
   AgentAttachment,
-  AgentAttachmentUpload,
   AgentDetectionRequest,
   AgentInstallation,
   AgentSessionBundle,
@@ -135,8 +134,6 @@ export interface PlatformBridge {
   /** 系統剪貼簿；桌面走原生 API，不受 renderer 權限限制。 */
   readClipboard(): Promise<string>;
   writeClipboard(text: string): Promise<void>;
-  /** Temporarily stage a raster image for a native terminal agent's Ctrl+V. */
-  writeClipboardImage?(attachment: AgentAttachmentUpload): Promise<void>;
 
   /** tmux 佈建：連線後自動偵測，缺少或版本過舊時由 UI 詢問是否安裝。 */
   getTmuxStatus(): Promise<TmuxStatus>;

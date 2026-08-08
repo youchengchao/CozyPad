@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
-  AgentAttachmentUploadSchema,
   AgentCommunicationErrorEventSchema,
   AgentAttachmentBatchSchema,
   AgentDetectionRequestSchema,
@@ -168,12 +167,6 @@ const bridge: PlatformBridge = {
   readClipboard: () => ipcRenderer.invoke(IpcChannels.clipboardRead),
 
   writeClipboard: (text) => ipcRenderer.invoke(IpcChannels.clipboardWrite, text),
-
-  writeClipboardImage: (attachment) =>
-    ipcRenderer.invoke(
-      IpcChannels.clipboardWriteImage,
-      AgentAttachmentUploadSchema.parse(attachment),
-    ),
 
   getTmuxStatus: () => ipcRenderer.invoke(IpcChannels.tmuxStatus),
 

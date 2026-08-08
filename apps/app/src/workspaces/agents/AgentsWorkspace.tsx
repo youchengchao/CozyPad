@@ -1325,26 +1325,6 @@ export function AgentsWorkspace({
     }
   };
 
-  const sendSlashCommand = async (sessionId: string, text: string) => {
-    setError(null);
-    try {
-      await bridge.sendAgentMessage({
-        sessionId,
-        text,
-        attachmentIds: [],
-      });
-    } catch (commandError) {
-      setDrafts((current) => ({ ...current, [sessionId]: text }));
-      setError(errorText(commandError));
-    }
-  };
-
-  const selectSlashCommand = (command: SlashCommand) => {
-    if (selectedSessionId === null) return;
-    const name = command.name.replace(/^\/+/, '').toLowerCase();
-    void sendSlashCommand(selectedSessionId, `/${name}`);
-  };
-
   const attachFiles = (sessionId: string, files: File[]) => {
     if (files.length === 0) return;
     const buffered = bufferAttachmentFiles(
@@ -1989,10 +1969,6 @@ export function AgentsWorkspace({
                           name,
                           selectedSession.slashCommandDescriptions,
                         ),
-                        behavior:
-                          selectedSession.slashCommandBehaviors?.[
-                            name.replace(/^\/+/, '').toLowerCase()
-                          ],
                         owner:
                           selectedSession.slashCommandOwners?.[
                             name.replace(/^\/+/, '').toLowerCase()
@@ -2028,7 +2004,6 @@ export function AgentsWorkspace({
                       onRemoveAttachment={(attachmentId) =>
                         removeAttachment(selectedSession.id, attachmentId)
                       }
-                      onCommand={selectSlashCommand}
                       onStop={() => void stopSession(selectedSession.id)}
                       onSend={(text) => void sendMessage(text)}
                     />

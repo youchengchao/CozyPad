@@ -8,7 +8,6 @@ import {
   isExactSlashCommand,
   navigatePromptHistory,
   normalizeSlashCommandName,
-  slashCommandSelectionBehavior,
 } from '../ChatComposer';
 import {
   bufferAttachmentFiles,
@@ -140,18 +139,6 @@ describe('Challenger 1 - Iteration 2 Empirical Stress & Verification Suite for M
       expect(isExactSlashCommand('/clear', cmd)).toBe(true);
       expect(isExactSlashCommand('/CLEAR ', cmd)).toBe(true);
       expect(isExactSlashCommand('/cle', cmd)).toBe(false);
-    });
-
-    it('handles custom selection behaviors (insert, submit, picker)', () => {
-      const cmdInsert: SlashCommand = { name: 'a', description: '', behavior: 'insert' };
-      const cmdSubmit: SlashCommand = { name: 'b', description: '', behavior: 'submit' };
-      const cmdPicker: SlashCommand = { name: 'c', description: '', behavior: 'picker' };
-      const cmdDefault: SlashCommand = { name: 'd', description: '' };
-
-      expect(slashCommandSelectionBehavior(cmdInsert)).toBe('insert');
-      expect(slashCommandSelectionBehavior(cmdSubmit)).toBe('submit');
-      expect(slashCommandSelectionBehavior(cmdPicker)).toBe('picker');
-      expect(slashCommandSelectionBehavior(cmdDefault)).toBe('insert');
     });
 
     it('renders slash menu badge for CozyPad owned commands', () => {

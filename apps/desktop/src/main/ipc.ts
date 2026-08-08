@@ -1,8 +1,7 @@
-import { clipboard, ipcMain, nativeImage } from 'electron';
+import { clipboard, ipcMain } from 'electron';
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import {
   AgentDetectionRequestSchema,
-  AgentAttachmentUploadSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
   AnswerAgentQuestionRequestSchema,
@@ -73,16 +72,6 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     startupWarnings = [],
     isLocalProfile,
   } = services;
-  let clipboardRestoreTimer: ReturnType<typeof setTimeout> | null = null;
-  let clipboardBeforeImage:
-    | {
-        text: string;
-        html: string;
-        rtf: string;
-        image: ReturnType<typeof clipboard.readImage>;
-      }
-    | null = null;
-
   const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   };
@@ -381,35 +370,6 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     assertSender(event);
     if (typeof raw !== 'string') throw new Error('clipboard payload must be a string');
     clipboard.writeText(raw);
-  });
-
-  ipcMain.handle(IpcChannels.clipboardWriteImage, (event, raw: unknown) => {
-    assertSender(event);
-    const attachment = AgentAttachmentUploadSchema.parse(raw);
-    if (!attachment.mediaType.toLowerCase().startsWith('image/')) {
-      throw new Error('clipboard image payload must use an image media type');
-    }
-    const image = nativeImage.createFromBuffer(
-      Buffer.from(base64ToBytes(attachment.dataBase64)),
-    );
-    if (image.isEmpty()) {
-      throw new Error(`Unable to decode clipboard image: ${attachment.name}`);
-    }
-    clipboardBeforeImage ??= {
-      text: clipboard.readText(),
-      html: clipboard.readHTML(),
-      rtf: clipboard.readRTF(),
-      image: clipboard.readImage(),
-    };
-    clipboard.writeImage(image);
-    if (clipboardRestoreTimer !== null) clearTimeout(clipboardRestoreTimer);
-    clipboardRestoreTimer = setTimeout(() => {
-      const snapshot = clipboardBeforeImage;
-      clipboardBeforeImage = null;
-      clipboardRestoreTimer = null;
-      if (snapshot === null) return;
-      clipboard.write(snapshot);
-    }, 2_000);
   });
 
   ipcMain.handle(IpcChannels.tmuxStatus, (event) => {

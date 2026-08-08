@@ -5,7 +5,6 @@ import {
   ChatComposer,
   isExactSlashCommand,
   normalizeSlashCommandName,
-  slashCommandSelectionBehavior,
 } from '../ChatComposer';
 
 describe('Challenger 1 - Empirical Verification Suite for Milestone 3', () => {
@@ -33,7 +32,6 @@ describe('Challenger 1 - Empirical Verification Suite for Milestone 3', () => {
     it('confirms SlashCommand utilities function correctly', () => {
       expect(normalizeSlashCommandName('/test')).toBe('test');
       expect(isExactSlashCommand('/test', { name: 'test', description: '' })).toBe(true);
-      expect(slashCommandSelectionBehavior({ name: 'test', description: '', behavior: 'submit' })).toBe('submit');
     });
   });
 

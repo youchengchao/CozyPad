@@ -3,7 +3,6 @@ import {
   isExactSlashCommand,
   navigatePromptHistory,
   normalizeSlashCommandName,
-  slashCommandSelectionBehavior,
 } from '../src/workspaces/agents/ChatComposer';
 
 describe('normalizeSlashCommandName', () => {
@@ -24,28 +23,6 @@ describe('normalizeSlashCommandName', () => {
     expect(isExactSlashCommand('//compact', command)).toBe(false);
   });
 
-  it('distinguishes picker and immediate-submit commands from text insertion', () => {
-    expect(
-      slashCommandSelectionBehavior({
-        name: 'model',
-        description: 'Choose model',
-        behavior: 'picker',
-      }),
-    ).toBe('picker');
-    expect(
-      slashCommandSelectionBehavior({
-        name: 'permissions',
-        description: 'Choose permissions',
-        behavior: 'submit',
-      }),
-    ).toBe('submit');
-    expect(
-      slashCommandSelectionBehavior({
-        name: 'rename',
-        description: 'Rename',
-      }),
-    ).toBe('insert');
-  });
 });
 
 describe('navigatePromptHistory', () => {

@@ -24,7 +24,6 @@ interface ChatComposerProps {
   onRemoveAttachment(id: string): void;
   /** SPEC 1415: retry one failed attachment without touching the rest. */
   onRetryAttachment?(id: string): void;
-  onCommand?(command: SlashCommand): void;
   onStop?(): void;
   onSend(text: string): void;
 }
@@ -38,12 +37,6 @@ export function isExactSlashCommand(value: string, command: SlashCommand): boole
     value.trim().toLowerCase() ===
     `/${normalizeSlashCommandName(command.name).toLowerCase()}`
   );
-}
-
-export function slashCommandSelectionBehavior(
-  command: SlashCommand,
-): 'insert' | 'submit' | 'picker' {
-  return command.behavior ?? 'insert';
 }
 
 export const ATTACHMENT_STATE_LABEL: Record<ComposerAttachment['state'], string> = {
@@ -106,7 +99,6 @@ export function ChatComposer({
   onAttach,
   onRemoveAttachment,
   onRetryAttachment,
-  onCommand,
   onStop,
   onSend,
 }: ChatComposerProps) {
@@ -161,31 +153,11 @@ export function ChatComposer({
   };
 
   const accept = (command: SlashCommand) => {
-    const now = Date.now();
     if (disabled || uploading || isSubmittingRef.current) return;
-    if (now - lastSendTimeRef.current < 300) return;
-    const commandText = `/${normalizeSlashCommandName(command.name)}`;
-    const behavior = slashCommandSelectionBehavior(command);
-    if (behavior === 'picker' && onCommand !== undefined) {
-      setSlashDismissed(true);
-      onChange('');
-      onCommand(command);
-    } else if (behavior === 'submit') {
-      isSubmittingRef.current = true;
-      lastSendTimeRef.current = now;
-      setSlashDismissed(true);
-      onChange('');
-      try {
-        if (onCommand === undefined) onSend(commandText);
-        else onCommand(command);
-      } finally {
-        window.setTimeout(() => {
-          isSubmittingRef.current = false;
-        }, 300);
-      }
-    } else {
-      onChange(commandText);
-    }
+    if (Date.now() - lastSendTimeRef.current < 300) return;
+    // Selection inserts the command into the draft; sending stays an explicit
+    // second step, whatever the command.
+    onChange(`/${normalizeSlashCommandName(command.name)}`);
     textareaRef.current?.focus();
   };
 
@@ -411,11 +383,7 @@ export function ChatComposer({
               if (event.key === 'Tab' || event.key === 'Enter') {
                 event.preventDefault();
                 const command = matches[slashIndex] ?? matches[0]!;
-                if (
-                  event.key === 'Enter' &&
-                  isExactSlashCommand(value, command) &&
-                  slashCommandSelectionBehavior(command) === 'insert'
-                ) {
+                if (event.key === 'Enter' && isExactSlashCommand(value, command)) {
                   send();
                 } else {
                   accept(command);

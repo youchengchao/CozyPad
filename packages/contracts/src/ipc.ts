@@ -53,7 +53,6 @@ export const IpcChannels = {
   agentCommunicationError: 'cozypad:agent:error',
   clipboardRead: 'cozypad:clipboard:read',
   clipboardWrite: 'cozypad:clipboard:write',
-  clipboardWriteImage: 'cozypad:clipboard:write-image',
   cancelRequest: 'cozypad:request:cancel',
 } as const;
 

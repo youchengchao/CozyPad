@@ -7,7 +7,6 @@ import {
   isExactSlashCommand,
   navigatePromptHistory,
   normalizeSlashCommandName,
-  slashCommandSelectionBehavior,
 } from '../ChatComposer';
 import type { ComposerAttachment } from '../attachmentBuffer';
 import { formatAttachmentSize } from '../attachmentBuffer';
@@ -38,12 +37,6 @@ describe('ChatComposer & Attachment System Suite', () => {
       expect(isExactSlashCommand('/com', command)).toBe(false);
       expect(isExactSlashCommand('/compact', command)).toBe(true);
       expect(isExactSlashCommand('/COMPACT', command)).toBe(true);
-    });
-
-    it('determines selection behavior (insert, submit, picker)', () => {
-      expect(slashCommandSelectionBehavior({ name: 'model', description: '', behavior: 'picker' })).toBe('picker');
-      expect(slashCommandSelectionBehavior({ name: 'permissions', description: '', behavior: 'submit' })).toBe('submit');
-      expect(slashCommandSelectionBehavior({ name: 'rename', description: '' })).toBe('insert');
     });
 
     it('renders slash command suggestions dropdown menu when text begins with /', () => {
