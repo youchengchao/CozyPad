@@ -13,12 +13,6 @@ import type {
 import { MAX_AGENT_ATTACHMENTS } from '@cozypad/contracts';
 import { ContextMenu, useLongPress } from '../../components/ContextMenu';
 import { getBridge } from '../../platform/bridge';
-import {
-  AgyCliSurface,
-  AgyTranscriptPreview,
-  clearAgyRuntimeCache,
-  clearAgySessionCache,
-} from './AgyCliSurface';
 import { ChatComposer } from './ChatComposer';
 import {
   attachmentFileToBase64,
@@ -592,7 +586,6 @@ export function AgentsWorkspace({
   /** Drop every trace of a session from the UI. */
   const forgetSession = useCallback((sessionId: string, agentKind: AgentKind) => {
     forgotten.current.add(sessionId);
-    clearAgySessionCache(sessionId);
     setSessions((current) => current.filter((session) => session.id !== sessionId));
     setSessionView((current) => forgetSessionView(current, agentKind, sessionId));
     const drop = <T,>(current: Record<string, T>): Record<string, T> => {
@@ -1476,9 +1469,6 @@ export function AgentsWorkspace({
         enterSelectedSession(current, session.agentKind, sessionId),
       );
       if (relaunching) {
-        // A revived AGY process needs a fresh projected surface; cached screen
-        // state belongs to the process that exited.
-        clearAgyRuntimeCache(sessionId);
         setAgyActivity((current) => {
           if (!(sessionId in current)) return current;
           const next = { ...current };
@@ -1756,9 +1746,6 @@ export function AgentsWorkspace({
                   <div>
                     <span className="chat-session-title-row">
                       <strong>{selectedSession.title}</strong>
-                      {selectedSession.agentKind === 'agy' ? (
-                        <span className="agent-surface-chip">AGY CLI</span>
-                      ) : null}
                       {reconnect ? (
                         <span className="reconnect-pill mono">
                           Reconnecting {reconnect ? `(${reconnect.secondsLeft}s)` : ''}...
@@ -1782,9 +1769,7 @@ export function AgentsWorkspace({
                           : selectedSession.resumeContinuity === 'assumed'
                             ? ' · 本次 Resume 接回的對話未經確認'
                             : ' · 本次 Resume 開啟新原生對話'}
-                      {selectedSession.agentKind === 'agy'
-                        ? ''
-                        : lastUsage === undefined
+                      {lastUsage === undefined
                           ? ' · 用量未知'
                           : ` · 用量 in ${lastUsage.inputTokens.toLocaleString()} / out ${lastUsage.outputTokens.toLocaleString()} tokens`}
                     </span>
@@ -1823,13 +1808,7 @@ export function AgentsWorkspace({
                 </div>
                 {!selectedSessionEntered ? (
                   <>
-                    {selectedSession.agentKind === 'agy' ? (
-                      <AgyTranscriptPreview
-                        key={selectedSession.id}
-                        sessionId={selectedSession.id}
-                        cwd={selectedSession.cwd}
-                      />
-                    ) : timeline.length === 0 ? (
+                    {timeline.length === 0 ? (
                       <ZeroMessageState
                         sessionTitle={selectedSession.title}
                         agentKind={selectedSession.agentKind}
@@ -1864,37 +1843,6 @@ export function AgentsWorkspace({
                       </button>
                     </div>
                   </>
-                ) : selectedSession.agentKind === 'agy' ? (
-                  <AgyCliSurface
-                    key={`${selectedSession.id}:${reviveNonce[selectedSession.id] ?? 0}`}
-                    sessionId={selectedSession.id}
-                    cwd={selectedSession.cwd}
-                    sessionStatus={selectedSession.status}
-                    stopping={interrupting[selectedSession.id] === true}
-                    onInterrupt={() => stopSession(selectedSession.id)}
-                    onNotify={(message) => {
-                      // A surface unmounting after its session was deleted
-                      // must not resurface as an error (SPEC 1515).
-                      if (forgotten.current.has(selectedSession.id)) return;
-                      setError(message);
-                    }}
-                    onStatusChange={(status) => {
-                      setAgyActivity((current) =>
-                        current[selectedSession.id] === status
-                          ? current
-                          : { ...current, [selectedSession.id]: status },
-                      );
-                      if (status === 'exited' || status === 'error') {
-                        setSessionView((current) =>
-                          leaveEnteredSession(
-                            current,
-                            selectedSession.agentKind,
-                            selectedSession.id,
-                          ),
-                        );
-                      }
-                    }}
-                  />
                 ) : (
                   <>
                     {timeline.length === 0 ? (

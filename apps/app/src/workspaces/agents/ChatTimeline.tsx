@@ -9,6 +9,7 @@ import {
 } from 'react';
 import type { ChatItem, ToolCallItem } from '@cozypad/contracts';
 import { AssistantMarkdown, MarkdownView } from './AssistantMarkdown';
+import { ThinkingCard } from './ThinkingCard';
 import { MessageAttachments } from './MessageAttachments';
 
 export interface ChatTimelineProps {
@@ -471,6 +472,22 @@ export function ChatTimeline({
                 {item.outputTokens.toLocaleString()} tokens
               </div>
             );
+          case 'thought':
+
+            return (
+
+              <div key={item.id} className="msg msg-assistant">
+
+                <div className="msg-wrapper">
+
+                  <ThinkingCard text={item.text} streaming={item.streaming === true} />
+
+                </div>
+
+              </div>
+
+            );
+
           case 'notice':
             return (
               <div key={item.id} className="timeline-notice" role="note">

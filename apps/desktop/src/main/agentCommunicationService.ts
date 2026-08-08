@@ -192,6 +192,17 @@ export interface AgentCommunicationServiceOptions {
    * loss. `backupPath` is null when even the rename failed.
    */
   onStoreRecovered?(info: { reason: string; backupPath: string | null }): void;
+  /**
+   * The ACP runtime, for agents driven by a protocol rather than a terminal.
+   * Optional so tests can construct the service without spawning anything.
+   */
+  acp?: {
+    has(sessionId: string): boolean;
+    start(sessionId: string, cwd: string): Promise<unknown>;
+    prompt(sessionId: string, text: string): Promise<string>;
+    cancel(sessionId: string): Promise<void>;
+    stop(sessionId: string): void;
+  };
 }
 
 /**
@@ -800,8 +811,10 @@ function parseStoredSession(value: unknown): StoredAgentSession | null {
     questionAnswers,
     slashCommands,
     attachments,
-    interactionMode:
-      record.data.provisionalIdentity.agentKind === 'agy' ? 'terminal' : 'chat',
+    // Persisted sessions load as chat too. An agy session stored before the ACP
+    // cutover would otherwise come back in a mode whose UI no longer exists,
+    // with an enabled composer that throws the moment you press send.
+    interactionMode: 'chat',
     ...(typeof value.launchMode === 'string'
       ? { launchMode: value.launchMode }
       : {}),
@@ -1157,7 +1170,14 @@ export class AgentCommunicationService implements AgentCommunicationPort {
             : request.agentKind === 'codex'
               ? helpOutput.includes('app-server') &&
                 protocolHelpOutput.includes('--listen')
-              : false);
+              : // agy. `false` used to be right: its own CLI has no structured
+                // mode a client can drive, which is why CozyPad read its TUI
+                // off a terminal instead. It does now, through
+                // packages/adapter-agy — `-p --output-format stream-json`
+                // translated to ACP. The capability is the adapter's, not the
+                // binary's, so it does not depend on the help text.
+                helpOutput.includes('--print') ||
+                helpOutput.includes('--output-format'));
         const compatible = nativeAgy || structured;
         const approvals =
           compatible &&
@@ -1330,11 +1350,12 @@ exit "$agent_status"`;
 
   async create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle> {
     this.assertConnected(request.profileId);
-    const interactionMode =
-      request.agentKind === 'agy' ? 'terminal' : (request.interactionMode ?? 'chat');
-    if (interactionMode === 'terminal' && request.agentKind !== 'agy') {
-      throw new Error('Native CLI sessions are currently available for AGY only');
-    }
+    // Every agent is a chat session now. agy used to be forced to `terminal`,
+    // which meant CozyPad drove its TUI and read the answer back off a 120x40
+    // screen — the path that concatenated prompts, lost their first character,
+    // and turned quoted phrases in prose into a fake option menu. It speaks ACP
+    // through packages/adapter-agy instead.
+    const interactionMode = 'chat' as const;
     const installation = await this.detect({
       profileId: request.profileId,
       agentKind: request.agentKind,
@@ -2226,8 +2247,18 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
             },
           });
         }
+      } else if (this.options.acp !== undefined) {
+        // agy. There is no native terminal to type into any more: the adapter
+        // turns `-p --output-format stream-json` into ACP, and the reply
+        // arrives as typed `session/update` events rather than as a repainted
+        // screen. The runtime starts on first use so opening a session costs
+        // nothing until a message is actually sent.
+        if (!this.options.acp.has(stored.record.id)) {
+          await this.options.acp.start(stored.record.id, stored.record.cwd);
+        }
+        await this.options.acp.prompt(stored.record.id, messageText);
       } else {
-        throw new Error('AGY prompts must be entered in its native terminal');
+        throw new Error('No ACP runtime is available for this agent');
       }
     } catch (error) {
       stored.activeTurn = undefined;
@@ -3370,6 +3401,23 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
 
   private emitSession(stored: StoredAgentSession): void {
     this.events.onSessionChanged({ session: this.summary(stored) });
+  }
+
+  /**
+   * Replaces a session's transcript with what the ACP runtime folded.
+   *
+   * The runtime owns the timeline for agents it drives — it holds the reducer
+   * state and is the only thing that knows how a chunk joins the message before
+   * it. This copies the result in so the store persists it and the renderer
+   * sees one stream of updates, whichever runtime produced them.
+   */
+  replaceTimeline(sessionId: string, items: readonly ChatItem[]): void {
+    const stored = this.sessions.get(sessionId);
+    if (stored === undefined) return;
+    stored.timeline = [...items];
+    stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
+    this.emitTimeline(stored);
+    void this.persist();
   }
 
   private emitTimeline(stored: StoredAgentSession): void {

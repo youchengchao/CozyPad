@@ -19,6 +19,7 @@ import type { RemoteFilesPort } from '@cozypad/remote-services';
 import { ShellRemoteFiles } from '@cozypad/remote-services';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { AgentCommunicationService } from './agentCommunicationService';
+import { AcpAgentRuntime } from './acp/acpAgentRuntime';
 import type { AgentCommunicationPort } from './agentCommunicationService';
 import { registerIpc } from './ipc';
 import { ProfileStore, ProfileStoreWithLocal } from './profileStore';
@@ -131,6 +132,7 @@ interface MainServices {
   tmuxProvisioner: TmuxProvisionerPort;
   tmuxWatcher: TmuxSessionWatcher | null;
   agentCommunication: AgentCommunicationPort | null;
+  acp: AcpAgentRuntime;
 }
 
 async function createServices(
@@ -180,11 +182,26 @@ async function createServices(
   // keep talking to the real tmux rather than to the router.
   const remoteTmux = new TmuxRuntime(exec, TMUX_SOCKET);
   const tmux = new RoutingAgentRuntime(remoteTmux, localRuntime);
+  // Agents that speak ACP run as child processes here. The runtime is built
+  // before the service so the service can send through it.
+  const acp = new AcpAgentRuntime({
+    onTimeline: (sessionId, items) => {
+      agentCommunication.replaceTimeline(sessionId, items);
+    },
+    // No interactive approval UI is wired yet, so a request is declined rather
+    // than auto-approved. agy never sends one (its print mode answers its own),
+    // and silently allowing would be the wrong default for the two that do.
+    onPermission: async () => null,
+    onError: (sessionId, message) => {
+      console.error('[cozypad] acp session', sessionId, message);
+    },
+  });
   const agentCommunication = new AgentCommunicationService({
     transport,
     tmux,
     profileStore,
     storePath: path.join(app.getPath('userData'), 'agent-sessions.json'),
+    acp,
     getHostFingerprint: (profileId) => {
       // This machine has no host key to verify — it is the host. A fixed
       // sentinel lets agent identities bind (and conversations resume) here
@@ -245,6 +262,7 @@ async function createServices(
       transport.execStream(command, onLine, timeoutMs),
     ),
     tmuxWatcher: new TmuxSessionWatcher(remoteTmux),
+    acp,
     agentCommunication: loaded,
   };
 }
@@ -1642,6 +1660,7 @@ app.whenReady().then(async () => {
       win,
     );
     win.on('closed', () => {
+      services.acp.stopAll();
       services.telemetry.stop();
       services.tmuxWatcher?.stop();
       services.transport.dispose();
