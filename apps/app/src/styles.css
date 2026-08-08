@@ -1751,6 +1751,7 @@ details[open] > summary .tool-chevron {
   font-size: 11px;
   color: var(--text-faint);
   font-family: 'Cascadia Mono', Consolas, monospace;
+  flex-shrink: 0;
 }
 
 .tool-duration-running {
@@ -2278,29 +2279,10 @@ details[open] > summary .tool-chevron {
   opacity: 0.75;
 }
 
-.tool-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.tool-status-completed {
-  background: var(--green);
-}
-
-.tool-status-running {
-  background: var(--blue);
-  animation: blink 1.2s steps(1) infinite;
-}
-
-.tool-status-error {
-  background: var(--red);
-}
-
 .tool-name {
   font-weight: 600;
   color: var(--text-dim);
+  flex-shrink: 0;
 }
 
 .tool-summary {
@@ -2308,13 +2290,10 @@ details[open] > summary .tool-chevron {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tool-duration {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-faint);
-  flex-shrink: 0;
+  /* Without a shrinkable basis a long command line refuses to ellipsize and
+     pushes the duration and chevron out of the card instead. */
+  flex: 1;
+  min-width: 0;
 }
 
 .tool-output {
@@ -2556,10 +2535,6 @@ details[open] > summary .tool-chevron {
   border: 1px solid var(--border-strong);
   color: var(--text-faint);
   font-size: 11px;
-}
-
-.tool-status-unknown {
-  background: var(--text-faint);
 }
 
 /* A CozyPad marker in the timeline — styled as a divider, never a bubble. */
