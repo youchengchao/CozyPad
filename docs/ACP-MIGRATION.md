@@ -1005,3 +1005,46 @@ CLI 預設值把探測導到了錯的 agent，花掉使用者的付費額度。
 `src/main/main.ts` 和 `src/preload/preload.ts` 兩個 entryPoints，要加第三個把
 adapter 打包成 `dist/agy-acp.cjs`，再由 main 用 `spawn(process.execPath, [...])`
 拉起來。另外兩家不需要這一步——它們本來就是可執行的 npm 套件。
+
+## 進行中：claude / codex 也搬上 ACP（實作完成，測試網未重建）
+
+**狀態**：實作寫完、五個專案型別檢查全過，但 `agentCommunicationService.test.ts`
+有 19 個測試紅燈，**因此沒有 commit**。程式碼在 git stash 裡
+（`wip: claude/codex on ACP — implementation green, 19 tests need rework`）。
+
+### 已經做掉的
+
+| 改動 | 行數 |
+|---|---|
+| `send()` 三家分支併成一次 ACP 呼叫 | 59 → 21 |
+| `followSession()`（shell while + `sed -n` 每 200ms tail 遠端 NDJSON） | −162 |
+| `writeFrame()`（寫 JSON 進 tmux pane 的 stdin） | −6 |
+| `startAgentConversation()` 的三種 handshake | 59 → 11 |
+| `interrupt()` 改成 `session/cancel` | 25 → 22 |
+| `launchSpecFor()`：claude → `claude-agent-acp`，codex → `codex-acp`，其餘 → 我們的 adapter | +50 |
+
+`create()` 現在會等 `initialize` + `session/new` 回來才把 session 標成 `ready`
+——這是 `followSession` 原本用「看到 agent 有輸出」在做的判斷，ACP 的對應信號
+是 agent 真的答了，順便在建立當下就拿得到 model 清單。
+
+### 19 個紅燈的分類，以及各自需要什麼
+
+**這些測試失敗是對的**——它們斷言的是已經被拔掉的機制。但要一個一個判斷該改寫
+還是該刪，不能機械替換。
+
+| 類別 | 數量 | 需要的判斷 |
+|---|---|---|
+| 斷言 `status: 'starting'` | ~4 | **純過時**。ACP 下 create() 回來時 agent 已經答過了，`ready` 才對。改期望值即可 |
+| revive 後應為 `exited` | 3 | **真的要想**：ACP 下「runtime 還在不在」怎麼判？舊路徑靠 `tmux has-session`。ACP 是子行程，`AcpAgentHandle.status()` 有訊息但語意不同 |
+| approval / question 的關聯 | 4 | **我引入的真缺口**。`resolveControl(sessionId, requestId)` 目前忽略 `requestId`，只答「當下 pending 的那一個」。同時有兩個請求就會答錯。要把 pending 改成以 requestId 為鍵的 map |
+| tmux watcher（`has-session`、`launch-status`） | 2 | **機制已不存在**，應刪除而不是改寫 |
+| 啟動失敗時 surface remote stderr | 2 | ACP 下的等價物是 child 的 stderr tail，`connectAcpAgentProcess` 已經在收，要接起來 |
+| 其餘（附件、codex rebind 邊界） | 4 | 逐案 |
+
+### 最重要的一條
+
+**approval 的 requestId 關聯是真缺口，不是測試問題。** 現在的
+`resolveControl` 只認「當下 pending 的那一個」，agent 同時開兩個權限請求時
+會把答案送給錯的那一個——而那正是「值收得下、之後被默默用錯」這個病的又一次
+發作。修法是把 `Running.pending` 從單一物件改成 `Map<requestId, resolve>`，
+並讓 `approvalItemFor` 把 requestId 帶進 item。
