@@ -200,6 +200,9 @@ async function createServices(
     // A session that ends with a request still open has it declined by
     // `AcpAgentRuntime.stop`, so nothing is left hanging.
     onPermission: () => new Promise<string | null>(() => undefined),
+    onCommands: (sessionId, commands) => {
+      agentCommunication.setSlashCommands(sessionId, commands);
+    },
     onError: (sessionId, message) => {
       console.error('[cozypad] acp session', sessionId, message);
     },
@@ -379,6 +382,7 @@ async function runAcpSmokeTest(win: BrowserWindow): Promise<void> {
   const prompt = process.env.COZYPAD_ACP_SMOKE_PROMPT ?? 'Reply with exactly: OK';
   const agentKind = process.env.COZYPAD_ACP_SMOKE_AGENT ?? 'agy';
   const cwd = process.env.COZYPAD_ACP_SMOKE_CWD ?? process.cwd();
+  const turns = Number(process.env.COZYPAD_ACP_SMOKE_TURNS ?? '1');
   try {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('renderer load timeout')), 15_000);
@@ -411,12 +415,20 @@ async function runAcpSmokeTest(win: BrowserWindow): Promise<void> {
       '    cwd: ' + JSON.stringify(cwd) + ', interactionMode: "chat",' +
       '  });' +
       '  steps.push("session:" + bundle.session.id + " status:" + bundle.session.status);' +
+      '  let latest = bundle.session;' +
+      '  const stopS = bridge.onAgentSessionChanged((e) => { if (e.session.id === bundle.session.id) latest = e.session; });' +
       '  await bridge.sendAgentMessage({ sessionId: bundle.session.id, text: ' + JSON.stringify(prompt) + ', attachmentIds: [] });' +
       '  steps.push("sent");' +
+      '  const wait1 = Date.now() + 180000;' +
+      '  while (Date.now() < wait1 && !timeline.some((i) => i.kind === "message" && i.role === "assistant" && i.text.trim() !== "")) await sleep(250);' +
+      '  if (' + JSON.stringify(turns) + ' > 1) {' +
+      '    await bridge.sendAgentMessage({ sessionId: bundle.session.id, text: "Say OK again", attachmentIds: [] });' +
+      '    steps.push("sent2");' +
+      '  }' +
       '  const deadline = Date.now() + 180000;' +
       '  while (Date.now() < deadline) {' +
       '    const reply = timeline.find((i) => i.kind === "message" && i.role === "assistant" && i.text.trim() !== "");' +
-      '    if (reply) { stop && stop(); return { ok: true, steps, kinds: timeline.map((i) => i.kind), reply: reply.text.slice(0, 200) }; }' +
+      '    if (reply) { stop && stop(); stopS && stopS(); const fresh = (await bridge.listAgentSessions({ profileId: local.id })).find((b) => b.session.id === bundle.session.id); return { ok: true, steps, kinds: timeline.map((i) => i.kind), reply: reply.text.slice(0, 200), slash: ((fresh && fresh.session.slashCommands) || []).length, slashSample: ((fresh && fresh.session.slashCommands) || []).slice(0, 4) }; }' +
       '    await sleep(250);' +
       '  }' +
       '  stop && stop();' +
@@ -427,6 +439,7 @@ async function runAcpSmokeTest(win: BrowserWindow): Promise<void> {
     console.log('[acp-smoke] steps  :', report.steps.join(' -> '));
     console.log('[acp-smoke] kinds  :', report.kinds.join(', '));
     console.log('[acp-smoke] reply  :', JSON.stringify(report.reply));
+    console.log('[acp-smoke] slash  :', String((report as { slash?: number }).slash ?? 0), JSON.stringify((report as { slashSample?: string[] }).slashSample ?? []));
     console.log('[acp-smoke] RESULT :', report.ok ? 'PASS' : 'FAIL');
     app.exit(report.ok ? 0 : 1);
   } catch (error) {

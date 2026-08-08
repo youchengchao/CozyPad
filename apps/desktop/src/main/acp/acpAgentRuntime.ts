@@ -31,6 +31,16 @@ export interface AcpRuntimeCallbacks {
   /** A permission request the user has to answer. Resolve with an optionId. */
   onPermission(sessionId: string, item: ChatItem): Promise<string | null>;
   onError(sessionId: string, message: string): void;
+  /**
+   * The agent's slash commands, whenever it announces them.
+   *
+   * Sent on `session/new` and again whenever they change — a mode switch
+   * changes what is offered — so this replaces rather than merges.
+   */
+  onCommands?(
+    sessionId: string,
+    commands: readonly { name: string; description?: string }[],
+  ): void;
 }
 
 /** A control request the agent is blocked on, waiting for the user. */

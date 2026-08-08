@@ -702,7 +702,12 @@ describe('AgentCommunicationService', () => {
       }),
     ).resolves.toBeUndefined();
     const retried = service.list({ profileId: 'profile-1' })[0]!;
-    expect(retried.session.status).toBe('running');
+    // 'ready', not 'running': `session/prompt` resolving IS the end of the
+    // turn, so the session is usable again the moment send() returns. Leaving
+    // it 'running' is what made the second message impossible — the guard at
+    // the top of send() rejected it with "Agent is waiting for the current turn
+    // to finish", forever.
+    expect(retried.session.status).toBe('ready');
     expect(retried.items.at(-1)).toMatchObject({
       kind: 'message',
       role: 'user',

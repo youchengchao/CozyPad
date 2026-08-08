@@ -83,6 +83,8 @@ interface StoredAgentSession {
   pendingControls: Record<string, PendingControlRequest>;
   questionAnswers: Record<string, Record<string, string>>;
   slashCommands: string[];
+  /** Per-command help, shown next to the name in the composer's menu. */
+  slashCommandDescriptions?: Record<string, string>;
   attachments: Record<string, AgentAttachment>;
   interactionMode: 'chat' | 'terminal';
   launchMode?: string;
@@ -2198,7 +2200,33 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
           stored.record.provisionalIdentity.agentKind,
         );
       }
-      await this.options.acp.prompt(stored.record.id, messageText);
+      const stopReason = await this.options.acp.prompt(stored.record.id, messageText);
+      // The turn is over, so the session is usable again.
+      //
+      // `followSession` used to do this by watching for a result event, and
+      // deleting it took the transition with it: status stayed 'running'
+      // forever and the guard at the top of this method rejected every message
+      // after the first with "Agent is waiting for the current turn to finish".
+      // `session/prompt` resolving *is* the end of the turn — that is what the
+      // protocol means by it — so there is nothing to watch for any more.
+      stored.activeTurn = undefined;
+      stored.activeAgentTurnId = undefined;
+      stored.record = {
+        ...stored.record,
+        status: 'ready',
+        updatedAt: new Date().toISOString(),
+      };
+      if (stopReason === 'cancelled') {
+        stored.timeline.push({
+          kind: 'notice',
+          id: `notice-cancelled-${randomUUID()}`,
+          timestamp: new Date().toISOString(),
+          text: '已中斷這一輪。',
+        });
+      }
+      await this.persist();
+      this.emitSession(stored);
+      this.emitTimeline(stored);
     } catch (error) {
       stored.activeTurn = undefined;
       // The renderer keeps the draft and its local attachment buffer when
@@ -3122,6 +3150,11 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
       status: stored.record.status,
       unread: 0,
       slashCommands,
+      // The agent's own help text, so the menu can say what each does rather
+      // than listing 56 bare names — which is what codex announces.
+      ...(stored.slashCommandDescriptions === undefined
+        ? {}
+        : { slashCommandDescriptions: stored.slashCommandDescriptions }),
       // SPEC 1445: /status and /diff are completed by CozyPad itself (no
       // agent turn); the menu must be able to say which side runs a command.
       ...(agentKind === 'codex' && slashCommands.length > 0
@@ -3162,6 +3195,32 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
     stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
     this.emitTimeline(stored);
     void this.persist();
+  }
+
+  /**
+   * Records the slash commands an agent announced.
+   *
+   * Replaces rather than merges: the agent sends the whole set each time, and
+   * a mode switch can remove commands as well as add them — keeping a stale
+   * one offers the user something the agent will reject.
+   */
+  setSlashCommands(
+    sessionId: string,
+    commands: readonly { name: string; description?: string }[],
+  ): void {
+    const stored = this.sessions.get(sessionId);
+    if (stored === undefined) return;
+    stored.slashCommands = commands.map((command) => command.name);
+    const descriptions: Record<string, string> = {};
+    for (const command of commands) {
+      if (command.description !== undefined && command.description !== '') {
+        descriptions[command.name] = command.description;
+      }
+    }
+    stored.slashCommandDescriptions = descriptions;
+    stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
+    void this.persist();
+    this.emitSession(stored);
   }
 
   private emitTimeline(stored: StoredAgentSession): void {
