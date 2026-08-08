@@ -154,3 +154,47 @@ describe('two permission requests open at once', () => {
     await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
   }, 15_000);
 });
+
+describe('a permission request waits for the user, and only for the user', () => {
+  it('does not settle on its own', async () => {
+    // main.ts used to answer `null` here, which declined every tool claude and
+    // codex ever tried to run — the agent asked, CozyPad said no before the
+    // card was even readable, and both agents were unusable. The handler now
+    // returns a promise that never settles; `resolveControl` is the only thing
+    // that answers.
+    const { child, captured } = fakeChild();
+    const runtime = new AcpAgentRuntime(
+      {
+        onTimeline: () => undefined,
+        // The production shape, verbatim.
+        onPermission: () => new Promise<string | null>(() => undefined),
+        onError: () => undefined,
+      },
+      (_spec, handlers) => {
+        captured.handlers = handlers;
+        return child;
+      },
+    );
+    await runtime.start('s1', '/workspace');
+
+    const pending = captured.handlers!.requestPermission!(
+      permissionRequest('Write a file') as never,
+    );
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(settled).toBe(false);
+
+    // And it is still answerable afterwards — the item id the timeline carries
+    // is the key, so the card the user sees is the one that resolves.
+    const items = runtime.itemsFor('s1');
+    const approval = items.find((item) => item.kind === 'approval');
+    expect(approval).toBeDefined();
+    runtime.resolveControl('s1', approval!.id, 'allow');
+    await expect(pending).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow' },
+    });
+  }, 15_000);
+});

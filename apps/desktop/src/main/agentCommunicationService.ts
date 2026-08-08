@@ -2241,6 +2241,19 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     this.emitSession(stored);
   }
 
+  /**
+   * Answers a permission request the agent is blocked on.
+   *
+   * ACP models permission as a *request*, so the agent is genuinely waiting
+   * on a return value — the runtime is holding the promise, keyed by this
+   * item id, and this resolves it.
+   *
+   * The bridge still carries allow/deny while the UI does, so the choice is
+   * mapped onto the options the agent actually offered. That mapping is
+   * lossy and deliberately temporary: claude offers `Always Allow / Allow /
+   * Reject`, and "always" has no allow/deny equivalent. Once the card sends
+   * an optionId, this collapses to passing it through.
+   */
   async resolveApproval(request: ResolveAgentApprovalRequest): Promise<void> {
     const stored = this.requireSession(request.sessionId);
     this.assertSessionConnected(stored);
@@ -2251,48 +2264,28 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
     if (item === undefined || item.resolution !== 'pending') {
       throw new Error('Pending approval request not found');
     }
-    const requestId = request.itemId.replace(/^approval-/u, '');
-    const pending = stored.pendingControls[requestId];
-    if (pending === undefined) throw new Error('Approval control request has expired');
-    if (pending.protocol === 'codex') {
-      // Response shapes come from `codex app-server generate-ts` (v2): the
-      // approval methods reply {decision}, but permissions replies with a
-      // GrantedPermissionProfile — allow echoes the requested profile for
-      // this turn, deny grants nothing. Sending {decision} there would be
-      // schema-invalid and leave the turn waiting despite the click.
-      if (pending.method === 'item/permissions/requestApproval') {
-        const requested = isRecord(pending.input.permissions)
-          ? pending.input.permissions
-          : {};
-        const granted: Record<string, unknown> = {};
-        if (request.resolution === 'allowed') {
-          if (isRecord(requested.network)) granted.network = requested.network;
-          if (isRecord(requested.fileSystem)) {
-            granted.fileSystem = requested.fileSystem;
+
+    const options = item.options ?? [];
+    const byKind = (prefix: string): string | undefined =>
+      options.find((option) => option.kind?.startsWith(prefix) === true)?.optionId;
+    const optionId =
+      request.resolution === 'allowed'
+        ? (byKind('allow') ?? options[0]?.optionId ?? null)
+        : (byKind('reject') ?? byKind('deny') ?? null);
+
+    this.options.acp?.resolveControl(stored.record.id, item.id, optionId);
+
+    stored.timeline = stored.timeline.map((candidate) =>
+      candidate.id === request.itemId && candidate.kind === 'approval'
+        ? {
+            ...candidate,
+            resolution: request.resolution,
+            ...(optionId === null ? {} : { selectedOptionId: optionId }),
           }
-        }
-        // Answered through ACP's own return value; see AcpAgentRuntime.
-        this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
-      } else {
-        // Answered through ACP's own return value; see AcpAgentRuntime.
-        this.options.acp?.resolveControl(stored.record.id, requestId ?? '');
-      }
-    } else {
-      const response =
-        request.resolution === 'allowed'
-          ? { behavior: 'allow', updatedInput: pending.input }
-          : { behavior: 'deny', message: 'Denied by the CozyPad user' };
-      await this.writeControlResponse(stored, requestId, response);
-    }
-    delete stored.pendingControls[requestId];
-    item.resolution = request.resolution;
-    stored.record = {
-      ...stored.record,
-      status: 'running',
-      updatedAt: new Date().toISOString(),
-    };
+        : candidate,
+    );
+    stored.record = { ...stored.record, updatedAt: new Date().toISOString() };
     await this.persist();
-    this.emitSession(stored);
     this.emitTimeline(stored);
   }
 

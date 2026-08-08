@@ -52,6 +52,7 @@ const TMUX_SOCKET = process.env.COZYPAD_TMUX_SOCKET ?? 'cozypad';
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const AGY_SMOKE_TEST = process.argv.includes('--agy-smoke-test');
 const AGY_BACKEND_SMOKE_TEST = process.argv.includes('--agy-backend-smoke-test');
+const ACP_SMOKE_TEST = process.argv.includes('--acp-smoke-test');
 const AGY_SMOKE_CWD = process.env.COZYPAD_AGY_SMOKE_CWD ?? '~';
 const AGY_HISTORY_ONLY = process.env.COZYPAD_AGY_SMOKE_HISTORY_ONLY === '1';
 const AGY_INTERACTION_CASE =
@@ -188,10 +189,17 @@ async function createServices(
     onTimeline: (sessionId, items) => {
       agentCommunication.replaceTimeline(sessionId, items);
     },
-    // No interactive approval UI is wired yet, so a request is declined rather
-    // than auto-approved. agy never sends one (its print mode answers its own),
-    // and silently allowing would be the wrong default for the two that do.
-    onPermission: async () => null,
+    // Waits for the user, forever, on purpose.
+    //
+    // The approval card is already in the timeline by the time this is called,
+    // and `resolveControl` is what settles it when the user picks an option.
+    // Returning here would answer on their behalf: `null` declined every tool
+    // claude and codex ever tried to run, which made both unusable, and
+    // returning an optionId would be worse — silently allowing.
+    //
+    // A session that ends with a request still open has it declined by
+    // `AcpAgentRuntime.stop`, so nothing is left hanging.
+    onPermission: () => new Promise<string | null>(() => undefined),
     onError: (sessionId, message) => {
       console.error('[cozypad] acp session', sessionId, message);
     },
@@ -354,6 +362,75 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     app.exit(0);
   } catch (error) {
     console.error('[smoke] FAILED:', error);
+    app.exit(1);
+  }
+}
+
+
+/**
+ * Does what a user does, once, and says whether it worked.
+ *
+ * Every layer below this has tests, and none of them prove the app runs: the
+ * client has fake agents, the adapter has a fake transport, the reducer has
+ * recordings. This is the first thing that spawns a real agent through the real
+ * IPC and reads the real timeline.
+ */
+async function runAcpSmokeTest(win: BrowserWindow): Promise<void> {
+  const prompt = process.env.COZYPAD_ACP_SMOKE_PROMPT ?? 'Reply with exactly: OK';
+  const agentKind = process.env.COZYPAD_ACP_SMOKE_AGENT ?? 'agy';
+  const cwd = process.env.COZYPAD_ACP_SMOKE_CWD ?? process.cwd();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('renderer load timeout')), 15_000);
+      win.webContents.once('did-finish-load', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      win.webContents.once('did-fail-load', (_e, code, description) => {
+        clearTimeout(timer);
+        reject(new Error('did-fail-load ' + String(code) + ' ' + description));
+      });
+    });
+
+    const result: unknown = await win.webContents.executeJavaScript(
+      '(async () => {' +
+      '  const bridge = window.cozypad;' +
+      '  if (!bridge || bridge.kind !== "electron") throw new Error("preload bridge unavailable");' +
+      '  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));' +
+      '  const steps = [];' +
+      '  const profiles = await bridge.listProfiles();' +
+      '  const local = profiles.find((p) => p.host === "localhost" || p.id === "local");' +
+      '  if (!local) throw new Error("no local profile: " + JSON.stringify(profiles.map((p) => p.id)));' +
+      '  steps.push("profile:" + local.id);' +
+      '  await bridge.connect({ profileId: local.id });' +
+      '  steps.push("connected");' +
+      '  let timeline = [];' +
+      '  const stop = bridge.onAgentTimelineChanged((e) => { timeline = e.items; });' +
+      '  const bundle = await bridge.createAgentSession({' +
+      '    profileId: local.id, agentKind: ' + JSON.stringify(agentKind) + ',' +
+      '    cwd: ' + JSON.stringify(cwd) + ', interactionMode: "chat",' +
+      '  });' +
+      '  steps.push("session:" + bundle.session.id + " status:" + bundle.session.status);' +
+      '  await bridge.sendAgentMessage({ sessionId: bundle.session.id, text: ' + JSON.stringify(prompt) + ', attachmentIds: [] });' +
+      '  steps.push("sent");' +
+      '  const deadline = Date.now() + 180000;' +
+      '  while (Date.now() < deadline) {' +
+      '    const reply = timeline.find((i) => i.kind === "message" && i.role === "assistant" && i.text.trim() !== "");' +
+      '    if (reply) { stop && stop(); return { ok: true, steps, kinds: timeline.map((i) => i.kind), reply: reply.text.slice(0, 200) }; }' +
+      '    await sleep(250);' +
+      '  }' +
+      '  stop && stop();' +
+      '  return { ok: false, steps, kinds: timeline.map((i) => i.kind), reply: null };' +
+      '})()',
+    );
+    const report = result as { ok: boolean; steps: string[]; kinds: string[]; reply: string | null };
+    console.log('[acp-smoke] steps  :', report.steps.join(' -> '));
+    console.log('[acp-smoke] kinds  :', report.kinds.join(', '));
+    console.log('[acp-smoke] reply  :', JSON.stringify(report.reply));
+    console.log('[acp-smoke] RESULT :', report.ok ? 'PASS' : 'FAIL');
+    app.exit(report.ok ? 0 : 1);
+  } catch (error) {
+    console.error('[acp-smoke] RESULT : FAIL', error);
     app.exit(1);
   }
 }
@@ -1607,6 +1684,7 @@ const gotLock =
   SMOKE_TEST ||
   AGY_SMOKE_TEST ||
   AGY_BACKEND_SMOKE_TEST ||
+  ACP_SMOKE_TEST ||
   app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -1675,6 +1753,7 @@ app.whenReady().then(async () => {
   if (SMOKE_TEST) void runSmokeTest(win);
   if (AGY_SMOKE_TEST) void runAgyUiSmokeTest(win);
   if (AGY_BACKEND_SMOKE_TEST) void runAgyBackendSmokeTest(win);
+  if (ACP_SMOKE_TEST) void runAcpSmokeTest(win);
 });
 
 app.on('window-all-closed', () => {
