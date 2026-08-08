@@ -158,6 +158,25 @@ function configOptionsOf(response: unknown): unknown {
   return (response as Record<string, unknown> | null)?.['configOptions'] ?? [];
 }
 
+/** The commands an `available_commands_update` carries, shape-checked. */
+function commandsIn(event: AcpSessionEvent): { name: string; description?: string }[] {
+  const list = (event.update as { availableCommands?: unknown }).availableCommands;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const { name, description } = entry as { name?: unknown; description?: unknown };
+    if (typeof name !== 'string' || name === '') return [];
+    return [
+      {
+        name,
+        ...(typeof description === 'string' && description !== ''
+          ? { description }
+          : {}),
+      },
+    ];
+  });
+}
+
 /** What opening a session established, whichever wire method opened it. */
 interface OpenedSession {
   readonly acpSessionId: string;
@@ -214,7 +233,14 @@ export class AcpAgentRuntime {
     const handlers: AcpClientHandlers = {
       onSessionUpdate: (event: AcpSessionEvent) => {
         const running = this.#sessions.get(sessionId);
-        if (running === undefined || running.replaying) return;
+        if (running === undefined) return;
+        // Session state, not transcript — forwarded even during a load
+        // replay, or a resumed session would have no command menu.
+        if (event.kind === 'available_commands_update') {
+          this.callbacks.onCommands?.(sessionId, commandsIn(event));
+          return;
+        }
+        if (running.replaying) return;
         running.state = reduceAcpEvent(running.state, event, running.clock);
         this.callbacks.onTimeline(sessionId, running.state.items);
       },

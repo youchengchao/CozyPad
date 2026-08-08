@@ -330,6 +330,43 @@ describe('continuing a previous conversation', () => {
     expect(calls.map((call) => call.method)).toEqual(['session/load', 'session/new']);
   });
 
+  it('forwards announced commands to onCommands, and never into the timeline', async () => {
+    // `available_commands_update` is session state: the composer's menu is its
+    // only consumer, so dropping it leaves the user with no slash commands.
+    const { child, captured } = continuableChild({});
+    const commands: { sessionId: string; names: string[] }[] = [];
+    const runtime = new AcpAgentRuntime(
+      {
+        onTimeline: () => undefined,
+        onPermission: () => new Promise<string | null>(() => undefined),
+        onError: () => undefined,
+        onCommands: (sessionId, announced) => {
+          commands.push({ sessionId, names: announced.map((command) => command.name) });
+        },
+      },
+      (_spec, handlers) => {
+        captured.handlers = handlers;
+        return child;
+      },
+    );
+    await runtime.start('s1', '/workspace');
+
+    captured.handlers!.onSessionUpdate({
+      sessionId: 'fresh-1',
+      kind: 'available_commands_update',
+      update: {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          { name: 'usage', description: 'show quota' },
+          { name: 'compact' },
+        ],
+      },
+    } as never);
+
+    expect(commands).toEqual([{ sessionId: 's1', names: ['usage', 'compact'] }]);
+    expect(runtime.itemsFor('s1')).toEqual([]);
+  });
+
   it('forwards a prompt response _meta block, verbatim', async () => {
     // This is the only place agy names its conversation id; dropping it is
     // what forced Resume to guess from the disk.
