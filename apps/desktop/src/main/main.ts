@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import {
   BrowserWindow,
+  Menu,
   app,
   dialog,
   nativeTheme,
@@ -284,6 +285,13 @@ function createWindow(): BrowserWindow {
     height: 800,
     // Not "SSH mode" any more: this computer is the default connection.
     title: 'CozyPad',
+    icon: path.join(__dirname, '../assets/icon.png'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#181818',
+      symbolColor: '#d4d4d4',
+      height: 32,
+    },
     backgroundColor: '#050506',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -294,6 +302,7 @@ function createWindow(): BrowserWindow {
     },
   });
 
+  win.setMenuBarVisibility(false);
   win.webContents.setWindowOpenHandler((details) => {
     if (details.url.startsWith('http://') || details.url.startsWith('https://')) {
       void shell.openExternal(details.url);
@@ -322,6 +331,18 @@ function createWindow(): BrowserWindow {
   });
 
   return win;
+}
+
+function configureApplicationMenu(): void {
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+      { id: 'file', role: 'fileMenu' },
+      { id: 'edit', role: 'editMenu' },
+      { id: 'view', role: 'viewMenu' },
+      { id: 'window', role: 'windowMenu' },
+    ]),
+  );
 }
 
 async function runSmokeTest(win: BrowserWindow): Promise<void> {
@@ -483,6 +504,7 @@ process.on('unhandledRejection', (reason) => {
 
 app.whenReady().then(async () => {
   if (!gotLock) return;
+  configureApplicationMenu();
   console.log(
     `[cozypad] transport mode: SSH`,
   );

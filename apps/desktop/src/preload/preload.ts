@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   AgentCommunicationErrorEventSchema,
+  ApplicationMenuRequestSchema,
   AgentAttachmentBatchSchema,
   AgentDetectionRequestSchema,
   AgentInstallationSchema,
@@ -69,6 +70,13 @@ const bridge: PlatformBridge = {
   kind: 'electron',
 
   getAppInfo: () => ipcRenderer.invoke(IpcChannels.appInfo),
+
+  showApplicationMenu: (request) => {
+    ipcRenderer.send(
+      IpcChannels.applicationMenuOpen,
+      ApplicationMenuRequestSchema.parse(request),
+    );
+  },
 
   listProfiles: () => ipcRenderer.invoke(IpcChannels.listProfiles),
 

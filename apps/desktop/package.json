@@ -25,6 +25,7 @@
     },
     "files": [
       "dist/**",
+      "assets/**",
       "!dist/**/*.map"
     ],
     "extraResources": [
@@ -34,6 +35,7 @@
       }
     ],
     "win": {
+      "icon": "assets/icon.png",
       "target": [
         "nsis"
       ]

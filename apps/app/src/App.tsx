@@ -12,6 +12,7 @@ import {
   HostKeyDialog,
 } from './components/ConnectionManager';
 import type { CredentialSubmission } from './components/ConnectionManager';
+import { AppTitleBar } from './components/AppTitleBar';
 import {
   AgentsIcon,
   FilesIcon,
@@ -277,8 +278,8 @@ export function App() {
 
   return (
     <div className="app">
+      <AppTitleBar bridge={bridge} />
       <header className="topbar">
-        <span className="brand">CozyPad</span>
         <select
           className="profile-select"
           value={selectedId ?? ''}

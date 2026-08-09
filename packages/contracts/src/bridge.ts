@@ -58,6 +58,7 @@ import type {
   TerminalOutputEvent,
   TerminalResizeRequest,
 } from './terminal';
+import type { ApplicationMenuRequest } from './ipc';
 
 export type Unsubscribe = () => void;
 
@@ -88,6 +89,7 @@ export interface PlatformBridge {
   readonly kind: PlatformBridgeKind;
 
   getAppInfo(): Promise<AppInfo>;
+  showApplicationMenu?(request: ApplicationMenuRequest): void;
   listProfiles(): Promise<ConnectionProfile[]>;
   saveProfile(draft: ConnectionProfileDraft): Promise<ConnectionProfile>;
   deleteProfile(request: DeleteProfileRequest): Promise<void>;

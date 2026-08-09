@@ -1,7 +1,8 @@
-import { clipboard, ipcMain } from 'electron';
+import { clipboard, ipcMain, Menu } from 'electron';
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import {
   AgentDetectionRequestSchema,
+  ApplicationMenuRequestSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
   AnswerAgentQuestionRequestSchema,
@@ -224,6 +225,18 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
         controller.abort();
       }
     }
+  });
+
+  ipcMain.on(IpcChannels.applicationMenuOpen, (event, raw: unknown) => {
+    assertSender(event);
+    const request = ApplicationMenuRequestSchema.parse(raw);
+    Menu.getApplicationMenu()
+      ?.getMenuItemById(request.menu)
+      ?.submenu?.popup({
+        window: win,
+        x: Math.round(request.x),
+        y: Math.round(request.y),
+      });
   });
 
   ipcMain.handle(IpcChannels.appInfo, (event) => {

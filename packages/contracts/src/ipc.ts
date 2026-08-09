@@ -1,5 +1,18 @@
+import { z } from 'zod';
+
+export const ApplicationMenuIdSchema = z.enum(['file', 'edit', 'view', 'window']);
+export type ApplicationMenuId = z.infer<typeof ApplicationMenuIdSchema>;
+
+export const ApplicationMenuRequestSchema = z.object({
+  menu: ApplicationMenuIdSchema,
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+});
+export type ApplicationMenuRequest = z.infer<typeof ApplicationMenuRequestSchema>;
+
 export const IpcChannels = {
   appInfo: 'cozypad:app:info',
+  applicationMenuOpen: 'cozypad:app-menu:open',
   listProfiles: 'cozypad:profiles:list',
   saveProfile: 'cozypad:profiles:save',
   deleteProfile: 'cozypad:profiles:delete',
