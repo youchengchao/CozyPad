@@ -1173,7 +1173,7 @@ describe('an unreadable session store degrades the agent page, not the app', () 
   });
 });
 
-describe('a remote session is not spawned as a local child', () => {
+describe('a remote session uses ACP over the selected host', () => {
   let directory: string;
 
   beforeEach(async () => {
@@ -1184,15 +1184,8 @@ describe('a remote session is not spawned as a local child', () => {
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 5 });
   });
 
-  it('refuses to create one, with a reason instead of a spawn failure', async () => {
-    // `acp.start` runs an agent on THIS machine, in the session's cwd. A remote
-    // session's cwd — `/srv/deep-learning` here — belongs to the other host and
-    // is not a directory on Windows, so routing every agent through the local
-    // runtime broke every remote session at once. The symptom reported was
-    // `spawn …electron.exe ENOENT`, which named a binary that was present and
-    // said nothing about the host.
-    //
-    // No `isLocalHost` here on purpose: 'profile-1' is a real SSH profile.
+  it('passes the remote cwd and transport flag to ACP', async () => {
+    const starts: unknown[][] = [];
     const remote = new AgentCommunicationService({
       transport: new FakeTransport() as unknown as TransportPort,
       tmux: new FakeTmux(),
@@ -1212,12 +1205,15 @@ describe('a remote session is not spawned as a local child', () => {
       getHostFingerprint: () => 'SHA256:test',
       acp: {
         has: () => false,
-        start: async () => ({
-          acpSessionId: 'acp-test',
-          continued: false,
-          configOptions: [],
-          modes: { availableModes: [] },
-        }),
+        start: async (...args) => {
+          starts.push(args);
+          return {
+            acpSessionId: 'acp-test',
+            continued: false,
+            configOptions: [],
+            modes: { availableModes: [] },
+          };
+        },
         setConfigOption: async () => [],
         prompt: async () => 'end_turn',
         cancel: async () => undefined,
@@ -1227,13 +1223,23 @@ describe('a remote session is not spawned as a local child', () => {
     });
     await remote.connected('profile-1');
 
-    await expect(
-      remote.create({
-        profileId: 'profile-1',
-        agentKind: 'agy',
-        cwd: '/srv/deep-learning',
-        launchMode: 'default',
-      }),
-    ).rejects.toThrow(/remote host are not available yet/u);
+    const bundle = await remote.create({
+      profileId: 'profile-1',
+      agentKind: 'agy',
+      cwd: '/srv/deep-learning',
+      launchMode: 'default',
+    });
+
+    expect(bundle.session.status).toBe('ready');
+    expect(starts).toEqual([
+      [
+        bundle.session.id,
+        '/srv/deep-learning',
+        'agy',
+        undefined,
+        undefined,
+        true,
+      ],
+    ]);
   });
 });

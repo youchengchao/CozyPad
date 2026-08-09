@@ -27,6 +27,37 @@ export interface Ssh2ExecStreamLike {
   stderr?: { on(event: 'data', listener: (chunk: Uint8Array) => void): unknown };
 }
 
+/** A raw, no-PTY exec channel used as a long-lived stdin/stdout transport. */
+export interface Ssh2DuplexExecStreamLike {
+  readonly readable?: boolean;
+  readonly readableEnded?: boolean;
+  readonly writableEnded?: boolean;
+  readonly destroyed?: boolean;
+  readonly closed?: boolean;
+  readonly errored?: Error | null;
+  on(event: 'data', listener: (chunk: Uint8Array | string) => void): this;
+  on(event: 'end', listener: () => void): this;
+  on(event: 'error', listener: (error: Error) => void): this;
+  on(
+    event: 'close',
+    listener: (code?: number | null, signal?: string | null) => void,
+  ): this;
+  write(chunk: Uint8Array, callback?: (error?: Error | null) => void): unknown;
+  end?(): unknown;
+  resume?(): unknown;
+  close(): void;
+  stderr?: {
+    readonly readableEnded?: boolean;
+    readonly destroyed?: boolean;
+    readonly closed?: boolean;
+    readonly errored?: Error | null;
+    on(event: 'data', listener: (chunk: Uint8Array | string) => void): unknown;
+    on(event: 'end', listener: () => void): unknown;
+    on(event: 'error', listener: (error: Error) => void): unknown;
+    on(event: 'close', listener: () => void): unknown;
+  };
+}
+
 export interface Ssh2SftpLike {
   writeFile(
     remotePath: string,
@@ -331,6 +362,17 @@ export class Ssh2Transport implements TransportPort {
     });
   }
 
+  /** Opens one raw SSH exec channel without a PTY and leaves its streams intact. */
+  openExecChannel(command: string): Promise<Ssh2DuplexExecStreamLike> {
+    const client = this.client;
+    if (!client) return Promise.reject(new Error('not connected'));
+    return new Promise((resolve, reject) => {
+      client.exec(command, (error, stream) => {
+        if (error) reject(error);
+        else resolve(stream as unknown as Ssh2DuplexExecStreamLike);
+      });
+    });
+  }
   writeFile(remotePath: string, data: Uint8Array): Promise<void> {
     const client = this.client;
     if (!client) return Promise.reject(new Error('not connected'));

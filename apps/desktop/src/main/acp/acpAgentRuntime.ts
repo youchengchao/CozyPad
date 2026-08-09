@@ -240,6 +240,10 @@ export class AcpAgentRuntime {
       spec: AcpLaunchSpec,
       handlers: AcpClientHandlers,
     ) => AcpChild = spawnAcpAgent,
+    private readonly spawnRemote?: (
+      spec: AcpLaunchSpec,
+      handlers: AcpClientHandlers,
+    ) => Promise<AcpChild>,
   ) {}
 
   has(sessionId: string): boolean {
@@ -272,11 +276,12 @@ export class AcpAgentRuntime {
      * believes is in force and is not.
      */
     desiredModeId?: string,
+    remote = false,
     // Translated once, here, so the spawn and the agent agree. Getting this
     // wrong is quiet rather than loud: the child would start in the right place
     // while `--add-dir /c/Users/name` told agy to look somewhere that does not
     // exist on Windows, and it would answer confidently about nothing.
-    cwd: string = toLocalPath(rawCwd),
+    cwd: string = remote ? rawCwd : toLocalPath(rawCwd),
     spec: AcpLaunchSpec = launchSpecFor(agentKind, cwd),
   ): Promise<OpenedSession> {
     this.stop(sessionId);
@@ -385,7 +390,11 @@ export class AcpAgentRuntime {
       },
     };
 
-    const child = this.spawn(spec, handlers);
+    const launch = remote ? this.spawnRemote : this.spawn;
+    if (launch === undefined) {
+      throw new Error('Remote ACP transport is not available');
+    }
+    const child = await launch(spec, handlers);
     const running: Running = {
       child,
       acpSessionId: '',

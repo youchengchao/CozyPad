@@ -180,6 +180,7 @@ export interface AgentCommunicationServiceOptions {
       agentKind: string,
       continuation?: AcpSessionContinuation,
       desiredModeId?: string,
+      remote?: boolean,
     ): Promise<{
       acpSessionId: string;
       continued: boolean;
@@ -1139,7 +1140,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
 
   async create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle> {
     this.assertConnected(request.profileId);
-    this.assertAcpSupportedOn(request.profileId);
     // Every agent is a chat session now. agy used to be forced to `terminal`,
     // which meant CozyPad drove its TUI and read the answer back off a 120x40
     // screen — the path that concatenated prompts, lost their first character,
@@ -1242,7 +1242,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       // "Ready" has to mean the agent answered, not that a process was
       // spawned: initialize and session/new both returned, which is also when
       // the model list becomes available.
-      this.assertAcpSupported(stored);
       const started = await this.startAcpAgent(stored);
       if (
         stored.launchMode !== undefined &&
@@ -1309,6 +1308,9 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       // 'default' means "whatever the agent starts in"; anything else is a
       // choice the agent must be asked to honour.
       launchMode === undefined || launchMode === 'default' ? undefined : launchMode,
+      this.options.isLocalHost?.(
+        stored.record.provisionalIdentity.connectionProfileId,
+      ) !== true,
     );
     // Claude and Codex return the native conversation id as the ACP session
     // id. Persisting it lets a later revive continue the same backend thread.
@@ -1462,7 +1464,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     const stored = this.requireSession(request.sessionId);
     const profileId = stored.record.provisionalIdentity.connectionProfileId;
     this.assertConnected(profileId);
-    this.assertAcpSupportedOn(profileId);
     if (
       stored.record.status !== 'exited' &&
       stored.record.status !== 'error' &&
@@ -1605,7 +1606,6 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     await this.persist();
     this.emitSession(stored);
     try {
-      this.assertAcpSupported(stored);
       const { continued } = await this.startAcpAgent(
         stored,
         this.acpContinuationFor(stored, resumeConversationId),
@@ -2000,7 +2000,6 @@ git diff --no-ext-diff --unified=3 2>/dev/null || true
       if (this.options.acp === undefined) {
         throw new Error('No ACP runtime is available for this agent');
       }
-      this.assertAcpSupported(stored);
       if (!this.options.acp.has(stored.record.id)) {
         // The app restarted since this session last spoke: the agent process
         // is gone, but the bound conversation is not. Continuing it here is
@@ -2638,33 +2637,6 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
     if (this.activeProfileId !== profileId) {
       throw new Error('The requested SSH profile is not connected');
     }
-  }
-
-  /**
-   * Refuses work the local ACP runtime cannot do.
-   *
-   * Split out so both `create` and `send` refuse identically: a session that
-   * was created remotely must not become sendable later just because the check
-   * lived in only one of them.
-   */
-  private assertAcpSupported(stored: StoredAgentSession): void {
-    this.assertAcpSupportedOn(stored.record.provisionalIdentity.connectionProfileId);
-  }
-
-  /**
-   * Refuses remote agent work BEFORE any remote side effect. Failing after
-   * creating the tmux session and the ~/.cozypad directories left garbage on
-   * the host, and every Resume retry added another copy.
-   */
-  private assertAcpSupportedOn(profileId: string): void {
-    if (this.options.isLocalHost?.(profileId) === true) return;
-    throw new Error(
-      'Agent sessions on a remote host are not available yet. ' +
-        'CozyPad now runs agents over the Agent Client Protocol as a local ' +
-        'child process; running one on the other end of an SSH connection is a ' +
-        'separate transport that has not been built. Open this session on ' +
-        '"This computer" instead.',
-    );
   }
 
   private assertSessionConnected(stored: StoredAgentSession): void {

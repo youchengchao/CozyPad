@@ -533,6 +533,18 @@ describe('Ssh2Transport', () => {
     ).rejects.toThrow('not connected');
   });
 
+  it('opens a raw exec channel without allocating a PTY', async () => {
+    const { transport, client } = await connectedTransport();
+    const stream = new FakeExecStream();
+    const openPromise = transport.openExecChannel('npx -y codex-acp');
+    const request = client.execRequests[0]!;
+
+    expect(request.command).toBe('npx -y codex-acp');
+    expect(request.options).toBeUndefined();
+    request.callback(undefined, stream);
+    await expect(openPromise).resolves.toBe(stream);
+  });
+
   it('exec resolves collected stdout on close', async () => {
     const { transport, client } = await connectedTransport();
     const execPromise = transport.exec('uname -a');

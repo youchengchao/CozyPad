@@ -391,8 +391,6 @@ interface AgentsWorkspaceProps {
   connectionState?: ConnectionState;
   reconnect?: { attempt: number; secondsLeft: number } | null;
   profileId: string | null;
-  /** Agents run as local ACP children; a remote host cannot create one. */
-  hostIsLocal?: boolean;
 }
 
 export function AgentsWorkspace({
@@ -400,7 +398,6 @@ export function AgentsWorkspace({
   connectionState,
   reconnect,
   profileId,
-  hostIsLocal = false,
 }: AgentsWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [agent, setAgent] = useState<AgentKind>('claude');
@@ -885,10 +882,8 @@ export function AgentsWorkspace({
   const installation = installations[agent];
   // Mirrors what create() actually accepts — an enabled button that the
   // service then refuses is worse than a disabled one with a reason.
-  const remoteUnsupported = connected && !hostIsLocal;
   const canCreate =
     connected &&
-    hostIsLocal &&
     profileId !== null &&
     installation?.installed === true &&
     installation.installationScope === 'user' &&
@@ -1559,15 +1554,6 @@ export function AgentsWorkspace({
                   {reconnect
                     ? `${reconnect.secondsLeft}s 後進行第 ${reconnect.attempt} 次重連嘗試`
                     : '已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入或新建。Agent 對話會在遠端指定路徑建立 tmux session。'}
-                </p>
-              </div>
-            ) : remoteUnsupported ? (
-              <div className="agent-availability-banner" role="status">
-                <strong>遠端主機尚不支援 agent 對話</strong>
-                <p>
-                  Agent 目前以本機子程序運行（ACP）；SSH 主機上的執行是尚未建置的獨立
-                  transport。已保存的 sessions 仍可瀏覽，切回「This computer」即可新建或
-                  Resume。
                 </p>
               </div>
             ) : agentUnavailable ? (

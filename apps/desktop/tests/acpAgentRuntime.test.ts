@@ -69,6 +69,48 @@ function runtimeWith(): {
   };
 }
 
+describe('ACP process routing', () => {
+  it('preserves the remote cwd and uses the SSH launcher', async () => {
+    const { child } = fakeChild();
+    const localSpawn = vi.fn(
+      (spec: AcpLaunchSpec, handlers: AcpClientHandlers) => {
+        void spec;
+        void handlers;
+        return child;
+      },
+    );
+    const remoteSpawn = vi.fn(
+      async (spec: AcpLaunchSpec, handlers: AcpClientHandlers) => {
+        void spec;
+        void handlers;
+        return child;
+      },
+    );
+    const runtime = new AcpAgentRuntime(
+      {
+        onTimeline: () => undefined,
+        onPermission: () => new Promise<string | null>(() => undefined),
+        onError: () => undefined,
+      },
+      localSpawn,
+      remoteSpawn,
+    );
+
+    await runtime.start(
+      'remote-1',
+      '/d/projects/research',
+      'codex',
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(localSpawn).not.toHaveBeenCalled();
+    expect(remoteSpawn).toHaveBeenCalledOnce();
+    expect(remoteSpawn.mock.calls[0]?.[0].cwd).toBe('/d/projects/research');
+  });
+});
+
 const permissionRequest = (title: string): unknown => ({
   toolCall: { title },
   options: [

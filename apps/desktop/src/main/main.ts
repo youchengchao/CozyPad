@@ -22,6 +22,7 @@ import { ShellRemoteFiles } from '@cozypad/remote-services';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { AgentCommunicationService } from './agentCommunicationService';
 import { AcpAgentRuntime } from './acp/acpAgentRuntime';
+import { spawnSshAcpAgent } from './acp/sshAcpProcess';
 import type { AgentCommunicationPort } from './agentCommunicationService';
 import { registerIpc } from './ipc';
 import { ProfileStore, ProfileStoreWithLocal } from './profileStore';
@@ -152,14 +153,12 @@ async function createServices(
   // "This computer" is a peer of the saved SSH hosts, so it is chosen the same
   // way — by connecting to a profile — and everything downstream is unchanged.
   const localTransport = new LocalTransport();
-  const transport = new RoutingTransport(
-    new Ssh2Transport({
-      getProfile: (profileId) => profileStore.get(profileId),
-      getCredential: (profileId) => profileStore.getCredential(profileId),
-      verifyHostKey: (profile, key) => hostKeys.verify(profile, key),
-    }),
-    localTransport,
-  );
+  const sshTransport = new Ssh2Transport({
+    getProfile: (profileId) => profileStore.get(profileId),
+    getCredential: (profileId) => profileStore.getCredential(profileId),
+    verifyHostKey: (profile, key) => hostKeys.verify(profile, key),
+  });
+  const transport = new RoutingTransport(sshTransport, localTransport);
   const exec = (command: string, timeoutMs?: number) => transport.exec(command, timeoutMs);
 
   // Remote agents live in tmux so they survive a dropped link; local agents are
@@ -205,7 +204,10 @@ async function createServices(
     onError: (sessionId, message) => {
       console.error('[cozypad] acp session', sessionId, message);
     },
-  });
+  },
+  undefined,
+  (spec, handlers) => spawnSshAcpAgent(sshTransport, spec, handlers),
+  );
   const agentCommunication = new AgentCommunicationService({
     transport,
     tmux,
