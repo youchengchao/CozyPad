@@ -257,6 +257,12 @@ describe('AgentCommunicationService', () => {
     start(
       sessionId: string,
       cwd: string,
+      agentKind?: string,
+      continuation?: {
+        acpSessionId: string;
+        history?: readonly ChatItem[];
+        resumeMeta?: Readonly<Record<string, unknown>>;
+      },
     ): Promise<{
       acpSessionId: string;
       continued: boolean;
@@ -1012,6 +1018,57 @@ describe('AgentCommunicationService', () => {
   });
 
 
+
+  it('persists and resumes the Codex ACP session id', async () => {
+    const starts: Array<{
+      agentKind: string | undefined;
+      continuation: { acpSessionId: string } | undefined;
+    }> = [];
+    acpRuntime.start = async (_sessionId, _cwd, agentKind, continuation) => {
+      starts.push({ agentKind, continuation });
+      return {
+        acpSessionId: 'codex-thread-1',
+        continued: continuation?.acpSessionId === 'codex-thread-1',
+        configOptions: [],
+        modes: { availableModes: [] },
+      };
+    };
+
+    const installation = await service.detect({
+      profileId: 'profile-1',
+      agentKind: 'codex',
+    });
+    expect(installation.supportsResume).toBe(true);
+    expect(installation.resumeStartsNewConversation).toBeUndefined();
+
+    const bundle = await service.create({
+      profileId: 'profile-1',
+      agentKind: 'codex',
+      cwd: '/srv/deep-learning',
+      title: 'Codex continuity',
+      launchMode: 'workspace-request',
+    });
+    service.noteAgentExit(bundle.session.id, 'test restart');
+
+    const resumed = await service.revive({ sessionId: bundle.session.id });
+
+    expect(starts).toHaveLength(2);
+    expect(starts[1]).toMatchObject({
+      agentKind: 'codex',
+      continuation: { acpSessionId: 'codex-thread-1' },
+    });
+    expect(resumed.session.resumeContinuity).toBe('continued');
+    const persisted = JSON.parse(
+      await fs.readFile(path.join(tempDirectory, 'sessions.json'), 'utf8'),
+    ) as {
+      sessions: Array<{
+        record: { identity?: { agentConversationId?: string } | null };
+      }>;
+    };
+    expect(persisted.sessions[0]?.record.identity?.agentConversationId).toBe(
+      'codex-thread-1',
+    );
+  });
 
   it('accepts the drive-style attachment directory the local Windows host reports', async () => {
     transport.attachmentDirectory =

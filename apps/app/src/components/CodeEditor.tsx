@@ -56,10 +56,11 @@ interface CodeEditorProps {
   value: string;
   onChange(value: string): void;
   onSave(): void;
+  line?: number;
 }
 
 /** Cursor/VS Code 同款編輯器核心（Monaco）：語法高亮、行號、多游標、搜尋、Ctrl+S。 */
-export function CodeEditor({ path, value, onChange, onSave }: CodeEditorProps) {
+export function CodeEditor({ path, value, onChange, onSave, line }: CodeEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const onChangeRef = useRef(onChange);
@@ -127,6 +128,17 @@ export function CodeEditor({ path, value, onChange, onSave }: CodeEditorProps) {
     const editor = editorRef.current;
     if (editor && editor.getValue() !== value) editor.setValue(value);
   }, [value]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor && line) {
+      setTimeout(() => {
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.focus();
+      }, 50);
+    }
+  }, [line]);
 
   return <div className="code-editor" ref={containerRef} />;
 }

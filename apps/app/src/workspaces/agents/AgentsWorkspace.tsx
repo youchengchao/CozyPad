@@ -672,14 +672,14 @@ export function AgentsWorkspace({
         setTimelines((current) => ({ ...current, [sessionId]: items }));
         // The prompt showing up in the timeline IS the delivery confirmation.
         const pendingSend = sendTimersRef.current[sessionId];
+        const lastUserItem = [...items]
+          .reverse()
+          .find((item) => item.kind === 'message' && item.role === 'user');
         if (
           pendingSend !== undefined &&
-          items.some(
-            (item) =>
-              item.kind === 'message' &&
-              item.role === 'user' &&
-              item.text === pendingSend.text,
-          )
+          lastUserItem !== undefined &&
+          lastUserItem.kind === 'message' &&
+          lastUserItem.text.trim() === pendingSend.text.trim()
         ) {
           window.clearTimeout(pendingSend.timer);
           delete sendTimersRef.current[sessionId];
@@ -1159,7 +1159,7 @@ export function AgentsWorkspace({
         ),
       }));
       setDrafts((current) =>
-        (current[sessionId] ?? '').trim() === text
+        (current[sessionId] ?? '').trim() === text.trim()
           ? { ...current, [sessionId]: '' }
           : current,
       );
@@ -1274,7 +1274,9 @@ export function AgentsWorkspace({
       const delivered =
         bundle?.items.some(
           (item) =>
-            item.kind === 'message' && item.role === 'user' && item.text === text,
+            item.kind === 'message' &&
+            item.role === 'user' &&
+            item.text.trim() === text.trim(),
         ) === true;
       setSendUnconfirmed((current) => {
         const next = { ...current };
@@ -1287,7 +1289,7 @@ export function AgentsWorkspace({
       );
       if (delivered) {
         setDrafts((current) =>
-          (current[sessionId] ?? '').trim() === text
+          (current[sessionId] ?? '').trim() === text.trim()
             ? { ...current, [sessionId]: '' }
             : current,
         );
@@ -1859,6 +1861,7 @@ export function AgentsWorkspace({
                     ) : (
                       <TimelineErrorBoundary>
                         <ChatTimeline
+                          key={selectedSession.id}
                           sessionId={selectedSession.id}
                           sessionCwd={selectedSession.cwd}
                           items={timeline}
@@ -1910,6 +1913,7 @@ export function AgentsWorkspace({
                     ) : (
                       <TimelineErrorBoundary>
                         <ChatTimeline
+                          key={selectedSession.id}
                           sessionId={selectedSession.id}
                           sessionCwd={selectedSession.cwd}
                           items={timeline}

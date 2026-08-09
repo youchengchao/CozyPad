@@ -79,6 +79,7 @@ function TreeRow({
 export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const [activeLine, setActiveLine] = useState<number | undefined>(undefined);
   const [homePath, setHomePath] = useState<string | null>(null);
   const [children, setChildren] = useState<Record<string, RemoteFileItem[]>>({});
   const [truncatedDirs, setTruncatedDirs] = useState<Set<string>>(new Set());
@@ -195,7 +196,11 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     void bridge
       .fsList({ path: parentOf(absolute) })
       .then((listing) => {
-        const found = listing.items.find((entry) => entry.path === absolute);
+        const found = listing.items.find(
+          (entry) =>
+            entry.path.replace(/\\/g, '/').toLowerCase() ===
+            absolute.replace(/\\/g, '/').toLowerCase(),
+        );
         if (found) openFile(found);
         else setError(`找不到連結目標：${absolute}`);
       })
@@ -210,13 +215,14 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     );
   };
 
-  const openFile = (item: RemoteFileItem) => {
+  const openFile = (item: RemoteFileItem, line?: number) => {
     if (!confirmDiscard()) return;
     if (item.type === 'l') {
       setSelected(item);
       setDraft(null);
       setPdfData(null);
       setImageData(null);
+      setActiveLine(undefined);
       return;
     }
     setSelected(item);
@@ -224,6 +230,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     setPdfData(null);
     setImageData(null);
     setMdPreview(false);
+    setActiveLine(line);
 
     const imageMimeType = imagePreviewMimeType(item);
     if (imageMimeType !== null) {
@@ -259,34 +266,24 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   };
 
   const openFileByPath = useCallback(
-    (absolute: string) => {
-      const parent = parentOf(absolute);
+    (absolute: string, line?: number) => {
       bridge
-        .fsList({ path: parent })
-        .then((listing) => {
-          const found = listing.items.find((entry) => entry.path === absolute);
-          if (found) {
-            if (found.type === 'd') {
-              void openPath(absolute);
-            } else {
-              openFile(found);
-            }
-          } else {
-            bridge
-              .fsList({ path: absolute })
-              .then(() => {
-                void openPath(absolute);
-              })
-              .catch(() => {});
-          }
+        .fsList({ path: absolute })
+        .then(() => {
+          void openPath(absolute);
         })
         .catch(() => {
-          bridge
-            .fsList({ path: absolute })
-            .then(() => {
-              void openPath(absolute);
-            })
-            .catch(() => {});
+          const name = absolute.slice(absolute.lastIndexOf('/') + 1);
+          const parent = parentOf(absolute);
+          const syntheticItem: RemoteFileItem = {
+            name,
+            path: absolute,
+            type: 'f',
+            sizeBytes: 0,
+            modified: '',
+          };
+          setCurrentPath(parent);
+          openFile(syntheticItem, line);
         });
     },
     [bridge, openPath, openFile]
@@ -296,11 +293,28 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     const handleOpenFile = (e: Event) => {
       const customEvent = e as CustomEvent<{ path: string; cwd?: string }>;
       if (!customEvent.detail?.path) return;
-      let filePath = customEvent.detail.path;
-      if (filePath.startsWith('file:///')) {
-        filePath = filePath.slice(8);
+      let filePath = decodeURIComponent(customEvent.detail.path);
+      let line: number | undefined;
+      const hashIndex = filePath.indexOf('#');
+      if (hashIndex >= 0) {
+        const hash = filePath.slice(hashIndex + 1);
+        filePath = filePath.slice(0, hashIndex);
+        const match = /^L(\d+)/i.exec(hash);
+        if (match !== null) {
+          line = parseInt(match[1]!, 10);
+        }
+      }
+      if (filePath.startsWith('file:')) {
+        filePath = filePath.slice(5);
+        while (filePath.startsWith('/')) {
+          filePath = filePath.slice(1);
+        }
       }
       filePath = filePath.replace(/\\/g, '/');
+      const msysMatch = /^\/([A-Za-z])\/(.*)$/u.exec(filePath);
+      if (msysMatch !== null) {
+        filePath = `${msysMatch[1]!.toUpperCase()}:/${msysMatch[2]!}`;
+      }
       if (/^\/[A-Za-z]:/u.test(filePath)) {
         filePath = filePath.slice(1);
       }
@@ -312,7 +326,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         if (cwd === undefined || cwd === '') return;
         filePath = `${cwd.replace(/\/+$/u, '')}/${filePath.replace(/^\.\//u, '')}`;
       }
-      openFileByPath(filePath);
+      openFileByPath(filePath, line);
     };
     window.addEventListener('cozypad:open-file', handleOpenFile);
     return () => {
@@ -848,6 +862,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
               <CodeEditor
                 path={draft.path}
                 value={draft.text}
+                line={activeLine}
                 onChange={(text) =>
                   setDraft((current) => (current ? { ...current, text } : current))
                 }

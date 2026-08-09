@@ -1075,15 +1075,10 @@ export class AgentCommunicationService implements AgentCommunicationPort {
           supportsResume:
             userScoped &&
             probeSucceeded &&
-            ((request.agentKind === 'claude' && helpOutput.includes('--resume')) ||
+            (request.agentKind === 'codex' ||
+              (request.agentKind === 'claude' && helpOutput.includes('--resume')) ||
               (request.agentKind === 'agy' &&
                 helpOutput.includes('--conversation'))),
-          // Codex can always be resumed in the SPEC 268 sense — the process
-          // relaunches — but its thread dies with the process, so the resume
-          // opens a new native conversation and the UI must say so.
-          ...(request.agentKind === 'codex'
-            ? { resumeStartsNewConversation: true }
-            : {}),
           supportsInteractiveApproval: approvals,
           supportsDangerouslySkipPermissions:
             userScoped &&
@@ -1315,11 +1310,10 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       // choice the agent must be asked to honour.
       launchMode === undefined || launchMode === 'default' ? undefined : launchMode,
     );
-    // For claude the ACP session id IS the CLI's conversation id — the one
-    // `--resume` takes — so learning it at start is what makes a later revive
-    // able to continue instead of starting over. agy's id is not knowable
-    // here; it arrives in the first prompt response's `_meta` instead.
-    if (agentKind === 'claude') {
+    // Claude and Codex return the native conversation id as the ACP session
+    // id. Persisting it lets a later revive continue the same backend thread.
+    // AGY reports its id in the first prompt response's `_meta` instead.
+    if (agentKind === 'claude' || agentKind === 'codex') {
       this.bindAgentConversation(stored, started.acpSessionId);
     }
     stored.configOptions = started.configOptions;
@@ -1352,8 +1346,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
    *
    * The bound identity is the source of truth; revive passes a disk-guessed
    * AGY id when no binding exists yet. `undefined` means there is nothing to
-   * continue and the agent starts fresh — which is honest for codex, whose
-   * thread died with its process.
+   * continue and the agent starts fresh.
    */
   private acpContinuationFor(
     stored: StoredAgentSession,
@@ -1462,9 +1455,8 @@ export class AgentCommunicationService implements AgentCommunicationPort {
   /**
    * Relaunch an exited session's agent in place. The record, timeline, and
    * title survive; the process is new. Claude resumes its bound conversation
-   * (`--resume`); Codex starts a fresh app-server thread — the old one died
-   * with its process; AGY reopens its own CLI, where its conversation list
-   * offers the previous session.
+   * (`--resume`); Codex resumes its stored app-server thread; AGY reopens its
+   * own CLI, where its conversation list offers the previous session.
    */
   async revive(request: AgentSessionRequest): Promise<AgentSessionBundle> {
     const stored = this.requireSession(request.sessionId);
@@ -1533,7 +1525,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     // so the unfiltered "latest" is simply whoever used AGY most recently.
     const lastActivityMs = Date.parse(stored.record.updatedAt);
     const resumeConversationId =
-      installation.supportsResume && agentKind === 'claude'
+      installation.supportsResume && (agentKind === 'claude' || agentKind === 'codex')
         ? boundConversationId
         : installation.supportsResume && agentKind === 'agy'
           ? boundConversationId ??

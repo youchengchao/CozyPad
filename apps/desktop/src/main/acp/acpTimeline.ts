@@ -66,6 +66,38 @@ function textOf(content: unknown): string {
   return block.type === 'text' && typeof block.text === 'string' ? block.text : '';
 }
 
+function toolOutputOf(update: Record<string, unknown>): string | undefined {
+  const content = update['content'];
+  if (Array.isArray(content)) {
+    const text = content
+      .map((entry) => {
+        if (typeof entry !== 'object' || entry === null) return '';
+        const block = entry as { type?: unknown; content?: unknown };
+        return block.type === 'content' ? textOf(block.content) : '';
+      })
+      .filter((part) => part !== '')
+      .join('\n');
+    if (text !== '') return text;
+  }
+
+  const rawOutput = update['rawOutput'];
+  if (typeof rawOutput === 'string') return rawOutput === '' ? undefined : rawOutput;
+  if (typeof rawOutput !== 'object' || rawOutput === null) {
+    return rawOutput === undefined ? undefined : String(rawOutput);
+  }
+
+  const formattedOutput = (rawOutput as Record<string, unknown>)['formatted_output'];
+  const exitCode = (rawOutput as Record<string, unknown>)['exit_code'];
+  if (typeof formattedOutput === 'string') {
+    const output = formattedOutput.trimEnd();
+    const exit = typeof exitCode === 'number' ? `Exit code: ${exitCode}` : '';
+    return [output, exit].filter((part) => part !== '').join('\n\n') || undefined;
+  }
+
+  const serialized = JSON.stringify(rawOutput, null, 2);
+  return serialized === '{}' ? undefined : serialized;
+}
+
 /**
  * ACP tool status → CozyPad's.
  *
@@ -300,6 +332,7 @@ export function reduceAcpEvent(
       // `title`. `ToolCallItemSchema.name` is `.min(1)`, so taking `name`
       // alone makes every agy tool call fail to parse.
       const name = typeof update['name'] === 'string' && update['name'] !== '' ? update['name'] : title;
+      const output = toolOutputOf(update);
       const existingIndex = state.toolIndex.get(toolCallId);
 
       if (existingIndex === undefined) {
@@ -310,6 +343,7 @@ export function reduceAcpEvent(
           name: name ?? 'tool',
           summary: title ?? name ?? '',
           status: toolStatus(update['status']),
+          ...(output === undefined ? {} : { output }),
         };
         const toolIndex = new Map(state.toolIndex);
         toolIndex.set(toolCallId, state.items.length);
@@ -334,6 +368,7 @@ export function reduceAcpEvent(
         ...(name === undefined ? {} : { name }),
         ...(title === undefined ? {} : { summary: title }),
         ...(update['status'] === undefined ? {} : { status: toolStatus(update['status']) }),
+        ...(output === undefined ? {} : { output }),
       };
       return { ...state, items };
     }

@@ -210,6 +210,139 @@
 }
 
 /* --------------------------------------------------------------------------
+   Tool disclosure
+   --------------------------------------------------------------------------
+   Tool calls share the reasoning disclosure's quiet visual language. The
+   summary stays compact and readable; detailed logs sit behind a subtle rule
+   so they remain available without becoming a second chat bubble.
+   -------------------------------------------------------------------------- */
+
+.tool-card,
+.tool-card.tool-running,
+.tool-card.tool-completed,
+.tool-card.tool-error {
+  --tool-accent: var(--text-faint);
+  align-self: stretch;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.tool-card.tool-running {
+  --tool-accent: var(--chat-accent);
+}
+
+.tool-card.tool-completed {
+  --tool-accent: var(--green);
+}
+
+.tool-card.tool-error {
+  --tool-accent: var(--red);
+}
+
+.tool-card .tool-card-header {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--chat-line-soft);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-faint);
+  cursor: default;
+  transition: color var(--chat-motion), border-color var(--chat-motion),
+    background-color var(--chat-motion);
+}
+
+.tool-card .tool-card-toggle {
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool-card .tool-card-toggle:hover {
+  border-color: var(--chat-line);
+  background: var(--chat-card);
+  color: var(--text-dim);
+}
+
+.tool-card .tool-status {
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: color-mix(in srgb, var(--tool-accent) 72%, var(--text-faint));
+  font-size: 11.5px;
+}
+
+.tool-card .tool-spinner {
+  width: 8px;
+  height: 8px;
+  border-width: 1.5px;
+}
+
+.tool-card .tool-name {
+  min-width: 0;
+  max-width: min(220px, 36vw);
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card .tool-name-primary {
+  max-width: min(680px, 68vw);
+}
+
+.tool-card .tool-summary {
+  min-width: 0;
+  max-width: min(520px, 46vw);
+  flex: 1 1 12rem;
+}
+
+.tool-card .tool-duration {
+  color: var(--text-faint);
+}
+
+.tool-card .tool-chevron {
+  margin-left: 0;
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.85;
+  transition: transform var(--chat-motion);
+}
+
+.tool-card .tool-output-wrapper {
+  max-width: calc(100% - 10px);
+  margin: 8px 0 2px 10px;
+  padding: 0 0 0 13px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--tool-accent) 28%, transparent);
+  background: none;
+}
+
+.tool-card .tool-output {
+  max-height: 320px;
+  margin: 0;
+  padding: 2px 6px 4px 0;
+  overflow: auto;
+  border-radius: 0;
+  background: none;
+  color: var(--text-dim);
+  white-space: pre;
+  word-break: normal;
+}
+
+/* --------------------------------------------------------------------------
    CLI notice
    --------------------------------------------------------------------------
    AGY talking about the session ("this conversation is also open in another
@@ -443,6 +576,62 @@
   border-radius: var(--chat-radius-sm);
   color: var(--text-dim);
   font-weight: 600;
+}
+
+/* ChatGPT-style copy actions: icon-only, quiet until hovered. */
+.chat-code-block {
+  position: relative;
+}
+
+.chat-code-block > pre {
+  padding-right: 44px;
+}
+
+.chat-code-block > .diff-card {
+  margin: 0;
+}
+
+.chat-copy-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--text-faint);
+  transition: background-color var(--chat-motion), color var(--chat-motion);
+}
+
+.chat-copy-button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.chat-copy-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chat-copy-button-copied {
+  color: var(--green);
+}
+
+.chat-code-block > .chat-copy-button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 1;
+}
+
+.chat-response-actions {
+  display: flex;
+  margin-top: 4px;
 }
 
 /* --------------------------------------------------------------------------

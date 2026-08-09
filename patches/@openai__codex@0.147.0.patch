@@ -1,0 +1,10 @@
+diff --git a/bin/codex.js b/bin/codex.js
+index a307e3861023494be4a9bea334fcda8e86a4e4f7..6b4be3023dfde0f5b8216b28be58a50d0e4edd7e 100644
+--- a/bin/codex.js
++++ b/bin/codex.js
+@@ -195,4 +195,5 @@ env[packageManagerEnvVar] = "1";
+ const child = spawn(binaryPath, process.argv.slice(2), {
+   stdio: "inherit",
+   env,
++  windowsHide: process.platform === "win32",
+ });

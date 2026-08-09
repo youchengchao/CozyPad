@@ -42,7 +42,7 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
   });
 
   describe('2. Tool card step expansion/collapse toggles & default states', () => {
-    it('defaults running tool cards to open (expanded)', () => {
+    it('does not expose an inactive toggle before a running tool has output', () => {
       const item: ToolCallItem = {
         id: 'tool-run-1',
         kind: 'tool_call',
@@ -52,7 +52,10 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
         status: 'running',
       };
       const html = renderToStaticMarkup(<ToolStepCard item={item} />);
-      expect(html).toContain('<details class="card tool-card tool-running" open=""');
+      expect(html).toContain('<div class="card tool-card tool-running"');
+      expect(html).not.toContain('<details');
+      expect(html).not.toContain('aria-expanded');
+      expect(html).not.toContain('tool-chevron');
     });
 
     it('defaults error tool cards to open (expanded)', () => {
@@ -66,7 +69,8 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
         output: 'Command failed with code 1',
       };
       const html = renderToStaticMarkup(<ToolStepCard item={item} />);
-      expect(html).toContain('<details class="card tool-card tool-error" open=""');
+      expect(html).toContain('class="tool-card-header tool-card-toggle" aria-expanded="true"');
+      expect(html).not.toContain('hidden=""');
     });
 
     it('defaults completed tool cards to closed (collapsed)', () => {
@@ -81,8 +85,10 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
         output: 'file content',
       };
       const html = renderToStaticMarkup(<ToolStepCard item={item} />);
-      expect(html).toContain('<details class="card tool-card tool-completed"');
-      expect(html).not.toContain('open=""');
+      expect(html).toContain('<div class="card tool-card tool-completed"');
+      expect(html).toContain('aria-expanded="false"');
+      expect(html).toContain('<span class="tool-name">read_file</span>');
+      expect(html).toContain('hidden=""');
     });
 
     it('respects defaultExpanded prop override when set explicitly to true or false', () => {
@@ -98,7 +104,8 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
       const htmlForceOpen = renderToStaticMarkup(
         <ToolStepCard item={itemCompleted} defaultExpanded={true} />,
       );
-      expect(htmlForceOpen).toContain('<details class="card tool-card tool-completed" open=""');
+      expect(htmlForceOpen).toContain('aria-expanded="true"');
+      expect(htmlForceOpen).not.toContain('hidden=""');
 
       const itemRunning: ToolCallItem = {
         id: 'tool-running-override',
@@ -107,12 +114,15 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
         name: 'run_command',
         summary: 'long process',
         status: 'running',
+        output: 'partial output',
       };
       const htmlForceClose = renderToStaticMarkup(
         <ToolStepCard item={itemRunning} defaultExpanded={false} />,
       );
-      expect(htmlForceClose).toContain('<details class="card tool-card tool-running"');
-      expect(htmlForceClose).not.toContain('open=""');
+      expect(htmlForceClose).toContain('<div class="card tool-card tool-running"');
+      expect(htmlForceClose).toContain('aria-expanded="false"');
+      expect(htmlForceClose).toContain('hidden=""');
+      expect(htmlForceClose).toContain('tool-chevron');
     });
 
     it('renders non-collapsible card when isCollapsible is false', () => {
@@ -128,6 +138,23 @@ describe('Challenger 2 M2 Empirical Verification Suite - Tool Execution Timeline
       expect(html).toContain('<div class="card tool-card tool-completed"');
       expect(html).not.toContain('<details');
       expect(html).not.toContain('tool-chevron');
+    });
+
+    it('renders a repeated ACP tool title only once in the compact header', () => {
+      const item: ToolCallItem = {
+        id: 'tool-repeated-title',
+        kind: 'tool_call',
+        timestamp: '2026-08-07T00:00:00.000Z',
+        name: 'git status --short',
+        summary: 'git status --short',
+        status: 'completed',
+        output: 'M src/main.ts',
+      };
+
+      const html = renderToStaticMarkup(<ToolStepCard item={item} />);
+
+      expect(html.match(/git status --short/gu)).toHaveLength(1);
+      expect(html).toContain('tool-name tool-name-primary');
     });
   });
 

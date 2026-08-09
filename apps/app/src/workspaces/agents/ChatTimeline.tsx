@@ -4,10 +4,12 @@ import {
   isValidElement,
   useEffect,
   useRef,
+  useState,
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react';
 import type { ChatItem, ToolCallItem } from '@cozypad/contracts';
+import { getBridge } from '../../platform/bridge';
 import { AssistantMarkdown, MarkdownView } from './AssistantMarkdown';
 import { ThinkingCard } from './ThinkingCard';
 import { MessageAttachments } from './MessageAttachments';
@@ -143,8 +145,23 @@ export function ToolStepCard({
   const isRunning = item.status === 'running';
   const isError = item.status === 'error';
   const isCompleted = item.status === 'completed';
-  const isOpen = defaultExpanded ?? (isRunning || isError);
+  const hasOutput = item.output !== undefined && item.output !== '';
+  const canToggle = isCollapsible && hasOutput;
+  const [isOpen, setIsOpen] = useState(defaultExpanded ?? (isRunning || isError));
   const durationText = formatToolDuration(item.durationMs, item.status);
+  const outputId = `tool-output-${item.id}`;
+  const normalizedName = item.name.trim();
+  const normalizedSummary = item.summary.trim();
+  const hasDistinctSummary =
+    normalizedSummary !== '' && normalizedSummary !== normalizedName;
+
+  useEffect(() => {
+    if (defaultExpanded !== undefined) {
+      setIsOpen(defaultExpanded);
+    } else if (isRunning || isError) {
+      setIsOpen(true);
+    }
+  }, [defaultExpanded, isError, isRunning]);
 
   const statusBadge = (
     <span className={`tool-status tool-status-${item.status}`}>
@@ -155,44 +172,56 @@ export function ToolStepCard({
     </span>
   );
 
-  const cardContent = (
+  const headerContent = (
     <>
-      <summary className="tool-card-header">
-        {statusBadge}
-        <span className="tool-name">{item.name}</span>
+      {statusBadge}
+      <span
+        className={`tool-name${hasDistinctSummary ? '' : ' tool-name-primary'}`}
+      >
+        {item.name}
+      </span>
+      {hasDistinctSummary ? (
         <span className="tool-summary mono">{item.summary}</span>
-        {durationText ? (
-          <span className={`tool-duration${isRunning ? ' tool-duration-running' : ''}`}>
-            {durationText}
-          </span>
-        ) : null}
-        {isCollapsible ? (
-          <span className="tool-chevron" aria-hidden="true">▼</span>
-        ) : null}
-      </summary>
-      {item.output ? (
-        <div className="tool-output-wrapper">
-          <pre className="tool-output">{item.output}</pre>
-        </div>
+      ) : null}
+      {durationText ? (
+        <span className={`tool-duration${isRunning ? ' tool-duration-running' : ''}`}>
+          {durationText}
+        </span>
       ) : null}
     </>
   );
 
-  if (!isCollapsible) {
+  const outputContent = hasOutput ? (
+    <div id={outputId} className="tool-output-wrapper" hidden={canToggle && !isOpen}>
+      <pre className="tool-output">{item.output}</pre>
+    </div>
+  ) : null;
+
+  if (!canToggle) {
     return (
       <div className={`card tool-card tool-${item.status}`}>
-        {cardContent}
+        <div className="tool-card-header">{headerContent}</div>
+        {outputContent}
       </div>
     );
   }
 
   return (
-    <details
+    <div
       className={`card tool-card tool-${item.status}`}
-      open={isOpen}
     >
-      {cardContent}
-    </details>
+      <button
+        type="button"
+        className="tool-card-header tool-card-toggle"
+        aria-expanded={isOpen}
+        aria-controls={outputId}
+        onClick={() => setIsOpen((open) => !open)}
+      >
+        {headerContent}
+        <span className="tool-chevron" aria-hidden="true">▾</span>
+      </button>
+      {outputContent}
+    </div>
   );
 }
 
@@ -218,12 +247,69 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
+function reactNodeText(node: ReactNode): string {
+  let text = '';
+  Children.forEach(node, (child) => {
+    if (typeof child === 'string' || typeof child === 'number' || typeof child === 'bigint') {
+      text += String(child);
+    } else if (isValidElement<{ children?: ReactNode }>(child)) {
+      text += reactNodeText(child.props.children);
+    }
+  });
+  return text;
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+
+  const copy = async () => {
+    try {
+      await getBridge().writeClipboard(text);
+      setCopied(true);
+      if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => setCopied(false), 2_000);
+    } catch (error) {
+      console.error('[ChatTimeline] Clipboard write failed:', error);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={`chat-copy-button${copied ? ' chat-copy-button-copied' : ''}`}
+      aria-label={copied ? '已複製' : label}
+      title={copied ? '已複製' : label}
+      onClick={() => void copy()}
+    >
+      {copied ? (
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="m4 10 3.25 3.25L16 4.5" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <rect x="6.5" y="2.5" width="11" height="11" rx="2" />
+          <path d="M13.5 13.5v2a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 /**
  * Intercepts ```diff / ```patch code fences in Claude/Codex assistant
  * messages and renders them as rich DiffBody cards instead of plain <pre>.
  */
-function ChatTimelineMarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) {
+function ChatTimelineMarkdownPre({ children, ...props }: ComponentPropsWithoutRef<'pre'>) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
+  const text = reactNodeText(child ?? children).replace(/\n$/u, '');
   if (
     isValidElement<{
       className?: string;
@@ -231,19 +317,28 @@ function ChatTimelineMarkdownPre({ children }: ComponentPropsWithoutRef<'pre'>) 
     }>(child)
   ) {
     const language = child.props.className ?? '';
-    const text = String(child.props.children ?? '').replace(/\n$/u, '');
     if (/\blanguage-(?:diff|patch)\b/u.test(language)) {
       return (
-        <details className="card diff-card" open>
-          <summary>
-            <span className="mono diff-path">inline diff</span>
-          </summary>
-          <DiffBody diff={text} />
-        </details>
+        <div className="chat-code-block">
+          <details className="card diff-card" open>
+            <summary style={{ padding: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px' }}>
+                <span className="mono diff-path">inline diff</span>
+              </div>
+            </summary>
+            <DiffBody diff={text} />
+          </details>
+          <CopyButton text={text} label="複製程式碼" />
+        </div>
       );
     }
   }
-  return <pre>{children}</pre>;
+  return (
+    <div className="chat-code-block">
+      <pre {...props}>{children}</pre>
+      <CopyButton text={text} label="複製程式碼" />
+    </div>
+  );
 }
 
 export function ChatTimeline({
@@ -335,6 +430,11 @@ export function ChatTimeline({
                     {item.interrupted === true ? (
                       <span className="msg-interrupted">已中斷</span>
                     ) : null}
+                    {item.role === 'assistant' && item.streaming !== true && item.text !== '' ? (
+                      <div className="chat-response-actions">
+                        <CopyButton text={item.text} label="複製回應" />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -344,12 +444,14 @@ export function ChatTimeline({
           case 'file_diff':
             return (
               <details key={item.id} className="card diff-card" open>
-                <summary>
-                  <span className="mono diff-path">{item.path}</span>
-                  <span className="diff-stat">
-                    <span className="diff-add">+{item.additions}</span>{' '}
-                    <span className="diff-del">−{item.deletions}</span>
-                  </span>
+                <summary style={{ padding: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', width: '100%' }}>
+                    <span className="mono diff-path">{item.path}</span>
+                    <span className="diff-stat">
+                      <span className="diff-add">+{item.additions}</span>{' '}
+                      <span className="diff-del">−{item.deletions}</span>
+                    </span>
+                  </div>
                 </summary>
                 <DiffBody diff={item.diff} />
               </details>

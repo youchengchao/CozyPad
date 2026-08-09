@@ -1430,6 +1430,7 @@ button.danger:hover {
   line-height: 1.6;
 }
 
+
 .msg-assistant .msg-body pre,
 .msg-assistant .msg-body code {
   white-space: pre;
@@ -1659,7 +1660,7 @@ button.danger:hover {
   }
 }
 
-.tool-card summary,
+.tool-card .tool-card-header,
 .diff-card summary,
 .thinking-card summary {
   display: flex;
@@ -1673,10 +1674,14 @@ button.danger:hover {
   transition: background-color 150ms ease;
 }
 
-.tool-card summary:hover,
+.tool-card-toggle:hover,
 .diff-card summary:hover,
 .thinking-card summary:hover {
   background: rgba(255, 255, 255, 0.04);
+}
+.tool-card-toggle {
+  width: 100%;
+  text-align: left;
 }
 
 .tool-card summary::-webkit-details-marker,
@@ -1717,6 +1722,7 @@ button.danger:hover {
   font-weight: 600;
   padding: 2px 7px;
   border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .tool-status-running {
@@ -1762,6 +1768,7 @@ button.danger:hover {
   transition: transform 150ms ease;
 }
 
+.tool-card-toggle[aria-expanded='true'] .tool-chevron,
 details[open] > summary .tool-chevron {
   transform: rotate(180deg);
 }
@@ -1782,8 +1789,6 @@ details[open] > summary .tool-chevron {
   padding: 8px 12px;
   background: rgba(0, 0, 0, 0.25);
   border-top: 1px solid var(--border);
-  max-height: 320px;
-  overflow-y: auto;
 }
 
 .tool-output {
@@ -2744,11 +2749,13 @@ details[open] > summary .tool-chevron {
   overflow-x: auto;
 }
 
+
 .markdown pre code {
   background: none;
   border: none;
   padding: 0;
 }
+
 
 .markdown ul,
 .markdown ol {

@@ -65,6 +65,21 @@ class MermaidErrorBoundary extends Component<
   }
 }
 
+function preprocessMermaidSource(src: string): string {
+  let processed = src;
+
+  // Sequence diagram Chinese keyword corrections
+  processed = processed.replace(/^\s*(參與者|participant)\s+/gmu, 'participant ');
+  processed = processed.replace(/^\s*(角色|actor)\s+/gmu, 'actor ');
+  processed = processed.replace(/^\s*(迴圈|循環|loop)\s+/gmu, 'loop ');
+  processed = processed.replace(/^\s*(選擇|opt)\s+/gmu, 'opt ');
+  processed = processed.replace(/^\s*(分支|條件|alt)\s+/gmu, 'alt ');
+  processed = processed.replace(/^\s*(註記|注記|備忘|Note)\s+/gmu, 'Note ');
+  processed = processed.replace(/^\s*(結束|end)\s*$/gmu, 'end');
+
+  return processed;
+}
+
 /**
  * Render one fenced Mermaid block without coupling diagram state to the agent
  * transport or terminal parser. Mermaid is loaded only when a completed
@@ -94,14 +109,16 @@ export function MermaidDiagram({
     let cancelled = false;
     setState('loading');
 
+    const preprocessed = preprocessMermaidSource(source);
+
     void loadMermaid()
       .then(async (mermaid) => {
-        const parsed = await mermaid.parse(source, { suppressErrors: true });
+        const parsed = await mermaid.parse(preprocessed, { suppressErrors: true });
         if (parsed === false) throw new Error('Invalid Mermaid diagram');
 
         const { svg, bindFunctions } = await mermaid.render(
           svgId,
-          source,
+          preprocessed,
           target,
         );
         if (cancelled) return;

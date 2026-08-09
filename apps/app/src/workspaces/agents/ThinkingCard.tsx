@@ -25,12 +25,14 @@ export function ThinkingCard({ text, meta = '', streaming = false }: ThinkingCar
       data-testid="agy-thinking-card"
       open={streaming}
     >
-      <summary>
-        <span className="agy-thinking-icon" aria-hidden="true" />
-        <span className="agy-thinking-label">{label}</span>
-        <span className="agy-thinking-chevron" aria-hidden="true">
-          ▾
-        </span>
+      <summary style={{ padding: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', padding: '6px 10px' }}>
+          <span className="agy-thinking-icon" aria-hidden="true" />
+          <span className="agy-thinking-label">{label}</span>
+          <span className="agy-thinking-chevron" aria-hidden="true">
+            ▾
+          </span>
+        </div>
       </summary>
       {text === '' ? null : (
         <div className="agy-thinking-body">

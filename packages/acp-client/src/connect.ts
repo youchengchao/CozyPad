@@ -1157,6 +1157,28 @@ export interface ConnectAcpAgentOptions {
  * Those are not failures this function can report; they are waits it can
  * *describe*, through {@link AcpAgentHandle.status} and
  * {@link ConnectAcpAgentOptions.onStall}.
+ *
+ * Starts a client-side ACP session connection over a pair of web streams.
+ *
+ * It is asynchronous: the handshake goes out immediately, and the returned
+ * handle settles once the peer accepts it.
+ *
+ * The read side of the duplex output is automatically drained to keep the PTY
+ * buffer moving; see {@link connectAcpAgentProcess} for details.
+ *
+ * ## What the stall callback promises
+ *
+ * An agent is unbounded: it may run tools, search the web, compile files, or
+ * ask the user a question — and any of those may take minutes, with no traffic
+ * on the session stream. The library keeps a liveness timer; if the agent is
+ * silent for {@link ConnectAcpAgentOptions.stallAfterMs} milliseconds, the
+ * `onStall` callback fires with a status object.
+ *
+ * CozyPad uses this to show a spinner. The callback does NOT mean the
+ * connection is dead — a compiler that takes 12 seconds is still running, and
+ * the session remains open. The callback is a diagnostic hint only; the one
+ * honest promise is smaller and it is this: **the UI must show elapsed time and
+ * a cancel affordance, and must never treat silence as failure.**
  */
 export function connectAcpAgent(
   options: ConnectAcpAgentOptions,
@@ -1214,7 +1236,7 @@ export function connectAcpAgent(
 
   const connection = new ClientSideConnection(
     () => createAcpClient(handlers),
-    ndJsonStream(watchedOutput, watchedInput),
+    ndJsonStream(watchedOutput, stitchUtf8Stream(watchedInput)),
   );
 
   const guard = <T>(
@@ -1649,4 +1671,34 @@ export function connectAcpAgentProcess(
   }
 
   return handle;
+}
+
+function stitchUtf8Stream(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder('utf-8');
+  const encoder = new TextEncoder();
+  const reader = stream.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          const remaining = decoder.decode();
+          if (remaining) {
+            controller.enqueue(encoder.encode(remaining));
+          }
+          controller.close();
+          return;
+        }
+        const text = decoder.decode(value, { stream: true });
+        if (text) {
+          controller.enqueue(encoder.encode(text));
+        }
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
 }

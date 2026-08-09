@@ -1,4 +1,5 @@
 import { Client } from 'ssh2';
+import { StringDecoder } from 'node:string_decoder';
 import type {
   ConnectionProfile,
   ConnectionState,
@@ -293,8 +294,9 @@ export class Ssh2Transport implements TransportPort {
           });
         }
 
+        const decoder = new StringDecoder('utf8');
         const emitLines = (chunk: Uint8Array): void => {
-          pending += Buffer.from(chunk).toString('utf8');
+          pending += decoder.write(Buffer.from(chunk));
           const lines = pending.split('\n');
           pending = lines.pop() ?? '';
           for (const line of lines) onLine(line);
@@ -307,7 +309,8 @@ export class Ssh2Transport implements TransportPort {
         stream.stderr?.on('data', (chunk) => stderr.push(chunk));
         stream.on('close', (code) => {
           if (timer !== null) clearTimeout(timer);
-          if (pending !== '') onLine(pending);
+          const finalPending = pending + decoder.end();
+          if (finalPending !== '') onLine(finalPending);
           if (!collectOutput && (code === 0 || code === null)) {
             resolve('');
             return;

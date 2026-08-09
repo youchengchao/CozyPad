@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import type { ConnectionProfile, DirectoryListing, TerminalOpenRequest } from '@cozypad/contracts';
 import type { TransportEvents, TransportPort } from './TransportPort';
 
@@ -148,7 +149,8 @@ export class LocalTransport implements TransportPort {
       });
       this.execChildren.add(child);
       let output = '';
-      let pending = '';
+      let stdoutPending = '';
+      let stderrPending = '';
       let settled = false;
 
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -170,16 +172,29 @@ export class LocalTransport implements TransportPort {
         });
       }
 
-      const consume = (chunk: Buffer) => {
-        const text = chunk.toString('utf8');
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
+
+      const consumeStdout = (chunk: Buffer) => {
+        const text = stdoutDecoder.write(chunk);
         if (collectOutput) output += text;
-        pending += text;
-        const lines = pending.split('\n');
-        pending = lines.pop() ?? '';
+        stdoutPending += text;
+        const lines = stdoutPending.split('\n');
+        stdoutPending = lines.pop() ?? '';
         for (const line of lines) onLine(line);
       };
-      child.stdout.on('data', consume);
-      child.stderr.on('data', consume);
+
+      const consumeStderr = (chunk: Buffer) => {
+        const text = stderrDecoder.write(chunk);
+        if (collectOutput) output += text;
+        stderrPending += text;
+        const lines = stderrPending.split('\n');
+        stderrPending = lines.pop() ?? '';
+        for (const line of lines) onLine(line);
+      };
+
+      child.stdout.on('data', consumeStdout);
+      child.stderr.on('data', consumeStderr);
       child.on('error', (error) => {
         this.execChildren.delete(child);
         if (settled) return;
@@ -196,8 +211,11 @@ export class LocalTransport implements TransportPort {
         if (settled) return;
         settled = true;
         if (timer !== null) clearTimeout(timer);
-        if (pending !== '') onLine(pending);
-        resolve(output);
+        const finalStdoutPending = stdoutPending + stdoutDecoder.end();
+        if (finalStdoutPending !== '') onLine(finalStdoutPending);
+        const finalStderrPending = stderrPending + stderrDecoder.end();
+        if (finalStderrPending !== '') onLine(finalStderrPending);
+        resolve(output + stdoutDecoder.end() + stderrDecoder.end());
       });
     });
   }
@@ -314,47 +332,49 @@ export class LocalTransport implements TransportPort {
     this.assertConnected();
     const resolvedPath = path.resolve(resolveHome(dirPath));
     const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-    const items = [];
     const limit = 2000;
     const truncated = entries.length > limit;
     const capped = truncated ? entries.slice(0, limit) : entries;
+    const rawItems = await Promise.all(
+      capped.map(async (entry) => {
+        const entryPath = path.join(resolvedPath, entry.name);
+        try {
+          const lstat = await fs.lstat(entryPath);
+          let type = 'f';
+          if (lstat.isDirectory()) type = 'd';
+          else if (lstat.isSymbolicLink()) type = 'l';
 
-    for (const entry of capped) {
-      const entryPath = path.join(resolvedPath, entry.name);
-      try {
-        const lstat = await fs.lstat(entryPath);
-        let type = 'f';
-        if (lstat.isDirectory()) type = 'd';
-        else if (lstat.isSymbolicLink()) type = 'l';
-        
-        let linkTarget: string | undefined;
-        let targetType: string | undefined;
-        if (lstat.isSymbolicLink()) {
-          try {
-            linkTarget = await fs.readlink(entryPath);
-            const stat = await fs.stat(entryPath);
-            targetType = stat.isDirectory() ? 'd' : 'f';
-          } catch {
-            targetType = 'N'; // broken link
+          let linkTarget: string | undefined;
+          let targetType: string | undefined;
+          if (lstat.isSymbolicLink()) {
+            try {
+              linkTarget = await fs.readlink(entryPath);
+              const stat = await fs.stat(entryPath);
+              targetType = stat.isDirectory() ? 'd' : 'f';
+            } catch {
+              targetType = 'N'; // broken link
+            }
           }
+
+          const isExecutable = !lstat.isDirectory() && ((lstat.mode & 0o111) > 0);
+
+          return {
+            name: entry.name,
+            path: entryPath,
+            type,
+            sizeBytes: lstat.size,
+            modified: formatMtime(lstat.mtime),
+            ...(linkTarget ? { linkTarget } : {}),
+            ...(targetType ? { targetType } : {}),
+            executable: isExecutable,
+          };
+        } catch (err) {
+          return null;
         }
+      })
+    );
 
-        const isExecutable = !lstat.isDirectory() && ((lstat.mode & 0o111) > 0);
-
-        items.push({
-          name: entry.name,
-          path: entryPath,
-          type,
-          sizeBytes: lstat.size,
-          modified: formatMtime(lstat.mtime),
-          ...(linkTarget ? { linkTarget } : {}),
-          ...(targetType ? { targetType } : {}),
-          executable: isExecutable,
-        });
-      } catch (err) {
-        // Skip files we cannot access
-      }
-    }
+    const items = rawItems.filter((item): item is NonNullable<typeof item> => item !== null);
 
     items.sort((a, b) => {
       const aDir = a.type === 'd' || (a.type === 'l' && a.targetType === 'd');

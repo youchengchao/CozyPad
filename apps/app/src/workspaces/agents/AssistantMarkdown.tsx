@@ -248,21 +248,12 @@ export interface MarkdownViewProps {
  * too, yanking the user out of the chat with nothing to show for it.
  */
 function pathTargetOf(href: string): string | null {
-  if (href.startsWith('file:///')) return href;
+  if (href.startsWith('file:')) return href;
   // Checked before the scheme test: `C:\notes.md` is a drive path, not a URL.
   if (/^[A-Za-z]:[\\/]/u.test(href)) return href;
   if (/^[a-z][a-z0-9+.-]*:/iu.test(href)) return null;
   if (href.startsWith('#')) return null;
-  if (
-    href.startsWith('/') ||
-    href.startsWith('./') ||
-    href.startsWith('../') ||
-    href.includes('/') ||
-    href.includes('\\')
-  ) {
-    return href;
-  }
-  return null;
+  return href;
 }
 
 function MarkdownLink({
@@ -328,6 +319,7 @@ export function MarkdownView({
       <div className={className}>
         {normalized === '' ? null : (
           <Markdown
+            urlTransform={(url) => url}
             components={components}
             rehypePlugins={REHYPE_PLUGINS}
             remarkPlugins={REMARK_PLUGINS}
@@ -407,15 +399,18 @@ export function AssistantMarkdown({
             className="card thinking-card"
             open={streaming}
           >
-            <summary className="thinking-summary">
-              <span className="thinking-icon" aria-hidden="true">💡</span>
-              <span className="thinking-title">Thought Process</span>
-              {streaming ? (
-                <span className="thinking-pulse" title="Thinking..." />
-              ) : null}
+            <summary className="thinking-summary" style={{ padding: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px' }}>
+                <span className="thinking-icon" aria-hidden="true">💡</span>
+                <span className="thinking-title">Thought Process</span>
+                {streaming ? (
+                  <span className="thinking-pulse" title="Thinking..." />
+                ) : null}
+              </div>
             </summary>
             <div className="thinking-body">
               <Markdown
+                urlTransform={(url) => url}
                 components={components}
                 rehypePlugins={REHYPE_PLUGINS}
                 remarkPlugins={REMARK_PLUGINS}
@@ -428,6 +423,7 @@ export function AssistantMarkdown({
 
         {normalizedMainText !== '' ? (
           <Markdown
+            urlTransform={(url) => url}
             components={components}
             rehypePlugins={REHYPE_PLUGINS}
             remarkPlugins={REMARK_PLUGINS}

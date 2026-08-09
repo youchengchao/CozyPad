@@ -222,6 +222,60 @@ describe('the three shapes that would silently corrupt a transcript', () => {
     // ACP says `failed`; CozyPad says `error`.
     expect(tools[0]?.kind === 'tool_call' && tools[0].status).toBe('error');
   });
+
+  it('keeps Codex command output from rawOutput objects', () => {
+    const state = fold([
+      {
+        sessionId: session,
+        kind: 'tool_call_update',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'codex-command',
+          title: 'Write-Output test',
+          status: 'completed',
+          rawOutput: {
+            formatted_output: 'shell tool: OK\n',
+            exit_code: 0,
+          },
+        },
+      } as unknown as AcpSessionEvent,
+    ]);
+    const tool = state.items.find((item) => item.kind === 'tool_call');
+    expect(tool?.kind === 'tool_call' && tool.output).toBe(
+      'shell tool: OK\n\nExit code: 0',
+    );
+  });
+  it('keeps rendered tool output when later updates omit it', () => {
+    const state = fold([
+      {
+        sessionId: session,
+        kind: 'tool_call',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 't1',
+          title: 'run_command',
+          status: 'in_progress',
+        },
+      } as unknown as AcpSessionEvent,
+      {
+        sessionId: session,
+        kind: 'tool_call_update',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 't1',
+          content: [{ type: 'content', content: { type: 'text', text: 'command output' } }],
+          status: 'completed',
+        },
+      } as unknown as AcpSessionEvent,
+      {
+        sessionId: session,
+        kind: 'tool_call_update',
+        update: { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' },
+      } as unknown as AcpSessionEvent,
+    ]);
+    const tool = state.items.find((item) => item.kind === 'tool_call');
+    expect(tool?.kind === 'tool_call' && tool.output).toBe('command output');
+  });
 });
 
 describe('usage is two different measurements, not one', () => {
