@@ -68,6 +68,18 @@
 - 中文輸入法、Emoji、寬字元、Combining Character、貼上程式碼需正常顯示。
 - 長 Timeline、Table、Diff、Log 使用分批載入或虛擬化。
 
+### 1.7 Current `main` 實作快照（2026-08-10）
+
+- 本節記錄目前程式狀態；其餘章節仍是產品要求。未達成的要求不得因本節而視為取消。
+- Claude、Codex、AGY 已共用 ACP Timeline 與控制流程；Claude／Codex 使用已發布的 ACP wrapper，AGY 使用 CozyPad adapter。
+- Local 與 SSH 共用 `NodeHostRuntime` 的 process／filesystem 核心；Local 直接呼叫，SSH 只橋接 request、stream 與 lifecycle event，實際操作在目標主機執行。
+- Agent 回應已支援 GFM、KaTeX、Mermaid、安全的 `details`／`summary`／`sub`／`sup`、回應與 code block 複製，以及可展開的 Tool Card。
+- Timeline 已保存的 normalized item 會在重開後重新 render；若舊記錄當時未保存完整 ACP event／內容，renderer 不得假造缺少的資料。
+- Session 內由 Agent `configOptions` 回報的 Mode／Model 可透過 ACP 更新。
+- 建立 Session 的 Launch mode 尚未全部與 Agent 實際 mode ID 對齊：Codex 目前只有 `read-only` 可可靠預先套用；未匹配的選擇會退回 Agent 預設值。此行為不符合 3.4.8 與 6.5 的最終要求。
+- AGY print mode 固定回報 `always-proceed`，不送出 `session/request_permission`；workspace root 只表示搜尋起點，不是 sandbox boundary。
+- Remote ACP Process 已在遠端主機啟動，但目前 host bridge 仍綁定現存 SSH channel；2.11 與 4.3 所要求的斷線續跑／重接尚未完整達成。
+
 ## 2. 使用情境
 
 ### 2.1 啟動
@@ -1253,11 +1265,16 @@
 
 **Assistant**
 
-- Markdown。
+- GFM Markdown。
 - Table。
 - Code Block。
 - Syntax Highlight。
-- Copy。
+- Inline／Block Math 以 KaTeX 顯示。
+- `mermaid` Code Block 顯示為 Diagram；Streaming 未完成時延後解析。
+- 只允許 `details`、`summary`、`sub`、`sup` 等核准的 Raw HTML；其他 HTML 不直接執行。
+- Assistant Message Copy 複製該則 Markdown 原文。
+- Code Block Copy 只複製程式碼文字，不包含 fence、language label 或 React node 字串化結果。
+- Streaming byte 以跨 chunk 的 UTF-8 decoder 解碼；不得逐 chunk 獨立產生 replacement character。
 
 **Tool Card**
 
@@ -1267,6 +1284,10 @@
 - Output。
 - Error。
 - Long Output 預設收合。
+
+- Running 預設展開；完成後可收合，但 Header、Status 與 Toggle 必須保持可見。
+- Toggle 展開後依內容自動增高；不得只剩邊框或固定成一條橫線。
+- Persisted Tool Card 缺少原始 ACP detail 時顯示已保存內容；不得從文字猜測 Tool Call。
 
 **Diff Card**
 
@@ -1330,6 +1351,7 @@
 - 向上閱讀時顯示 New Event 提示。
 - 每個 Session 保存 Scroll Position。
 - App 重開：先顯示 Cache，再補新 Event。
+- 重開後以保存的 normalized item 重新 render；缺少的原始 ACP event 不可由畫面文字反推。
 
 #### 3.4.7 Composer
 
@@ -2158,6 +2180,10 @@
 - Submit 先 Resolve，再更新 View。
 - 失敗：保留原位置與輸入文字。
 
+- Timeline 中的 File Link 接受 `path:line` 與 `path:line:column`；Windows drive colon 不得誤判為行號分隔符。
+- 開啟 File Link 時先分離行列資訊，再以檔案 Parent 更新 Directory List，以 File 更新 Preview／Editor。
+- 跳轉成功後顯示並定位目標行；不得把 File Path 傳給 Directory List，也不得使左側目錄失效。
+
 #### 3.7.4 Symbolic Link
 
 - 顯示 Target 與 File／Directory／Broken。
@@ -2253,6 +2279,8 @@
 - Editor 持續顯示目前 Encoding 與 Line Ending。
 - 兩者皆可手動切換。
 - 切換 Encoding 提供以該編碼重新開啟或以該編碼儲存。
+- Dirty 只由目前內容與開啟／最後保存內容的差異決定；Focus、游標、Selection 或單純開啟檔案不得設為 Dirty。
+- 離開或切換 File 時，只有 Dirty 才顯示捨棄變更提示。
 - 有 BOM 依 BOM；其餘預設 UTF-8。
 - 偵測不確定時標示為推定值。
 
@@ -2426,38 +2454,41 @@
 
 ## 4. 技術行為
 
-### 4.1 本機／遠端分工
+### 4.1 Target Host Core／本機與遠端分工
 
 **CozyPad App**
 
 - 顯示 UI、接收操作。
 - 保存 Connection Profile、Project、Session、Study、Run 索引。
 - 保存 Draft、Pending Attachment、UI State、Preference。
-- 建立 SSH、PTY、File Transfer Channel。
-- 將 Agent Event 轉成 Timeline Item。
-- 斷線後查詢遠端狀態。
+- 建立 Local／SSH Transport、PTY 與 File Transfer Channel。
+- 將 ACP Event 轉成 Timeline Item；斷線後查詢目標主機狀態。
 
-**Remote Machine**
+**共用 Host Core**
 
-- 執行 Agent、Shell、Research Process。
-- 保存 Project File。
-- 保存 Agent Login／Native Conversation。
-- 使用 tmux、smux 或同等工具保持 Agent Process。
-- 保存 CozyPad Session Event／Attachment。
-- 保存 Run Log／Metric／Artifact／Provenance。
+- Local 與 SSH 使用同一套 Node host runtime 語意處理 process、filesystem、stream 與 lifecycle。
+- Process 一律以分離的 `command`、`args`、`cwd`、`env` 傳入；不把使用者內容拼成 shell command。
+- File API 在擁有該檔案系統的 target host 上執行；Local Path 不送往 Remote，Remote Path 不交給 Local `node:fs`。
+- UTF-8 stream decoder 跨 chunk 保存未完成的 multibyte sequence。
 
 **Local Machine**
 
-- 執行 Agent、Shell、Research Process。
-- Agent Process 為 CozyPad 子行程；不使用會話工具保持。
-- CozyPad 結束時一併結束。
+- Electron main process 直接呼叫共用 Host Core。
+- Agent 為 CozyPad 子行程；CozyPad 結束時一併結束。
 - Session Event、Attachment、Run 資料保存在本機。
 
-**傳輸**
+**SSH Machine**
 
-- SSH、SFTP 或其他 Byte-preserving SSH File Channel。
-- 不預設額外常駐 Daemon。
-- 新增 Remote Program 前需定義缺少能力、Install、Data Path、Removal。
+- CozyPad 以現有 SSH connection 啟動 target-host runner；SSH 只承載 RPC request、byte stream 與 lifecycle event。
+- Agent、Shell、filesystem 與 Research Process 都在 Remote Machine 執行。
+- Remote runner 使用 login `HOME`／`PATH`；`node` 必須是 absolute executable，Claude／Codex ACP 啟動還需可用的 `npx`。
+- Remote Machine 保存 Project File、Agent Login／Native Conversation、Session Data 與 Run Data。
+
+**生命週期邊界**
+
+- SSH bridge 的連線生命週期與 Agent Process 的持續執行是兩件事；單一 SSH exec channel 不得被視為斷線續跑保證。
+- 需跨 SSH disconnect／App close 持續的 Process，必須由 tmux、smux、systemd user service 或同等可重接機制持有。
+- 不預設永久常駐 Daemon；若新增 Remote Program，需定義 Capability、Install、Version、Data Path、Reconnect 與 Removal。
 
 ### 4.2 物件 ID
 
@@ -2501,7 +2532,12 @@
 
 ### 4.3 遠端 Agent Process
 
-**遠端會話工具需支援**
+**啟動位置**
+
+- ACP wrapper／adapter 與真正 Agent Process 必須由 Remote Host Core 在遠端 `cwd` 啟動。
+- CozyPad 本機只持有 protocol client 與 SSH bridge；不得以本機 child process 搭配遠端 path 冒充 Remote Agent。
+
+**持續執行層需支援**
 
 - Start Process。
 - List Session／Process。
@@ -2513,8 +2549,10 @@
 
 **責任分開**
 
-- tmux／smux 類工具：Process Lifecycle。
-- Agent Adapter：Agent Event。
+- Host Core：Process／filesystem 實際執行。
+- SSH Bridge：request、stream、event 傳輸與 reconnect。
+- tmux／smux／systemd 類工具：跨連線 Process Lifecycle。
+- ACP Runtime／Agent Adapter：Session、Prompt、Mode、Approval、Question 與 Agent Event。
 - Session Directory：Event／Attachment Data。
 
 **Session Remote Data**
@@ -2533,46 +2571,34 @@
 - 預設不放 Project Root。
 - Delete Session 不匹配其他 Session／Project File。
 - Remote Cleanup 可列出並移除。
+- Delete／Leave 必須確認真正 ACP child、持續執行層與 Session Data 的結果；只刪 Local Index 不代表遠端已停止。
 
-### 4.4 Agent Adapter
+### 4.4 ACP Runtime／Agent Adapter
 
-**每個 Agent 使用獨立 Adapter**
+**共用 ACP Runtime**
 
-- Claude Code。
-- Codex。
-- AGY。
+- 同一 client flow 處理 `initialize`、`session/new`／`resume`、`prompt`、`cancel`、`set_mode`、`set_config_option` 與 structured update。
+- `session/request_permission` 與 Question／Elicitation 會阻塞 Agent，直到使用者作答或該 execution generation 結束。
+- Timeline normalization、pending control、process exit 與 UTF-8 stream handling 不因 Agent 種類分叉。
 
-**Adapter 負責**
+**Agent-side 實作**
 
-- Executable／Version Detection。
-- Permission Mode List。
-- Start Conversation。
-- Get Native Conversation ID。
-- Resume。
-- Send Prompt。
-- Send Image／File Reference。
-- Interrupt。
-- Resolve Approval／Question。
-- Read Structured Event。
-- Convert Event to CozyPad Item。
-- Check Process／Conversation Continuation。
+- Claude Code：已發布的 `claude-agent-acp` wrapper。
+- Codex：已發布的 `codex-acp` wrapper。
+- AGY：CozyPad 的 `adapter-agy`，將 print／stream output 轉成 ACP。
+- 各實作負責 Agent-specific executable detection、native conversation、resume、model／mode 與 negative capability。
 
-**規則**
+**Capability／Mode 規則**
 
 - 不代表共用 LLM、Provider Account、Native Conversation Data。
-- 不宣告 Agent 未提供的功能。
-- Agent Upgrade 後重新檢查。
-- Terminal-only Output 可顯示 Native Interactive View；不得猜測 Approval、Diff、Tool Result、Usage。
-- 以明確查詢取得並由 Agent 回覆的結果不算猜測；需標明來源與取得時間。
-- Legacy AGY Session 無 Conversation ID：首次 Resume 綁定 AGY 當前選定 Conversation；之後沿用同一 ID。
-
-**Terminal-only 前提**
-
-- 解析用畫面尺寸固定；不隨視窗大小改變。
-- 兩端畫面尺寸需一致。
-- 會話工具不得在該畫面加入自己的列。
-- 畫面條件不成立：標示解析結果不可靠。
-- 此類路徑可能始終不公布原生對話身分。
+- 不宣告 Agent 未提供的功能；Agent Upgrade 後重新檢查。
+- Mode／Config 選單以 `session/new`／`resume` 實際回覆為事實來源，不從 CLI help 推定 Agent 已支援 ACP mode。
+- 預先選擇的 Launch mode 必須映射到 Agent 回報的 canonical mode ID，並在 `set_mode` 成功後才顯示為 Active。
+- 找不到 mode 或 `set_mode` 失敗時不得靜默 fallback；保留實際 current mode，顯示未套用原因。
+- Agent 不送出 `session/request_permission` 時，標示為 Unmanaged／Always Proceed；不得顯示 Interactive Approval 可用。
+- Workspace／Additional Directory 對 Agent 只是 inclusion hint 時，不得標示為 sandbox boundary。
+- 有 Structured Event 時不得解析 Terminal Screen 猜測 Approval、Diff、Tool Result、Usage 或完整對話。
+- Legacy AGY Session 無 Conversation ID：Resume 只聲明實際能確認的 continuity，不以 CozyPad Timeline 冒充 Agent memory。
 
 ### 4.5 Timeline Event
 
@@ -2872,6 +2898,12 @@
 ### 5.4 Approval／Permission Mode
 
 - Permission Mode 只控制 Agent 自身操作。
+- CozyPad 只可攔截 Agent 實際送出的 `session/request_permission`；未送出時不得宣稱逐次 Approval 生效。
+- Mode 選擇值、Agent 回報 current mode、實際 policy 必須一致。
+- 預選 Mode 在 Agent 確認 `set_mode` 成功前不是 Active。
+- 無對應 Mode 時顯示 Unsupported／Not Applied；不得以 Agent default 冒充使用者選擇。
+- AGY `always-proceed` 必須明確顯示不受 CozyPad approval policy 控制。
+- Workspace root 不是 sandbox 的 Agent 必須顯示該限制。
 - 以下 CozyPad 確認不受 Agent Bypass 影響：
   - SSH Fingerprint Trust。
   - Profile／Credential Delete。
@@ -3032,6 +3064,11 @@
 - High-risk Mode 顯示 Machine、Directory、Risk。
 - 啟用期間持續顯示 Warning Style。
 - 切換不建立新 Session。
+- Mode 清單與 current value 來自實際 ACP Session 回覆。
+- 建立時的 Launch mode 與 Agent canonical ID 不同時，需有明確 mapping 與測試。
+- Agent 未確認 Mode 已套用前，UI 不顯示為 Active。
+- 不匹配或切換失敗時不得靜默使用預設值。
+- 不送 Permission Request 的 Agent 顯示 Unmanaged／Always Proceed，不顯示 Interactive Approval 可用。
 - Running Turn 不受中途切換影響。
 - New Mode 從下一 Turn 生效。
 - Existing Approval 不自動通過。
@@ -3214,3 +3251,7 @@
 29. Preflight 靜態檢查逐項通過與未通過。
 30. Smoke Run 通過、失敗、略過、設定變動後重跑。
 31. 三家 Agent 使用同一版面；能力不可用時的降級呈現。
+32. Local／SSH 對同一 Host Runtime contract 的 filesystem、process、UTF-8 stream parity。
+33. Claude／Codex／AGY 實際 ACP Mode ID 與 Launch mode mapping；不匹配時不得假成功。
+34. Permission Request 真正阻塞、Allow／Deny／Always option 回傳與 Agent 未送 Request 的降級呈現。
+35. Remote Agent 跨 SSH Disconnect／App Restart 持續執行、事件補回、Delete 後無殘留 process／tmux session。

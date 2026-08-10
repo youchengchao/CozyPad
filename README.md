@@ -1,11 +1,11 @@
 # CozyPad
 
-**把手機／電腦連上遠端主機上的 coding agent 的工作站。**
+**在本機或遠端主機上操作 coding agent 的工作站。**
 
-CozyPad 讓你從 Windows 桌面或 Android 手機，透過 SSH 管理遠端 Linux 主機：
-多分頁終端機、檔案瀏覽與編輯、CPU/GPU 監控，以及（開發中的）Claude Code /
-Codex / agy 等 remote agent 的對話介面。Agent 全部跑在遠端 tmux 裡——關掉
-app、斷線、換裝置，工作都不會中斷。
+CozyPad 讓你從 Windows 桌面或 Android 手機操作本機，或透過 SSH 管理遠端 Linux
+主機：多分頁終端機、檔案瀏覽與編輯、CPU/GPU 監控，以及 Claude Code / Codex /
+agy 的 ACP 對話介面。本機與遠端共用同一套 host runtime；本機直接執行，遠端則由
+SSH 傳送 request、stream 與 lifecycle event，實際檔案與 Agent Process 都在目標主機上。
 
 一套 **React + TypeScript** codebase，桌面包 **Electron**、Android 包
 **Capacitor**；桌面安裝包約 100MB、Android release APK 約 7MB
@@ -24,14 +24,22 @@ app、斷線、換裝置，工作都不會中斷。
 | 檔案編輯：Monaco（VS Code 引擎）語法高亮、Ctrl+S 直接存回遠端；Markdown 預覽；PDF 內嵌檢視 | ✅ |
 | 監控：CPU／記憶體／GPU 與 GPU processes，每 5 秒更新 | ✅ |
 | 遠端設定：tmux 滑鼠模式開關；tmux 缺失時一鍵使用者層級安裝 | ✅ |
-| Agents 對話（Claude / Codex / agy） | 🚧 架構與 parser 完成，接線中 |
+| Agents 對話（Claude / Codex / agy） | 🚧 Alpha：ACP 對話、Resume、Tool、Approval、Question、Model／Mode 選單可用；仍有權限模式與斷線續跑限制，見下節 |
+| Agent 回應顯示 | ✅ GFM、語法高亮、KaTeX、Mermaid、`details`／`summary`、`sub`／`sup`、整則回應與 code block 複製 |
 | Research Lab（實驗管理） | 🚧 UI 雛形 |
+
+### Agents 目前限制
+
+- Session 內由 Agent `configOptions` 回報的 Mode／Model 選單會直接送回 ACP；建立 Session 時的 Launch mode 尚未完全對齊各 ACP agent 的 mode ID。Codex 目前只有 `read-only` 可可靠預先套用；AGY print mode 固定為 `always-proceed`，不會送出 Approval，也不提供真正的 workspace sandbox。
+- Claude／Codex 主動送出的 `session/request_permission` 會讓 Agent 等待使用者在 CozyPad 回答；沒有送出該 request 的 Agent，CozyPad 無法在工具執行前攔截。
+- Local Agent 是 CozyPad 子行程，關閉 CozyPad 後結束。Remote ACP 已在遠端主機執行，但目前仍依賴現存的 SSH host bridge；「關閉 app／SSH 中斷後仍持續執行並可重接」仍是待完成的 lifecycle 工作，不能視為已保證。
 
 ## 快速開始
 
 ### 需求
 
-只需要 **Node.js LTS + pnpm**（不需要 Flutter、Rust、Visual Studio、Android Studio）：
+開發 CozyPad 只需要 **Node.js LTS + pnpm**（不需要 Flutter、Rust、Visual Studio、
+Android Studio）：
 
 ```bash
 corepack enable   # 或 npm install -g pnpm
@@ -39,13 +47,16 @@ pnpm install
 pnpm test         # 全綠即環境就緒
 ```
 
+使用遠端 Agents 時，遠端 Linux 主機也需要可從 login `PATH` 找到 `node`、`npm`／
+`npx` 與對應的 Agent CLI；首次啟動 Claude／Codex ACP wrapper 時可能需要網路下載套件。
+
 ### 日常使用
 
 | 做什麼 | 操作 |
 | --- | --- |
 | 連真實主機使用 | 雙擊 `CozyPad.bat`，或 `pnpm --filter @cozypad/desktop start` |
 | UI 開發（瀏覽器熱更新） | `pnpm dev` → http://localhost:5173 |
-| 桌面開發（Electron 熱更新，mock） | `pnpm dev:desktop` |
+| 桌面開發（Electron 熱更新，本機模式） | `pnpm dev:desktop` |
 | 桌面開發（真 SSH） | `pnpm dev:desktop:ssh` |
 | Android debug APK | `pnpm --filter @cozypad/mobile apk:debug`（需 Android SDK + JDK 21） |
 | Android signed release APK | 設定簽章環境變數後執行 `pnpm --filter @cozypad/mobile apk` |
@@ -64,13 +75,15 @@ pnpm test         # 全綠即環境就緒
 ```
 apps/
   app/        共用 React UI（桌面與手機同一套；可純瀏覽器 + mock 開發）
-  desktop/    Electron shell：SSH/ssh2、加密憑證、telemetry、檔案操作、tmux
+  desktop/    Electron shell：本機／SSH host runtime、ACP、加密憑證、telemetry、tmux
   mobile/     Capacitor Android shell
 packages/
   contracts/      Zod schemas、PlatformBridge、IPC 協定（跨平台唯一事實來源）
+  acp-client/     共用 ACP client、session event 與 process transport
+  adapter-agy/    AGY print mode → ACP adapter
+  remote-services/檔案、設定、telemetry 等 host service
   telemetry/      /proc/stat、free、nvidia-smi 解析
   tmux-runtime/   tmux session 管理、reconciliation、佈建
-  adapter-claude/ Claude CLI stream-json → normalized events
   test-fixtures/  mock 檔案系統／PTY／telemetry／agent 資料
 docs/           開發指南、教學、ADR、協定
 ```
