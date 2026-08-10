@@ -12,6 +12,7 @@ import {
 import Markdown, { type Components } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import 'highlight.js/styles/github-dark.css';
@@ -21,12 +22,76 @@ import { MermaidDiagram } from './MermaidDiagram';
 type MarkdownProps = ComponentProps<typeof Markdown>;
 type PreComponent = ComponentType<ComponentPropsWithoutRef<'pre'>>;
 
+interface MarkdownSyntaxNode {
+  type?: unknown;
+  value?: unknown;
+  children?: unknown;
+}
+
+const SAFE_RAW_HTML_TAG = /^<\s*\/?\s*(?:details|summary|sub|sup)\s*>$/iu;
+
+function escapeUnsafeRawHtml(value: string): string {
+  return value.replace(/<[^>]*>/gu, (tag) => {
+    if (SAFE_RAW_HTML_TAG.test(tag)) return tag;
+    return tag
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  });
+}
+
+/** Parse only the four raw HTML tags CozyPad intentionally supports. */
+function remarkSafeRawHtml() {
+  return (tree: unknown): void => {
+    const visit = (candidate: unknown): void => {
+      if (typeof candidate !== 'object' || candidate === null) return;
+      const node = candidate as MarkdownSyntaxNode;
+      if (node.type === 'html' && typeof node.value === 'string') {
+        node.value = escapeUnsafeRawHtml(node.value);
+      }
+      if (Array.isArray(node.children)) {
+        for (const child of node.children) visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
+
+function normalizeParenthesizedInlineMath(line: string): string {
+  const replaceMath = (text: string) =>
+    text.replace(/(?<!\\)\\\((.+?)(?<!\\)\\\)/gu, (_match, expression: string) =>
+      '$' + expression + '$',
+    );
+
+  const tick = '\x60';
+  let normalized = '';
+  let cursor = 0;
+  while (cursor < line.length) {
+    const codeStart = line.indexOf(tick, cursor);
+    if (codeStart < 0) return normalized + replaceMath(line.slice(cursor));
+
+    normalized += replaceMath(line.slice(cursor, codeStart));
+    let markerLength = 1;
+    while (line[codeStart + markerLength] === tick) markerLength += 1;
+    const marker = tick.repeat(markerLength);
+    const codeEnd = line.indexOf(marker, codeStart + markerLength);
+    if (codeEnd < 0) return normalized + line.slice(codeStart);
+
+    const afterCode = codeEnd + markerLength;
+    normalized += line.slice(codeStart, afterCode);
+    cursor = afterCode;
+  }
+  return normalized;
+}
+
 const REMARK_PLUGINS: NonNullable<MarkdownProps['remarkPlugins']> = [
   remarkGfm,
   remarkMath,
+  remarkSafeRawHtml,
 ];
 
 const REHYPE_PLUGINS: NonNullable<MarkdownProps['rehypePlugins']> = [
+  rehypeRaw,
   [
     rehypeKatex,
     {
@@ -102,6 +167,7 @@ export function normalizeHackmdDisplayMath(markdown: string): string {
   const normalized: string[] = [];
   let codeFence: { marker: '`' | '~'; length: number } | null = null;
   let displayMathOpen = false;
+  let bracketDisplayMathOpen = false;
 
   const ensureBlank = () => {
     if (normalized.length > 0 && normalized.at(-1)?.trim() !== '') normalized.push('');
@@ -124,6 +190,33 @@ export function normalizeHackmdDisplayMath(markdown: string): string {
     }
 
     const trimmed = line.trim();
+    const bracketSingleLineDisplay = trimmed.match(/^\\\[(.+)\\\]$/u);
+    if (bracketSingleLineDisplay?.[1] !== undefined) {
+      ensureBlank();
+      const indentation = line.match(/^\s*/u)?.[0] ?? '';
+      normalized.push(
+        indentation + '$$',
+        indentation + bracketSingleLineDisplay[1],
+        indentation + '$$',
+        '',
+      );
+      continue;
+    }
+    if (!displayMathOpen && trimmed === '\\[') {
+      ensureBlank();
+      const indentation = line.match(/^\s*/u)?.[0] ?? '';
+      normalized.push(indentation + '$$');
+      displayMathOpen = true;
+      bracketDisplayMathOpen = true;
+      continue;
+    }
+    if (displayMathOpen && bracketDisplayMathOpen && trimmed === '\\]') {
+      const indentation = line.match(/^\s*/u)?.[0] ?? '';
+      normalized.push(indentation + '$$', '');
+      displayMathOpen = false;
+      bracketDisplayMathOpen = false;
+      continue;
+    }
     const singleLineDisplay = /^\$\$.+\$\$$/u.test(trimmed);
     if (singleLineDisplay) {
       ensureBlank();
@@ -143,7 +236,7 @@ export function normalizeHackmdDisplayMath(markdown: string): string {
       if (!displayMathOpen) normalized.push('');
       continue;
     }
-    normalized.push(line);
+    normalized.push(displayMathOpen ? line : normalizeParenthesizedInlineMath(line));
   }
 
   // Layout guard: Close unclosed display math tag if open at EOF

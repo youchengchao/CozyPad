@@ -63,6 +63,7 @@ interface CodeEditorProps {
 export function CodeEditor({ path, value, onChange, onSave, line }: CodeEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const applyingValueRef = useRef(false);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   onChangeRef.current = onChange;
@@ -107,6 +108,7 @@ export function CodeEditor({ path, value, onChange, onSave, line }: CodeEditorPr
     visibility.observe(container);
 
     const changeSub = editor.onDidChangeModelContent(() => {
+      if (applyingValueRef.current) return;
       onChangeRef.current(editor.getValue());
     });
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -126,7 +128,14 @@ export function CodeEditor({ path, value, onChange, onSave, line }: CodeEditorPr
 
   useEffect(() => {
     const editor = editorRef.current;
-    if (editor && editor.getValue() !== value) editor.setValue(value);
+    if (editor && editor.getValue() !== value) {
+      applyingValueRef.current = true;
+      try {
+        editor.setValue(value);
+      } finally {
+        applyingValueRef.current = false;
+      }
+    }
   }, [value]);
 
   useEffect(() => {

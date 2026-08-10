@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { RemoteFileItem } from '@cozypad/contracts';
+import type { DirectoryListing, RemoteFileItem } from '@cozypad/contracts';
 import { textToBase64 } from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 import { MarkdownView } from './agents/AssistantMarkdown';
@@ -9,7 +9,15 @@ import type { MenuAction } from '../components/ContextMenu';
 import { FileIcon, fileKindOf } from '../components/FileIcons';
 import { PdfViewer } from '../components/PdfViewer';
 import { mimeTypeForFileName, saveWithBrowserDownload } from '../fileDownload';
-import { buildFileBreadcrumbs, directoryItems } from './fileNavigation';
+import {
+  buildFileBreadcrumbs,
+  directoryItems,
+  filePathsEqual,
+  isFileSystemRoot,
+  normalizeFilePath,
+  parentFilePath,
+  parseFileLocation,
+} from './fileNavigation';
 import {
   MAX_EDITABLE_TEXT_BYTES,
   extensionOf,
@@ -36,8 +44,7 @@ function isPdf(item: RemoteFileItem): boolean {
 }
 
 function parentOf(path: string): string {
-  const index = path.lastIndexOf('/');
-  return index <= 0 ? '/' : path.slice(0, index);
+  return parentFilePath(path);
 }
 
 /** 單列檔案項目：右鍵與長按都會開動作選單。 */
@@ -123,18 +130,29 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   };
 
   const loadDir = useCallback(
-    async (path: string): Promise<string | null> => {
+    async (path: string): Promise<DirectoryListing | null> => {
       try {
         const listing = await bridge.fsList({ path });
-        setChildren((current) => ({ ...current, [listing.path]: listing.items }));
+        const normalizedListing: DirectoryListing = {
+          ...listing,
+          path: normalizeFilePath(listing.path),
+          items: listing.items.map((item) => ({
+            ...item,
+            path: normalizeFilePath(item.path),
+          })),
+        };
+        setChildren((current) => ({
+          ...current,
+          [normalizedListing.path]: normalizedListing.items,
+        }));
         setTruncatedDirs((current) => {
           const next = new Set(current);
-          if (listing.truncated) next.add(listing.path);
-          else next.delete(listing.path);
+          if (normalizedListing.truncated) next.add(normalizedListing.path);
+          else next.delete(normalizedListing.path);
           return next;
         });
         setError(null);
-        return listing.path;
+        return normalizedListing;
       } catch (err: unknown) {
         report(err);
         return null;
@@ -147,9 +165,9 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const openPath = useCallback(
     async (path: string) => {
       if (!confirmDiscardRef.current()) return;
-      const resolved = await loadDir(path);
-      if (resolved === null) return;
-      setCurrentPath(resolved);
+      const listing = await loadDir(path);
+      if (listing === null) return;
+      setCurrentPath(listing.path);
       setSelected(null);
       setDraft(null);
       setPdfData(null);
@@ -169,11 +187,11 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       setPwd(null);
       return;
     }
-    void loadDir('~').then((resolved) => {
-      if (resolved !== null) {
-        setCurrentPath(resolved);
-        setHomePath(resolved);
-        setPwd(resolved);
+    void loadDir('~').then((listing) => {
+      if (listing !== null) {
+        setCurrentPath(listing.path);
+        setHomePath(listing.path);
+        setPwd(listing.path);
       }
     });
   }, [connected, loadDir]);
@@ -267,43 +285,44 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
 
   const openFileByPath = useCallback(
     (absolute: string, line?: number) => {
-      bridge
-        .fsList({ path: absolute })
-        .then(() => {
-          void openPath(absolute);
-        })
-        .catch(() => {
-          const name = absolute.slice(absolute.lastIndexOf('/') + 1);
-          const parent = parentOf(absolute);
-          const syntheticItem: RemoteFileItem = {
-            name,
-            path: absolute,
-            type: 'f',
-            sizeBytes: 0,
-            modified: '',
-          };
-          setCurrentPath(parent);
-          openFile(syntheticItem, line);
-        });
+      const normalizedAbsolute = normalizeFilePath(absolute);
+      const parent = parentOf(normalizedAbsolute);
+      void loadDir(parent).then((listing) => {
+        if (listing === null) return;
+        const listedItem = listing.items.find((item) =>
+          filePathsEqual(item.path, normalizedAbsolute),
+        );
+        if (
+          listedItem?.type === 'd' ||
+          (listedItem?.type === 'l' && listedItem.targetType === 'd')
+        ) {
+          void openPath(listedItem.path);
+          return;
+        }
+        const item: RemoteFileItem =
+          listedItem?.type === 'f'
+            ? listedItem
+            : {
+                name: normalizedAbsolute.slice(normalizedAbsolute.lastIndexOf('/') + 1),
+                path: normalizedAbsolute,
+                type: 'f',
+                sizeBytes: 0,
+                modified: '',
+              };
+        setCurrentPath(listing.path);
+        openFile(item, line);
+      });
     },
-    [bridge, openPath, openFile]
+    [loadDir, openPath, openFile],
   );
 
   useEffect(() => {
     const handleOpenFile = (e: Event) => {
       const customEvent = e as CustomEvent<{ path: string; cwd?: string }>;
       if (!customEvent.detail?.path) return;
-      let filePath = decodeURIComponent(customEvent.detail.path);
-      let line: number | undefined;
-      const hashIndex = filePath.indexOf('#');
-      if (hashIndex >= 0) {
-        const hash = filePath.slice(hashIndex + 1);
-        filePath = filePath.slice(0, hashIndex);
-        const match = /^L(\d+)/i.exec(hash);
-        if (match !== null) {
-          line = parseInt(match[1]!, 10);
-        }
-      }
+      const location = parseFileLocation(decodeURIComponent(customEvent.detail.path));
+      let filePath = location.path;
+      const { line } = location;
       if (filePath.startsWith('file:')) {
         filePath = filePath.slice(5);
         while (filePath.startsWith('/')) {
@@ -727,7 +746,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 <FileIcon kind="folder-open" />
                 <span className="tree-name mono">{currentPath}</span>
               </button>
-              {currentPath !== '/' ? (
+              {!isFileSystemRoot(currentPath) ? (
                 <button
                   className="tree-row tree-parent-row"
                   onClick={() => void openPath(parentOf(currentPath))}

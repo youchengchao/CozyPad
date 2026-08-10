@@ -67,9 +67,8 @@ describe('a user message is rendered as markdown, not as source', () => {
   });
 
   it('escapes raw HTML a user typed instead of executing it', () => {
-    // There is no rehype-raw in the plugin set, and this is the test that says
-    // so. Sending user text through a markdown renderer is the one place where
-    // that omission has to be deliberate rather than incidental.
+    // Raw HTML is filtered before rehype-raw parses the four supported tags.
+    // Everything else must remain escaped, especially attribute-bearing tags.
     //
     // Asserted on the *element*, not on the substring: the payload survives as
     // escaped text (`&lt;img … onerror=&quot;…&quot;&gt;`), which is the
