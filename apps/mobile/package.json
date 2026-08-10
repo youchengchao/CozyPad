@@ -1,9 +1,9 @@
 {
   "name": "@cozypad/mobile",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "scripts": {
-    "sync": "pnpm --filter @cozypad/app build && cap sync android",
+    "sync": "pnpm --filter @cozypad/desktop build && pnpm --filter @cozypad/app build && cap sync android && node scripts/copy-agent-host.mjs",
     "apk": "node scripts/build-release.mjs",
     "apk:release:unsigned": "pnpm run sync && cd android && .\\gradlew.bat assembleRelease",
     "apk:debug": "pnpm run sync && cd android && .\\gradlew.bat assembleDebug"

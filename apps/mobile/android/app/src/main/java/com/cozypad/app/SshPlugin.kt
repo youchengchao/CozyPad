@@ -46,6 +46,9 @@ class SshPlugin : Plugin() {
     private val hostKeyIds = AtomicInteger(0)
     @Volatile private var backgroundEnabled = false
     @Volatile private var backgroundHost = ""
+    private val agentBridge by lazy {
+        SshAgentBridge(context) { event, payload -> notifyListeners(event, payload) }
+    }
 
     private class ShellSession(
         val session: Session,
@@ -302,6 +305,57 @@ class SshPlugin : Plugin() {
         call.resolve()
     }
 
+    @PluginMethod
+    fun startAgentBridge(call: PluginCall) {
+        val ssh = client ?: return call.reject("not connected")
+        val profileId = call.getString("profileId")
+            ?: return call.reject("profileId is required")
+        val name = call.getString("name") ?: "Remote host"
+        val host = call.getString("host") ?: return call.reject("host is required")
+        val port = call.getInt("port") ?: 22
+        val username = call.getString("username")
+            ?: return call.reject("username is required")
+        val fingerprint = hostKeyStore.get(host, port)
+            ?: return call.reject("trusted host fingerprint is unavailable")
+        thread(name = "cozypad-agent-start") {
+            try {
+                agentBridge.start(
+                    ssh,
+                    AgentHostConfig(
+                        profileId,
+                        name,
+                        host,
+                        port,
+                        username,
+                        fingerprint,
+                    ),
+                )
+                call.resolve()
+            } catch (error: Exception) {
+                call.reject(error.message ?: "unable to start Agent bridge", error)
+            }
+        }
+    }
+
+    @PluginMethod
+    fun stopAgentBridge(call: PluginCall) {
+        agentBridge.stop()
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun agentRequest(call: PluginCall) {
+        val line = call.getString("line") ?: return call.reject("line is required")
+        thread(name = "cozypad-agent-request") {
+            try {
+                agentBridge.send(line)
+                call.resolve()
+            } catch (error: Exception) {
+                call.reject(error.message ?: "unable to send Agent request", error)
+            }
+        }
+    }
+
     // ── 背景維持連線 ────────────────────────────────────────────────────
 
     @PluginMethod
@@ -383,6 +437,7 @@ class SshPlugin : Plugin() {
         }
         if (!wasCurrent) return
 
+        agentBridge.stop()
         try {
             ssh.disconnect()
         } catch (_: Exception) {

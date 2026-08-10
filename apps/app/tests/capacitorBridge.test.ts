@@ -21,11 +21,15 @@ function createNativePlugins(): {
   saveFile: ReturnType<typeof vi.fn>;
   exec: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
+  agentRequest: ReturnType<typeof vi.fn>;
+  listeners: Map<string, (payload: Record<string, unknown>) => void>;
   values: Map<string, string>;
   nativeCredentials: Map<string, Record<string, unknown>>;
 } {
   const values = new Map<string, string>();
   const nativeCredentials = new Map<string, Record<string, unknown>>();
+  const listeners = new Map<string, (payload: Record<string, unknown>) => void>();
+  const agentRequest = vi.fn(async () => undefined);
   const exec = vi.fn(async ({ command }: { command: string }) => {
     if (command.includes('/proc/stat')) return { output: cpuOutput };
     if (command.includes('free -m')) return { output: '100,200' };
@@ -117,7 +121,15 @@ function createNativePlugins(): {
     getBackgroundMode: vi.fn(async () => ({ supported: true, enabled: false })),
     setBackgroundMode: vi.fn(async () => undefined),
     isConnected: vi.fn(async () => ({ connected: true })),
-    addListener: vi.fn(async () => ({ remove: async () => undefined })),
+    startAgentBridge: vi.fn(async () => undefined),
+    stopAgentBridge: vi.fn(async () => undefined),
+    agentRequest,
+    addListener: vi.fn(
+      async (event: string, handler: (payload: Record<string, unknown>) => void) => {
+        listeners.set(event, handler);
+        return { remove: async () => { listeners.delete(event); } };
+      },
+    ),
   } satisfies SshPlugin;
 
   const store = {
@@ -139,6 +151,8 @@ function createNativePlugins(): {
     saveFile,
     exec,
     connect,
+    agentRequest,
+    listeners,
     values,
     nativeCredentials,
   };
@@ -318,5 +332,55 @@ describe('createCapacitorBridge telemetry', () => {
 
     expect(bridge.kind).toBe('capacitor');
     expect(bridge.saveDownload).toBeUndefined();
+  });
+
+  it('routes Agent detection through the native request and response channel', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store, agentRequest, listeners } =
+      createNativePlugins();
+    const bridge = createCapacitorBridge(ssh, store, download);
+    const profile = await bridge.saveProfile({
+      name: 'Agent host',
+      host: 'agent.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+    await bridge.connect({ profileId: profile.id });
+
+    const detection = bridge.detectAgent({
+      profileId: profile.id,
+      agentKind: 'codex',
+    });
+    await vi.waitFor(() => expect(agentRequest).toHaveBeenCalledOnce());
+    const line = JSON.parse(
+      String(agentRequest.mock.calls[0]?.[0]?.line),
+    ) as { id: number };
+    listeners.get('agentMessage')?.({
+      line: JSON.stringify({
+        type: 'response',
+        id: line.id,
+        result: {
+          agentKind: 'codex',
+          installed: true,
+          executablePath: '/usr/bin/codex',
+          supportsStructuredOutput: true,
+          supportsResume: false,
+          supportsInteractiveApproval: true,
+          launchModes: [],
+        },
+      }),
+    });
+
+    await expect(detection).resolves.toMatchObject({
+      agentKind: 'codex',
+      installed: true,
+      executablePath: '/usr/bin/codex',
+    });
   });
 });

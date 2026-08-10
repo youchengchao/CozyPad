@@ -8,6 +8,7 @@ if (!includeSourceMap) {
     rm('dist/preload.cjs.map', { force: true }),
     rm('dist/agy-acp.cjs.map', { force: true }),
     rm('dist/remote-host.cjs.map', { force: true }),
+    rm('dist/remote-agent-host.cjs.map', { force: true }),
   ]);
 }
 
@@ -54,5 +55,15 @@ await build({
   target: 'node18',
   entryPoints: ['src/remote/remoteHostEntry.ts'],
   outfile: 'dist/remote-host.cjs',
+  external: [],
+});
+
+// Uploaded by the mobile client and run on the SSH target. It owns the same
+// AgentCommunicationService, ACP runtime and tmux state as desktop.
+await build({
+  ...shared,
+  target: 'node18',
+  entryPoints: ['src/remote/remoteAgentHostEntry.ts'],
+  outfile: 'dist/remote-agent-host.cjs',
   external: [],
 });

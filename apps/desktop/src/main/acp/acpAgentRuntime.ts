@@ -244,6 +244,10 @@ export class AcpAgentRuntime {
       spec: AcpLaunchSpec,
       handlers: AcpClientHandlers,
     ) => Promise<AcpChild>,
+    private readonly createLaunchSpec: (
+      agentKind: string,
+      cwd: string,
+    ) => AcpLaunchSpec = launchSpecFor,
   ) {}
 
   has(sessionId: string): boolean {
@@ -282,7 +286,7 @@ export class AcpAgentRuntime {
     // while `--add-dir /c/Users/name` told agy to look somewhere that does not
     // exist on Windows, and it would answer confidently about nothing.
     cwd: string = remote ? rawCwd : toLocalPath(rawCwd),
-    spec: AcpLaunchSpec = launchSpecFor(agentKind, cwd),
+    spec: AcpLaunchSpec = this.createLaunchSpec(agentKind, cwd),
   ): Promise<OpenedSession> {
     this.stop(sessionId);
 

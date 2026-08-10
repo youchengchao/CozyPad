@@ -53,6 +53,25 @@ describe('AgentsWorkspace Layout & IDE Theme Suite', () => {
       expect(cssContent).toContain('.session-item');
       expect(cssContent).toContain('.session-item-active');
     });
+
+    it('uses separate full-height session and chat pages on phones', () => {
+      const cssPath = resolve(__dirname, '../../../../src/styles.css');
+      const workspacePath = resolve(__dirname, '../AgentsWorkspace.tsx');
+      const cssContent = readFileSync(cssPath, 'utf-8');
+      const workspaceContent = readFileSync(workspacePath, 'utf-8');
+
+      expect(workspaceContent).toContain("useState<'sessions' | 'chat'>('sessions')");
+      expect(workspaceContent).toContain('mobile-pane-${mobilePane}');
+      expect(workspaceContent).toContain("setMobilePane('chat')");
+      expect(workspaceContent).toContain("setMobilePane('sessions')");
+      expect(workspaceContent).toContain('aria-label="Back to sessions"');
+
+      expect(cssContent).toContain('.agents-workspace.mobile-pane-chat > .agent-tabs');
+      expect(cssContent).toContain('.agent-panes.mobile-pane-sessions .chat-column');
+      expect(cssContent).toContain('.agent-panes.mobile-pane-chat .session-sidebar');
+      expect(cssContent).toContain('.mobile-session-back');
+      expect(cssContent).toContain('grid-template-columns: auto minmax(0, 1fr);');
+    });
   });
 
   describe('Split Panel Resizing & Boundary Constraints', () => {

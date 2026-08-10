@@ -1,5 +1,9 @@
 import type {
   AppInfo,
+  AgentCommunicationErrorEvent,
+  AgentSessionChangedEvent,
+  AgentSessionDeletedEvent,
+  AgentTimelineChangedEvent,
   AuthenticationMethod,
   ConnectionProfile,
   ConnectionProfileDraft,
@@ -17,6 +21,14 @@ import type {
   TmuxStatus,
 } from '@cozypad/contracts';
 import {
+  AgentAttachmentBatchSchema,
+  AgentCommunicationErrorEventSchema,
+  AgentInstallationSchema,
+  AgentSessionBundleSchema,
+  AgentSessionChangedEventSchema,
+  AgentSessionDeletedEventSchema,
+  AgentTimelineChangedEventSchema,
+  DeleteAgentSessionResultSchema,
   SaveDownloadRequestSchema,
   SaveDownloadResultSchema,
 } from '@cozypad/contracts';
@@ -70,6 +82,15 @@ interface SshPlugin {
   getBackgroundMode(): Promise<{ supported: boolean; enabled: boolean }>;
   setBackgroundMode(options: { enabled: boolean; host?: string }): Promise<void>;
   isConnected(): Promise<{ connected: boolean }>;
+  startAgentBridge(options: {
+    profileId: string;
+    name: string;
+    host: string;
+    port: number;
+    username: string;
+  }): Promise<void>;
+  stopAgentBridge(): Promise<void>;
+  agentRequest(options: { line: string }): Promise<void>;
   addListener(
     event: string,
     handler: (payload: Record<string, unknown>) => void,
@@ -150,6 +171,24 @@ export function createCapacitorBridge(
   let connectedProfileId: string | null = null;
   let loaded = false;
   let streamCounter = 0;
+  const agentSessionListeners = new Set<
+    (event: AgentSessionChangedEvent) => void
+  >();
+  const agentDeletedListeners = new Set<
+    (event: AgentSessionDeletedEvent) => void
+  >();
+  const agentTimelineListeners = new Set<
+    (event: AgentTimelineChangedEvent) => void
+  >();
+  const agentErrorListeners = new Set<
+    (event: AgentCommunicationErrorEvent) => void
+  >();
+  const pendingAgentRequests = new Map<
+    number,
+    { resolve(value: unknown): void; reject(error: Error): void }
+  >();
+  let agentRequestCounter = 1;
+  let agentBridgeReady: Promise<void> | null = null;
 
   const publicProfile = (profile: StoredProfile): ConnectionProfile => ({
     id: profile.id,
@@ -203,6 +242,78 @@ export function createCapacitorBridge(
     };
     stateListeners.forEach((listener) => listener(event));
   };
+  const failAgentRequests = (error: Error): void => {
+    for (const pending of pendingAgentRequests.values()) pending.reject(error);
+    pendingAgentRequests.clear();
+  };
+
+  const callAgent = async <T>(
+    method: string,
+    params: unknown,
+  ): Promise<T> => {
+    if (agentBridgeReady === null) {
+      throw new Error('Agent bridge is not connected');
+    }
+    await agentBridgeReady;
+    const id = agentRequestCounter++;
+    return new Promise<T>((resolve, reject) => {
+      pendingAgentRequests.set(id, {
+        resolve: (value) => resolve(value as T),
+        reject,
+      });
+      void ssh
+        .agentRequest({
+          line: JSON.stringify({ type: 'request', id, method, params }),
+        })
+        .catch((error) => {
+          pendingAgentRequests.delete(id);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  };
+
+  const handleAgentMessage = (line: string): void => {
+    let message: {
+      type?: unknown;
+      id?: unknown;
+      result?: unknown;
+      error?: unknown;
+      event?: unknown;
+      payload?: unknown;
+    };
+    try {
+      message = JSON.parse(line) as typeof message;
+    } catch {
+      failAgentRequests(new Error('Remote Agent host returned invalid JSON'));
+      return;
+    }
+    if (message.type === 'response' && typeof message.id === 'number') {
+      const pending = pendingAgentRequests.get(message.id);
+      if (pending === undefined) return;
+      pendingAgentRequests.delete(message.id);
+      if (typeof message.error === 'string') {
+        pending.reject(new Error(message.error));
+      } else {
+        pending.resolve(message.result);
+      }
+      return;
+    }
+    if (message.type !== 'event' || typeof message.event !== 'string') return;
+    if (message.event === 'agentSessionChanged') {
+      const event = AgentSessionChangedEventSchema.parse(message.payload);
+      agentSessionListeners.forEach((listener) => listener(event));
+    } else if (message.event === 'agentSessionDeleted') {
+      const event = AgentSessionDeletedEventSchema.parse(message.payload);
+      agentDeletedListeners.forEach((listener) => listener(event));
+    } else if (message.event === 'agentTimelineChanged') {
+      const event = AgentTimelineChangedEventSchema.parse(message.payload);
+      agentTimelineListeners.forEach((listener) => listener(event));
+    } else if (message.event === 'agentCommunicationError') {
+      const event = AgentCommunicationErrorEventSchema.parse(message.payload);
+      agentErrorListeners.forEach((listener) => listener(event));
+    }
+  };
+
 
   // ── 原生事件轉接 ─────────────────────────────────────────────────────
   void ssh.addListener('connectionState', (payload) => {
@@ -247,6 +358,22 @@ export function createCapacitorBridge(
   void ssh.addListener('execLine', (payload) => {
     execStreams.get(String(payload.streamId))?.(String(payload.line));
   });
+  void ssh.addListener('agentMessage', (payload) => {
+    handleAgentMessage(String(payload.line ?? ''));
+  });
+  void ssh.addListener('agentClosed', (payload) => {
+    const expected = agentBridgeReady === null;
+    agentBridgeReady = null;
+    const error = new Error(
+      String(payload.error ?? 'Remote Agent bridge closed'),
+    );
+    failAgentRequests(error);
+    if (expected) return;
+    agentErrorListeners.forEach((listener) =>
+      listener({ message: error.message }),
+    );
+  });
+
 
   /**
    * 程序被 Android 凍結時 watchdog 可能沒機會回報斷線，
@@ -382,9 +509,20 @@ export function createCapacitorBridge(
           username: profile.username,
           authMethod,
         });
+        agentBridgeReady = ssh.startAgentBridge({
+          profileId,
+          name: profile.name,
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+        });
+        await agentBridgeReady;
         connectedProfileId = profileId;
         startTelemetry(profileId);
       } catch (error) {
+        agentBridgeReady = null;
+        failAgentRequests(new Error('Agent bridge failed to connect'));
+        await ssh.disconnect().catch(() => undefined);
         connectedProfileId = null;
         emitState(profileId, 'error', error instanceof Error ? error.message : String(error));
         throw error;
@@ -397,6 +535,10 @@ export function createCapacitorBridge(
     },
 
     async disconnect() {
+      const ready = agentBridgeReady;
+      agentBridgeReady = null;
+      failAgentRequests(new Error('Agent bridge disconnected'));
+      if (ready !== null) await ssh.stopAgentBridge().catch(() => undefined);
       connectedProfileId = null;
       telemetry.stop();
       await ssh.disconnect();
@@ -530,43 +672,58 @@ export function createCapacitorBridge(
       return () => installLogListeners.delete(listener);
     },
 
-    detectAgent: ({ agentKind }) =>
-      Promise.resolve({
-        agentKind,
-        installed: false,
-        supportsStructuredOutput: false,
-        supportsResume: false,
-        supportsInteractiveApproval: false,
-        launchModes: [],
-        detail: 'Agent communication is currently available in the desktop SSH app',
-      }),
-    listAgentSessions: () => Promise.resolve([]),
-    createAgentSession: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    reviveAgentSession: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    renameAgentSession: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    deleteAgentSession: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    uploadAgentAttachments: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    sendAgentMessage: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    interruptAgentSession: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    setAgentSessionConfigOption: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    resolveAgentApproval: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    answerAgentQuestion: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    declineAgentQuestion: () =>
-      Promise.reject(new Error('Agent communication is not available on mobile yet')),
-    onAgentSessionChanged: () => () => undefined,
-    onAgentSessionDeleted: () => () => undefined,
-    onAgentTimelineChanged: () => () => undefined,
-    onAgentCommunicationError: () => () => undefined,
+    detectAgent: async (request) =>
+      AgentInstallationSchema.parse(await callAgent('detectAgent', request)),
+    listAgentSessions: async (request) =>
+      AgentSessionBundleSchema.array().parse(
+        await callAgent('listAgentSessions', request),
+      ),
+    createAgentSession: async (request) =>
+      AgentSessionBundleSchema.parse(
+        await callAgent('createAgentSession', request),
+      ),
+    reviveAgentSession: async (request) =>
+      AgentSessionBundleSchema.parse(
+        await callAgent('reviveAgentSession', request),
+      ),
+    renameAgentSession: (request) =>
+      callAgent<void>('renameAgentSession', request),
+    deleteAgentSession: async (request) =>
+      DeleteAgentSessionResultSchema.parse(
+        await callAgent('deleteAgentSession', request),
+      ),
+    uploadAgentAttachments: async (request) =>
+      AgentAttachmentBatchSchema.parse(
+        await callAgent('uploadAgentAttachments', request),
+      ),
+    sendAgentMessage: (request) =>
+      callAgent<void>('sendAgentMessage', request),
+    interruptAgentSession: (request) =>
+      callAgent<void>('interruptAgentSession', request),
+    setAgentSessionConfigOption: (request) =>
+      callAgent<void>('setAgentSessionConfigOption', request),
+    resolveAgentApproval: (request) =>
+      callAgent<void>('resolveAgentApproval', request),
+    answerAgentQuestion: (request) =>
+      callAgent<void>('answerAgentQuestion', request),
+    declineAgentQuestion: (request) =>
+      callAgent<void>('declineAgentQuestion', request),
+    onAgentSessionChanged(listener) {
+      agentSessionListeners.add(listener);
+      return () => agentSessionListeners.delete(listener);
+    },
+    onAgentSessionDeleted(listener) {
+      agentDeletedListeners.add(listener);
+      return () => agentDeletedListeners.delete(listener);
+    },
+    onAgentTimelineChanged(listener) {
+      agentTimelineListeners.add(listener);
+      return () => agentTimelineListeners.delete(listener);
+    },
+    onAgentCommunicationError(listener) {
+      agentErrorListeners.add(listener);
+      return () => agentErrorListeners.delete(listener);
+    },
 
     cleanupRemote: (removeTmuxBinary) => provisioner.cleanup(removeTmuxBinary),
 

@@ -407,6 +407,7 @@ export function AgentsWorkspace({
     Partial<Record<AgentKind, AgentInstallation>>
   >({});
   const [sessionView, setSessionView] = useState(createAgentSessionViewState);
+  const [mobilePane, setMobilePane] = useState<'sessions' | 'chat'>('sessions');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<
     Record<string, ComposerAttachment[]>
@@ -846,6 +847,10 @@ export function AgentsWorkspace({
     selectedSession !== null &&
     sessionView.entered[agent] === selectedSession.id;
   useEffect(() => {
+    if (selectedSession === null) setMobilePane('sessions');
+  }, [selectedSession]);
+
+  useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
     if (selectedSessionId === null) return;
     setUnreadIds((current) => {
@@ -979,6 +984,7 @@ export function AgentsWorkspace({
           bundle.session.id,
         );
       });
+      setMobilePane('chat');
       setCreateOpen(false);
     } catch (createError) {
       setError(errorText(createError));
@@ -1480,7 +1486,7 @@ export function AgentsWorkspace({
   };
 
   return (
-    <div className="agents-workspace">
+    <div className={`agents-workspace mobile-pane-${mobilePane}`}>
       <div className="agent-tabs">
         {AGENTS.map(({ kind, label }) => {
           const info = badge(kind);
@@ -1488,7 +1494,10 @@ export function AgentsWorkspace({
             <button
               key={kind}
               className={`agent-tab${agent === kind ? ' agent-tab-active' : ''}`}
-              onClick={() => setAgent(kind)}
+              onClick={() => {
+                setAgent(kind);
+                setMobilePane('sessions');
+              }}
             >
               {label}
               {info.waiting ? (
@@ -1528,7 +1537,7 @@ export function AgentsWorkspace({
           </p>
         </div>
       ) : (
-        <div className="agent-panes" ref={panesRef}>
+        <div className={`agent-panes mobile-pane-${mobilePane}`} ref={panesRef}>
           <aside className="session-sidebar" style={{ width: clamp(sidebarWidth) }}>
             {/*
               SPEC 1057/256-262: neither a missing connection nor an
@@ -1674,6 +1683,7 @@ export function AgentsWorkspace({
                           session.id,
                         ),
                       );
+                      setMobilePane('chat');
                     }}
                     onOpenMenu={(x, y) => setSessionMenu({ session, x, y })}
                   />
@@ -1731,6 +1741,15 @@ export function AgentsWorkspace({
             {selectedSession ? (
               <>
                 <div className="chat-session-head">
+                  <button
+                    type="button"
+                    className="mobile-session-back"
+                    onClick={() => setMobilePane('sessions')}
+                    aria-label="Back to sessions"
+                  >
+                    <span aria-hidden="true">&larr;</span>
+                    Sessions
+                  </button>
                   <div>
                     <span className="chat-session-title-row">
                       <strong>{selectedSession.title}</strong>

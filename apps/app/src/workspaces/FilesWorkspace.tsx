@@ -103,6 +103,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     mode: 'copy' | 'move';
   } | null>(null);
   const [selected, setSelected] = useState<RemoteFileItem | null>(null);
+  const [mobilePane, setMobilePane] = useState<'tree' | 'preview'>('tree');
   const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
     null,
   );
@@ -119,6 +120,10 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [pwd, setPwd] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dialogInput, setDialogInput] = useState('');
+
+  useEffect(() => {
+    if (selected === null) setMobilePane('tree');
+  }, [selected]);
 
   const showFlash = (message: string) => {
     setFlash(message);
@@ -233,10 +238,22 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     );
   };
 
+  const closeFile = () => {
+    if (!confirmDiscard()) return;
+    setSelected(null);
+    setDraft(null);
+    setPdfData(null);
+    setImageData(null);
+    setMdPreview(false);
+    setActiveLine(undefined);
+    setMobilePane('tree');
+  };
+
   const openFile = (item: RemoteFileItem, line?: number) => {
     if (!confirmDiscard()) return;
     if (item.type === 'l') {
       setSelected(item);
+      setMobilePane('preview');
       setDraft(null);
       setPdfData(null);
       setImageData(null);
@@ -244,6 +261,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       return;
     }
     setSelected(item);
+    setMobilePane('preview');
     setDraft(null);
     setPdfData(null);
     setImageData(null);
@@ -670,7 +688,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   }
 
   return (
-    <div className="files-workspace">
+    <div className={`files-workspace mobile-pane-${mobilePane}`}>
       <aside className="files-tree">
         <div className="files-roots">
           <button
@@ -779,6 +797,15 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         {selected ? (
           <>
             <div className="files-preview-head">
+              <button
+                type="button"
+                className="mobile-file-close"
+                onClick={closeFile}
+                aria-label="Close file and return to file list"
+              >
+                <span aria-hidden="true">&larr;</span>
+                Files
+              </button>
               <span className="mono files-path">{selected.path}</span>
               {flash ? <span className="flash">{flash}</span> : null}
               <div className="files-actions">
