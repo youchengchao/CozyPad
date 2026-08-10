@@ -12,6 +12,7 @@ import {
   Ssh2Transport,
 } from '../src/main/transport/ssh2Transport';
 import type { TransportEvents } from '../src/main/transport/TransportPort';
+import type { RemoteHostRuntime } from '../src/main/transport/remoteNodeHost';
 
 class FakeShellStream implements Ssh2ShellStreamLike {
   readonly writes: Uint8Array[] = [];
@@ -59,58 +60,25 @@ class FakeShellStream implements Ssh2ShellStreamLike {
   }
 }
 
-class FakeExecStream implements Ssh2ExecStreamLike {
-  private readonly dataListeners: ((chunk: Uint8Array) => void)[] = [];
-  private readonly closeListeners: ((code: number | null) => void)[] = [];
-  private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+class FakeHostRuntime {
+  readonly execCalls: string[] = [];
+  readonly writes: Array<{ path: string; data: Uint8Array }> = [];
+  execResult = '';
+  execError: Error | null = null;
+  disposed = false;
 
-  readonly stderr = {
-    on: (_event: 'data', listener: (chunk: Uint8Array) => void): void => {
-      this.stderrListeners.push(listener);
-    },
-  };
-
-  on(
-    event: 'data' | 'close',
-    listener: ((chunk: Uint8Array) => void) | ((code: number | null) => void),
-  ): this {
-    if (event === 'data') this.dataListeners.push(listener as (chunk: Uint8Array) => void);
-    else this.closeListeners.push(listener as (code: number | null) => void);
-    return this;
+  async exec(command: string): Promise<string> {
+    this.execCalls.push(command);
+    if (this.execError !== null) throw this.execError;
+    return this.execResult;
   }
 
-  emitStdout(text: string): void {
-    this.dataListeners.forEach((listener) => listener(new TextEncoder().encode(text)));
+  async writeFile(path: string, data: Uint8Array): Promise<void> {
+    this.writes.push({ path, data });
   }
 
-  emitStderr(text: string): void {
-    this.stderrListeners.forEach((listener) => listener(new TextEncoder().encode(text)));
-  }
-
-  emitClose(code: number | null): void {
-    this.closeListeners.forEach((listener) => listener(code));
-  }
-
-  close(): void {
-    // mock close
-  }
-}
-
-class FakeSftp implements Ssh2SftpLike {
-  readonly writes: Array<{ path: string; data: Buffer }> = [];
-  ended = false;
-
-  writeFile(
-    remotePath: string,
-    data: Buffer,
-    callback: (error?: Error | null) => void,
-  ): void {
-    this.writes.push({ path: remotePath, data });
-    callback();
-  }
-
-  end(): void {
-    this.ended = true;
+  dispose(): void {
+    this.disposed = true;
   }
 }
 
@@ -260,21 +228,24 @@ function flushMicrotasks(): Promise<void> {
 async function connectedTransport(): Promise<{
   transport: Ssh2Transport;
   client: FakeClient;
+  host: FakeHostRuntime;
   recorder: Recorder;
 }> {
   const client = new FakeClient();
+  const host = new FakeHostRuntime();
   const recorder = createRecorder();
   const transport = new Ssh2Transport({
     getProfile: () => PROFILE,
     getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
     clientFactory: () => client,
+    hostRuntimeFactory: async () => host as unknown as RemoteHostRuntime,
   });
   transport.setEvents(recorder);
   const connectPromise = transport.connect('p1');
   await flushMicrotasks();
   client.emit('ready');
   await connectPromise;
-  return { transport, client, recorder };
+  return { transport, client, host, recorder };
 }
 
 describe('Ssh2Transport', () => {
@@ -350,6 +321,7 @@ describe('Ssh2Transport', () => {
       getProfile: () => PROFILE,
       getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
       clientFactory: () => clients.shift()!,
+      hostRuntimeFactory: async () => new FakeHostRuntime() as unknown as RemoteHostRuntime,
     });
     transport.setEvents(recorder);
 
@@ -379,6 +351,7 @@ describe('Ssh2Transport', () => {
       getProfile: () => PROFILE,
       getCredential: () => ({ authMethod: 'password', password: 'hunter2' }),
       clientFactory: () => clients.shift()!,
+      hostRuntimeFactory: async () => new FakeHostRuntime() as unknown as RemoteHostRuntime,
     });
     transport.setEvents(recorder);
 
@@ -533,52 +506,27 @@ describe('Ssh2Transport', () => {
     ).rejects.toThrow('not connected');
   });
 
-  it('opens a raw exec channel without allocating a PTY', async () => {
-    const { transport, client } = await connectedTransport();
-    const stream = new FakeExecStream();
-    const openPromise = transport.openExecChannel('npx -y codex-acp');
-    const request = client.execRequests[0]!;
+  it('delegates commands to the remote Node host runtime', async () => {
+    const { transport, client, host } = await connectedTransport();
+    host.execResult = 'Linux gpu-box 6.8.0';
 
-    expect(request.command).toBe('npx -y codex-acp');
-    expect(request.options).toBeUndefined();
-    request.callback(undefined, stream);
-    await expect(openPromise).resolves.toBe(stream);
+    await expect(transport.exec('uname -a')).resolves.toBe(
+      'Linux gpu-box 6.8.0',
+    );
+    expect(host.execCalls).toEqual(['uname -a']);
+    expect(client.execRequests).toHaveLength(0);
   });
 
-  it('exec resolves collected stdout on close', async () => {
-    const { transport, client } = await connectedTransport();
-    const execPromise = transport.exec('uname -a');
-    const request = client.execRequests[0]!;
-    expect(request.command).toBe('uname -a');
-    const stream = new FakeExecStream();
-    request.callback(undefined, stream);
-    stream.emitStdout('Linux gpu-box ');
-    stream.emitStdout('6.8.0');
-    stream.emitClose(0);
-    await expect(execPromise).resolves.toBe('Linux gpu-box 6.8.0');
-  });
-
-  it('exec rejects with stderr on non-zero exit and empty stdout', async () => {
-    const { transport, client } = await connectedTransport();
-    const execPromise = transport.exec('false');
-    const stream = new FakeExecStream();
-    client.execRequests[0]!.callback(undefined, stream);
-    stream.emitStderr('nope\n');
-    stream.emitClose(1);
-    await expect(execPromise).rejects.toThrow('nope');
-  });
-
-  it('writes remote binary files through SFTP on the active SSH connection', async () => {
-    const { transport, client } = await connectedTransport();
+  it('delegates binary writes to the remote Node host runtime', async () => {
+    const { transport, host } = await connectedTransport();
     const data = new Uint8Array([0, 255, 4, 8]);
-    const writePromise = transport.writeFile('/srv/project/image.png', data);
-    const sftp = new FakeSftp();
-    client.sftpRequests[0]!(undefined, sftp);
 
-    await expect(writePromise).resolves.toBeUndefined();
-    expect(sftp.writes[0]?.path).toBe('/srv/project/image.png');
-    expect([...sftp.writes[0]!.data]).toEqual([...data]);
-    expect(sftp.ended).toBe(true);
+    await expect(
+      transport.writeFile('/srv/project/image.png', data),
+    ).resolves.toBeUndefined();
+    expect(host.writes).toEqual([
+      { path: '/srv/project/image.png', data },
+    ]);
   });
 
   it('passes the host verifier result through to ssh2', async () => {
@@ -594,6 +542,7 @@ describe('Ssh2Transport', () => {
         return Promise.resolve(true);
       },
       clientFactory: () => client,
+      hostRuntimeFactory: async () => new FakeHostRuntime() as unknown as RemoteHostRuntime,
     });
     transport.setEvents(recorder);
     const connectPromise = transport.connect('p1');
@@ -625,6 +574,7 @@ describe('Ssh2Transport', () => {
         passphrase: 'test-passphrase',
       }),
       clientFactory: () => client,
+      hostRuntimeFactory: async () => new FakeHostRuntime() as unknown as RemoteHostRuntime,
     });
     const connectPromise = transport.connect(profile.id);
     await flushMicrotasks();

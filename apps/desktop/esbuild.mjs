@@ -7,6 +7,7 @@ if (!includeSourceMap) {
     rm('dist/main.cjs.map', { force: true }),
     rm('dist/preload.cjs.map', { force: true }),
     rm('dist/agy-acp.cjs.map', { force: true }),
+    rm('dist/remote-host.cjs.map', { force: true }),
   ]);
 }
 
@@ -43,5 +44,15 @@ await build({
   ...shared,
   entryPoints: ['src/agent/agyAcpEntry.ts'],
   outfile: 'dist/agy-acp.cjs',
+  external: [],
+});
+
+// Uploaded over the active SSH connection and executed by Node on that host.
+// It bundles the same NodeHostRuntime used directly by LocalTransport.
+await build({
+  ...shared,
+  target: 'node18',
+  entryPoints: ['src/remote/remoteHostEntry.ts'],
+  outfile: 'dist/remote-host.cjs',
   external: [],
 });

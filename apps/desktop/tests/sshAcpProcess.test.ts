@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { describe, expect, it, vi } from 'vitest';
 import type {
   AcpAgentHandle,
   AcpClientHandlers,
@@ -8,36 +10,33 @@ import type {
 } from '@cozypad/acp-client';
 import type { AcpLaunchSpec } from '../src/main/acp/acpProcess';
 import {
-  buildSshAcpCommand,
+  remoteAcpLaunchSpec,
   spawnSshAcpAgent,
 } from '../src/main/acp/sshAcpProcess';
-import type { Ssh2DuplexExecStreamLike } from '../src/main/transport/ssh2Transport';
+import type { NodeHostProcessSpec } from '../src/main/transport/nodeHostRuntime';
+import type { RemoteHostProcess } from '../src/main/transport/remoteNodeHost';
 
-function channelFixture(): {
-  channel: Ssh2DuplexExecStreamLike;
-  close: ReturnType<typeof vi.fn>;
-  emitClose(code?: number | null, signal?: string | null): void;
+function processFixture(): {
+  process: RemoteHostProcess;
+  kill: ReturnType<typeof vi.fn>;
+  emitExit(code: number | null, signal: string | null): void;
 } {
-  const listeners = new Map<string, ((...args: unknown[]) => void)[]>();
-  const close = vi.fn();
-  const channel = {
-    readable: true,
-    on(event: string, listener: (...args: unknown[]) => void) {
-      const current = listeners.get(event) ?? [];
-      current.push(listener);
-      listeners.set(event, current);
-      return this;
-    },
-    write: vi.fn(),
-    close,
-  } as unknown as Ssh2DuplexExecStreamLike;
+  const kill = vi.fn();
+  const process = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    exitCode: null as number | null,
+    ended: false,
+    signalCode: null as string | null,
+    kill,
+  }) as RemoteHostProcess;
   return {
-    channel,
-    close,
-    emitClose: (code, signal) => {
-      for (const listener of listeners.get('close') ?? []) {
-        listener(code, signal);
-      }
+    process,
+    kill,
+    emitExit: (code, signal) => {
+      Object.assign(process, { ended: true, exitCode: code, signalCode: signal });
+      (process as unknown as EventEmitter).emit('exit', code, signal);
     },
   };
 }
@@ -84,30 +83,30 @@ function handlers(): AcpClientHandlers {
 }
 
 describe('SSH ACP process transport', () => {
-  it('uses the pinned official adapter through a login shell', () => {
-    const command = buildSshAcpCommand(
+  it('builds a pinned process spec without a shell', () => {
+    const spec = remoteAcpLaunchSpec(
       launchSpec('codex-acp', '/srv/research; touch /tmp/not-run'),
     );
 
-    expect(command).toContain('"${SHELL:-/bin/sh}" -lc');
-    expect(command).toContain('@agentclientprotocol/codex-acp@1.1.14');
-    expect(command).toContain('/srv/research; touch /tmp/not-run');
-    expect(command).not.toContain('ELECTRON_RUN_AS_NODE');
+    expect(spec).toMatchObject({
+      command: 'npx',
+      args: ['-y', '@agentclientprotocol/codex-acp@1.1.14'],
+      cwd: '/srv/research; touch /tmp/not-run',
+    });
+    expect(spec.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
   });
 
-  it('maps one duplex SSH channel to ACP stdin/stdout and exit', async () => {
-    const fixture = channelFixture();
+  it('connects ACP to the process streams supplied by the remote host', async () => {
+    const fixture = processFixture();
     const connector = connectorFixture();
-    const openExecChannel = vi.fn(
-      async (command: string) => {
-        void command;
-        return fixture.channel;
-      },
-    );
+    const spawnProcess = vi.fn(async (spec: NodeHostProcessSpec) => {
+      void spec;
+      return fixture.process;
+    });
     const transport = {
       exec: vi.fn(async () => ''),
       writeFile: vi.fn(async () => undefined),
-      openExecChannel,
+      spawnProcess,
     };
 
     const child = await spawnSshAcpAgent(
@@ -118,24 +117,25 @@ describe('SSH ACP process transport', () => {
     );
 
     expect(child.handle).toBe(connector.handle);
-    expect(connector.child().stdin).toBe(fixture.channel);
-    expect(connector.child().stdout).toBe(fixture.channel);
-    expect(openExecChannel.mock.calls[0]?.[0]).toContain(
-      '@zed-industries/claude-agent-acp@0.23.1',
-    );
+    expect(connector.child()).toBe(fixture.process);
+    expect(spawnProcess.mock.calls[0]?.[0]).toMatchObject({
+      command: 'npx',
+      args: ['-y', '@zed-industries/claude-agent-acp@0.23.1'],
+      cwd: '/srv/project',
+    });
 
     const exits: unknown[] = [];
     child.onExit((detail) => exits.push(detail));
-    fixture.emitClose(17, 'SIGTERM');
+    fixture.emitExit(17, 'SIGTERM');
     expect(exits).toEqual([{ code: 17, signal: 'SIGTERM' }]);
 
     child.kill();
     child.kill();
-    expect(fixture.close).toHaveBeenCalledOnce();
+    expect(fixture.kill).toHaveBeenCalledOnce();
   });
 
-  it('copies the existing bundled AGY adapter before opening its channel', async () => {
-    const fixture = channelFixture();
+  it('copies the bundled AGY adapter before spawning it through Node', async () => {
+    const fixture = processFixture();
     const connector = connectorFixture();
     const writeFile = vi.fn(
       async (remotePath: string, data: Uint8Array) => {
@@ -146,11 +146,11 @@ describe('SSH ACP process transport', () => {
     const exec = vi.fn(async (command: string) =>
       command.startsWith('printf') ? '/home/researcher' : '',
     );
-    const openExecChannel = vi.fn(async (command: string) => {
-      void command;
-      return fixture.channel;
+    const spawnProcess = vi.fn(async (spec: NodeHostProcessSpec) => {
+      void spec;
+      return fixture.process;
     });
-    const transport = { exec, writeFile, openExecChannel };
+    const transport = { exec, writeFile, spawnProcess };
     const spec = {
       ...launchSpec('adapter-agy'),
       args: [fileURLToPath(new URL('../dist/agy-acp.cjs', import.meta.url))],
@@ -158,13 +158,19 @@ describe('SSH ACP process transport', () => {
 
     await spawnSshAcpAgent(transport, spec, handlers(), connector.connect);
 
-    expect(exec.mock.calls[1]?.[0]).toContain("mkdir -p -- '/home/researcher/.cozypad'");
+    expect(exec.mock.calls[1]?.[0]).toContain(
+      "mkdir -p -- '/home/researcher/.cozypad'",
+    );
     expect(writeFile.mock.calls[0]?.[0]).toBe(
       '/home/researcher/.cozypad/agy-acp.cjs',
     );
-    expect((writeFile.mock.calls[0]?.[1] as Uint8Array).byteLength).toBeGreaterThan(0);
-    const command = openExecChannel.mock.calls[0]?.[0];
-    expect(command).toContain('node');
-    expect(command).toContain('/home/researcher/.cozypad/agy-acp.cjs');
+    expect(
+      (writeFile.mock.calls[0]?.[1] as Uint8Array).byteLength,
+    ).toBeGreaterThan(0);
+    expect(spawnProcess.mock.calls[0]?.[0]).toMatchObject({
+      command: 'node',
+      args: ['/home/researcher/.cozypad/agy-acp.cjs'],
+      cwd: '/srv/project',
+    });
   });
 });

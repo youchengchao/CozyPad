@@ -11,6 +11,13 @@ export interface NodeHostShell {
   args(script: string): string[];
 }
 
+export interface NodeHostProcessSpec {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env?: Readonly<Record<string, string>>;
+}
+
 /**
  * Selects the POSIX-compatible shell used for host-side commands. Keeping this
  * in the host runtime lets the same command semantics run on whichever machine
@@ -34,6 +41,17 @@ export function nodeHostShell(): NodeHostShell {
 /** Generic process and filesystem operations for the machine running Node. */
 export class NodeHostRuntime {
   private readonly execChildren = new Set<ChildProcess>();
+
+  /** Starts a program on whichever machine owns this Node runtime. */
+  spawnProcess(spec: NodeHostProcessSpec): ChildProcess {
+    return spawn(spec.command, [...spec.args], {
+      cwd: path.resolve(resolveHome(spec.cwd)),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+      env: { ...process.env, ...spec.env },
+    });
+  }
 
   exec(command: string, timeoutMs = 15_000, signal?: AbortSignal): Promise<string> {
     return this.execStream(command, () => undefined, timeoutMs, true, signal);
@@ -66,7 +84,7 @@ export class NodeHostRuntime {
         timer = setTimeout(() => {
           settled = true;
           child.kill();
-          reject(new Error(`local command timed out after ${timeoutMs}ms`));
+          reject(new Error(`host command timed out after ${timeoutMs}ms`));
         }, timeoutMs);
       }
 
@@ -110,7 +128,7 @@ export class NodeHostRuntime {
         if (timer !== null) clearTimeout(timer);
         reject(
           new Error(
-            `cannot run local commands: ${error.message}. A POSIX shell is required; set COZYPAD_LOCAL_SHELL to one.`,
+            `cannot run host commands: ${error.message}. A POSIX shell is required; set COZYPAD_LOCAL_SHELL to one.`,
           ),
         );
       });

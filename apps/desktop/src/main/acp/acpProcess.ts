@@ -6,7 +6,6 @@
  * drives claude-agent-acp, codex-acp and our own adapter through one client and
  * one code path, and all three answer.
  */
-import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
@@ -15,6 +14,7 @@ import {
   type AcpClientHandlers,
   type AcpRequestTimeouts,
 } from '@cozypad/acp-client';
+import { NodeHostRuntime } from '../transport/nodeHostRuntime';
 
 export interface AcpLaunchSpec {
   /** How the process is named in diagnostics, e.g. `'adapter-agy'`. */
@@ -46,6 +46,8 @@ const DEFAULT_ACP_ENV = {
   PYTHONIOENCODING: 'utf-8',
   PYTHONUTF8: '1',
 };
+
+const localHost = new NodeHostRuntime();
 
 /**
  * The launch spec for our own agy adapter.
@@ -195,14 +197,13 @@ export function spawnAcpAgent(
     );
   }
 
-  const child = spawn(spec.command, [...spec.args], {
+  const child = localHost.spawnProcess({
     // The translated one, not `spec.cwd`: the check above proved this is the
     // path that exists.
     cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: false,
-    windowsHide: true,
-    env: { ...process.env, ...spec.env },
+    command: spec.command,
+    args: spec.args,
+    env: spec.env,
   });
 
   const handle = connectAcpAgentProcess({
