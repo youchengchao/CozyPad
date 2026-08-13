@@ -29,7 +29,7 @@ export interface TransportPort {
   // 原生與 SFTP 檔案系統 API
   fsList(path: string): Promise<DirectoryListing>;
   fsReadText(path: string, maxBytes: number, offset: number): Promise<string>;
-  fsReadBytes(path: string): Promise<string>;
+  fsReadBytes(path: string, maxBytes: number): Promise<string>;
   fsWrite(path: string, data: Uint8Array): Promise<void>;
   fsCreate(directory: string, name: string, kind: 'file' | 'directory'): Promise<void>;
   fsRename(path: string, newName: string): Promise<void>;

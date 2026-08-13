@@ -12,6 +12,7 @@ import type {
   FsCreateRequest,
   FsPathRequest,
   FsPathResult,
+  FsReadBytesRequest,
   FsReadRequest,
   FsRenameRequest,
   FsTransferRequest,
@@ -109,7 +110,7 @@ export interface PlatformBridge {
 
   fsList(request: FsPathRequest): Promise<DirectoryListing>;
   fsRead(request: FsReadRequest): Promise<FsContent>;
-  fsReadBytes(request: FsPathRequest): Promise<FsBytes>;
+  fsReadBytes(request: FsReadBytesRequest): Promise<FsBytes>;
   fsWrite(request: FsWriteRequest): Promise<void>;
   fsCreate(request: FsCreateRequest): Promise<void>;
   fsRename(request: FsRenameRequest): Promise<void>;

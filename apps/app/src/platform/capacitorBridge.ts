@@ -29,6 +29,7 @@ import {
   AgentSessionDeletedEventSchema,
   AgentTimelineChangedEventSchema,
   DeleteAgentSessionResultSchema,
+  MAX_INLINE_FILE_OPEN_BYTES,
   SaveDownloadRequestSchema,
   SaveDownloadResultSchema,
 } from '@cozypad/contracts';
@@ -642,7 +643,12 @@ export function createCapacitorBridge(
     fsRead: async (request) => ({
       content: await files.readText(request.path, request.maxBytes, request.offset),
     }),
-    fsReadBytes: async (request) => ({ dataBase64: await files.readBytes(request.path) }),
+    fsReadBytes: async (request) => ({
+      dataBase64: await files.readBytes(
+        request.path,
+        request.maxBytes ?? MAX_INLINE_FILE_OPEN_BYTES,
+      ),
+    }),
     fsWrite: (request) => files.write(request.path, request.contentBase64),
     fsCreate: (request) => files.create(request.directory, request.name, request.kind),
     fsRename: (request) => files.rename(request.path, request.newName),

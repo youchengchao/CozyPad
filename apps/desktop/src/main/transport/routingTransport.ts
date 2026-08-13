@@ -81,8 +81,8 @@ export class RoutingTransport implements TransportPort {
     return this.active.fsReadText(path, maxBytes, offset);
   }
 
-  fsReadBytes(path: string): Promise<string> {
-    return this.active.fsReadBytes(path);
+  fsReadBytes(path: string, maxBytes: number): Promise<string> {
+    return this.active.fsReadBytes(path, maxBytes);
   }
 
   fsWrite(path: string, data: Uint8Array): Promise<void> {

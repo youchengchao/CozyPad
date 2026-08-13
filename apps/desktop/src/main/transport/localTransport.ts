@@ -218,9 +218,9 @@ export class LocalTransport implements TransportPort {
     return this.host.fsReadText(filePath, maxBytes, offset);
   }
 
-  async fsReadBytes(filePath: string): Promise<string> {
+  async fsReadBytes(filePath: string, maxBytes: number): Promise<string> {
     this.assertConnected();
-    return this.host.fsReadBytes(filePath);
+    return this.host.fsReadBytes(filePath, maxBytes);
   }
 
   async fsWrite(filePath: string, data: Uint8Array): Promise<void> {

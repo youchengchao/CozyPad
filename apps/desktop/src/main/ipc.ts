@@ -13,6 +13,7 @@ import {
   DeleteProfileRequestSchema,
   FsCreateRequestSchema,
   FsPathRequestSchema,
+  FsReadBytesRequestSchema,
   FsReadRequestSchema,
   FsRenameRequestSchema,
   FsTransferRequestSchema,
@@ -310,9 +311,9 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
 
   ipcMain.handle(IpcChannels.fsReadBytes, async (event, raw: unknown) => {
     assertSender(event);
-    const request = FsPathRequestSchema.parse(raw);
+    const request = FsReadBytesRequestSchema.parse(raw);
     return runCancellable(request.requestId, async (signal) => {
-      return { dataBase64: await files.readBytes(request.path, undefined, signal) };
+      return { dataBase64: await files.readBytes(request.path, request.maxBytes, signal) };
     });
   });
 

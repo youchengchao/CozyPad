@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DirectoryListing, RemoteFileItem } from '@cozypad/contracts';
-import { textToBase64 } from '@cozypad/contracts';
+import {
+  MAX_FILE_TRANSFER_BYTES,
+  base64ToBytes,
+  textToBase64,
+} from '@cozypad/contracts';
 import { getBridge } from '../platform/bridge';
 import { MarkdownView } from './agents/AssistantMarkdown';
 import { CodeEditor } from '../components/CodeEditor';
@@ -16,10 +20,12 @@ import {
   isFileSystemRoot,
   normalizeFilePath,
   parentFilePath,
-  parseFileLocation,
+  resolveFileLinkTarget,
+  resolveFileReference,
 } from './fileNavigation';
 import {
   MAX_EDITABLE_TEXT_BYTES,
+  decodeTextPreview,
   extensionOf,
   imagePreviewMimeType,
   isMarkdownPreviewFile,
@@ -293,15 +299,21 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   }, [connected, loadDir]);
 
   /** symlink：指向目錄就跳過去，指向檔案就開目標。 */
-  const followSymlink = (item: RemoteFileItem) => {
+  const followSymlink = (
+    item: RemoteFileItem,
+    line?: number,
+    visited: readonly string[] = [],
+  ) => {
+    if (visited.some((path) => filePathsEqual(path, item.path))) {
+      setError(`Symbolic-link cycle detected at ${item.path}`);
+      return;
+    }
     const target = item.linkTarget;
     if (target === undefined || item.targetType === 'N') {
       setError(`連結目標不存在：${target ?? '(未知)'}`);
       return;
     }
-    const absolute = target.startsWith('/')
-      ? target
-      : `${parentOf(item.path)}/${target}`;
+    const absolute = resolveFileLinkTarget(item.path, target);
     if (item.targetType === 'd') {
       void openPath(absolute);
       showFlash('已跳到連結目標');
@@ -311,11 +323,11 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .fsList({ path: parentOf(absolute) })
       .then((listing) => {
         const found = listing.items.find(
-          (entry) =>
-            entry.path.replace(/\\/g, '/').toLowerCase() ===
-            absolute.replace(/\\/g, '/').toLowerCase(),
+          (entry) => filePathsEqual(entry.path, absolute),
         );
-        if (found) openFile(found);
+        if (found?.type === 'l') {
+          followSymlink(found, line, [...visited, item.path]);
+        } else if (found) openFile(found, line);
         else setError(`找不到連結目標：${absolute}`);
       })
       .catch(report);
@@ -340,23 +352,20 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   };
 
   const openFile = (item: RemoteFileItem, line?: number) => {
+    if (item.type === 'l') {
+      followSymlink(item, line);
+      return;
+    }
     const existing = fileTabs.tabs.some((tab) => tab.item.path === item.path);
     setFileTabs((current) => activateFileTab(current, item, line));
     setMobilePane('preview');
     if (existing) return;
 
-    if (item.type === 'l') {
-      setFileTabs((current) =>
-        updateFileTab(current, item.path, (tab) => ({ ...tab, loading: false })),
-      );
-      return;
-    }
-
     const imageMimeType = imagePreviewMimeType(item);
     if (imageMimeType !== null) {
       setBusy(true);
       void bridge
-        .fsReadBytes({ path: item.path })
+        .fsReadBytes({ path: item.path, maxBytes: MAX_EDITABLE_TEXT_BYTES })
         .then(({ dataBase64 }) => {
           setFileTabs((current) =>
             updateFileTab(current, item.path, (tab) => ({
@@ -378,7 +387,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     if (isPdf(item)) {
       setBusy(true);
       void bridge
-        .fsReadBytes({ path: item.path })
+        .fsReadBytes({ path: item.path, maxBytes: MAX_EDITABLE_TEXT_BYTES })
         .then(({ dataBase64 }) => {
           setFileTabs((current) =>
             updateFileTab(current, item.path, (tab) => ({
@@ -404,8 +413,14 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       return;
     }
     void bridge
-      .fsRead({ path: item.path, maxBytes: MAX_EDITABLE_TEXT_BYTES, offset: 0 })
-      .then(({ content }) => {
+      .fsReadBytes({ path: item.path, maxBytes: MAX_EDITABLE_TEXT_BYTES })
+      .then(({ dataBase64 }) => {
+        const content = decodeTextPreview(base64ToBytes(dataBase64));
+        if (content === null) {
+          throw new Error(
+            `Cannot open ${item.name} as text because it is binary or is not UTF-8.`,
+          );
+        }
         setFileTabs((current) =>
           updateFileTab(current, item.path, (tab) => ({
             ...tab,
@@ -433,10 +448,14 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           filePathsEqual(item.path, normalizedAbsolute),
         );
         if (
-          listedItem?.type === 'd' ||
-          (listedItem?.type === 'l' && listedItem.targetType === 'd')
+          listedItem?.type === 'd'
         ) {
           void openPath(listedItem.path);
+          return;
+        }
+        if (listedItem?.type === 'l') {
+          setCurrentPath(listing.path);
+          followSymlink(listedItem, line);
           return;
         }
         const item: RemoteFileItem =
@@ -460,32 +479,12 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     const handleOpenFile = (e: Event) => {
       const customEvent = e as CustomEvent<{ path: string; cwd?: string }>;
       if (!customEvent.detail?.path) return;
-      const location = parseFileLocation(decodeURIComponent(customEvent.detail.path));
-      let filePath = location.path;
-      const { line } = location;
-      if (filePath.startsWith('file:')) {
-        filePath = filePath.slice(5);
-        while (filePath.startsWith('/')) {
-          filePath = filePath.slice(1);
-        }
-      }
-      filePath = filePath.replace(/\\/g, '/');
-      const msysMatch = /^\/([A-Za-z])\/(.*)$/u.exec(filePath);
-      if (msysMatch !== null) {
-        filePath = `${msysMatch[1]!.toUpperCase()}:/${msysMatch[2]!}`;
-      }
-      if (/^\/[A-Za-z]:/u.test(filePath)) {
-        filePath = filePath.slice(1);
-      }
-      const isAbsolute = filePath.startsWith('/') || /^[A-Za-z]:\//u.test(filePath);
-      if (!isAbsolute) {
-        // Agents link repo-relative paths; the dispatching session sent its
-        // cwd along so they resolve. Without one there is nothing to open.
-        const cwd = customEvent.detail.cwd?.replace(/\\/g, '/');
-        if (cwd === undefined || cwd === '') return;
-        filePath = `${cwd.replace(/\/+$/u, '')}/${filePath.replace(/^\.\//u, '')}`;
-      }
-      openFileByPath(filePath, line);
+      const location = resolveFileReference(
+        customEvent.detail.path,
+        customEvent.detail.cwd,
+      );
+      if (location === null) return;
+      openFileByPath(location.path, location.line);
     };
     window.addEventListener('cozypad:open-file', handleOpenFile);
     return () => {
@@ -529,7 +528,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     if (!item || item.type === 'd') return;
     setBusy(true);
     bridge
-      .fsReadBytes({ path: item.path })
+      .fsReadBytes({ path: item.path, maxBytes: MAX_FILE_TRANSFER_BYTES })
       .then(async ({ dataBase64 }) => {
         const request = {
           fileName: item.name,

@@ -4,10 +4,17 @@ import {
   ConnectionProfileDraftSchema,
   ConnectionProfileSchema,
   ConnectionStateChangedSchema,
+  FsReadBytesRequestSchema,
+  FsReadRequestSchema,
+  FsWriteRequestSchema,
+  MAX_FILE_TRANSFER_BYTES,
+  MAX_INLINE_FILE_OPEN_BYTES,
+  MAX_INLINE_FILE_WRITE_BYTES,
   SaveDownloadRequestSchema,
   TerminalInputSchema,
   TerminalOpenRequestSchema,
   TerminalResizeRequestSchema,
+  base64DecodedByteLength,
   base64ToBytes,
   base64ToText,
   bytesToBase64,
@@ -144,7 +151,65 @@ describe('download schemas', () => {
   });
 });
 
+describe('file byte-read schema', () => {
+  it('allows the inline and explicit-download limits', () => {
+    expect(FsReadBytesRequestSchema.parse({ path: '/tmp/note' })).toEqual({
+      path: '/tmp/note',
+    });
+    expect(
+      FsReadBytesRequestSchema.parse({
+        path: '/tmp/archive',
+        maxBytes: MAX_FILE_TRANSFER_BYTES,
+      }).maxBytes,
+    ).toBe(32 * 1024 * 1024);
+    expect(MAX_INLINE_FILE_OPEN_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it('rejects byte reads above the transfer ceiling', () => {
+    expect(() =>
+      FsReadBytesRequestSchema.parse({
+        path: '/tmp/archive',
+        maxBytes: MAX_FILE_TRANSFER_BYTES + 1,
+      }),
+    ).toThrow();
+  });
+
+  it('caps legacy text reads at the same inline-open limit', () => {
+    expect(() =>
+      FsReadRequestSchema.parse({
+        path: '/tmp/note',
+        maxBytes: MAX_INLINE_FILE_OPEN_BYTES + 1,
+      }),
+    ).toThrow();
+  });
+});
+
+describe('file write schema', () => {
+  it('caps inline writes before the base64 payload reaches the host runtime', () => {
+    expect(MAX_INLINE_FILE_WRITE_BYTES).toBe(10 * 1024 * 1024);
+    expect(
+      FsWriteRequestSchema.parse({
+        path: '/tmp/note',
+        contentBase64: 'A'.repeat(Math.ceil(MAX_INLINE_FILE_WRITE_BYTES / 3) * 4),
+      }).path,
+    ).toBe('/tmp/note');
+    expect(() =>
+      FsWriteRequestSchema.parse({
+        path: '/tmp/note',
+        contentBase64: 'A'.repeat(Math.ceil(MAX_INLINE_FILE_WRITE_BYTES / 3) * 4 + 1),
+      }),
+    ).toThrow();
+  });
+});
+
 describe('base64 encoding helpers', () => {
+  it('calculates decoded byte length without counting base64 padding', () => {
+    expect(base64DecodedByteLength('')).toBe(0);
+    expect(base64DecodedByteLength('YQ==')).toBe(1);
+    expect(base64DecodedByteLength('YWI=')).toBe(2);
+    expect(base64DecodedByteLength('YWJj')).toBe(3);
+  });
+
   it('round-trips arbitrary binary bytes', () => {
     const bytes = new Uint8Array(256);
     for (let i = 0; i < 256; i++) bytes[i] = i;

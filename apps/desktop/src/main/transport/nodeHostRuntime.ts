@@ -4,7 +4,10 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import type { DirectoryListing } from '@cozypad/contracts';
+import {
+  MAX_INLINE_FILE_WRITE_BYTES,
+  type DirectoryListing,
+} from '@cozypad/contracts';
 
 export interface NodeHostShell {
   command: string;
@@ -235,13 +238,48 @@ export class NodeHostRuntime {
     }
   }
 
-  async fsReadBytes(filePath: string): Promise<string> {
+  async fsReadBytes(filePath: string, maxBytes: number): Promise<string> {
     const resolved = path.resolve(resolveHome(filePath));
-    const content = await fs.readFile(resolved);
-    return content.toString('base64');
+    const handle = await fs.open(resolved, 'r');
+    try {
+      const stat = await handle.stat();
+      if (stat.size > maxBytes) {
+        throw new Error(
+          `File is too large to read (${stat.size} bytes, limit ${maxBytes} bytes).`,
+        );
+      }
+      const content = Buffer.alloc(stat.size);
+      let offset = 0;
+      while (offset < content.length) {
+        const { bytesRead } = await handle.read(
+          content,
+          offset,
+          content.length - offset,
+          offset,
+        );
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      const finalSize = (await handle.stat()).size;
+      if (offset !== stat.size || finalSize !== stat.size) {
+        throw new Error(`File changed while it was being read: ${resolved}`);
+      }
+      return content.toString('base64');
+    } finally {
+      await handle.close();
+    }
   }
 
-  async fsWrite(filePath: string, data: Uint8Array): Promise<void> {
+  async fsWrite(
+    filePath: string,
+    data: Uint8Array,
+    maxBytes = MAX_INLINE_FILE_WRITE_BYTES,
+  ): Promise<void> {
+    if (data.byteLength > maxBytes) {
+      throw new Error(
+        `File is too large to save (${data.byteLength} bytes, limit ${maxBytes} bytes).`,
+      );
+    }
     const resolved = path.resolve(resolveHome(filePath));
     const dir = path.dirname(resolved);
     await fs.mkdir(dir, { recursive: true });
@@ -258,20 +296,30 @@ export class NodeHostRuntime {
 
   async fsCreate(directory: string, name: string, kind: 'file' | 'directory'): Promise<void> {
     const resolvedDir = path.resolve(resolveHome(directory));
+    await assertDirectory(resolvedDir);
+    assertValidBasename(name);
     const target = path.join(resolvedDir, name);
+    assertDirectChild(resolvedDir, target);
     if (kind === 'file') {
-      const handle = await fs.open(target, 'w');
+      const handle = await fs.open(target, 'wx');
       await handle.close();
     } else {
-      await fs.mkdir(target, { recursive: true });
+      await fs.mkdir(target);
     }
   }
 
   async fsRename(filePath: string, newName: string): Promise<void> {
     const resolved = path.resolve(resolveHome(filePath));
     const dir = path.dirname(resolved);
+    assertValidBasename(newName);
     const target = path.join(dir, newName);
-    await fs.rename(resolved, target);
+    assertDirectChild(dir, target);
+    if (resolved === target) return;
+    if (hostPathsEqual(resolved, target)) {
+      await fs.rename(resolved, target);
+      return;
+    }
+    await renameWithoutOverwrite(resolved, target);
   }
 
   async fsDuplicate(filePath: string): Promise<string> {
@@ -310,8 +358,123 @@ export class NodeHostRuntime {
 
   async fsRemove(filePath: string): Promise<void> {
     const resolved = path.resolve(resolveHome(filePath));
-    await fs.rm(resolved, { recursive: true, force: true });
+    const root = path.parse(resolved).root;
+    if (hostPathsEqual(resolved, root) || hostPathsEqual(resolved, path.resolve(os.homedir()))) {
+      throw new Error(`Refusing to delete protected filesystem path: ${resolved}`);
+    }
+    await fs.lstat(resolved);
+    await fs.rm(resolved, { recursive: true, force: false });
   }
+}
+
+async function assertDirectory(directory: string): Promise<void> {
+  const stat = await fs.stat(directory);
+  if (!stat.isDirectory()) throw new Error(`Not a directory: ${directory}`);
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.lstat(target);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+const WINDOWS_NO_CLOBBER_RENAME_SCRIPT = [
+  '$ErrorActionPreference = "Stop"',
+  '$source = [Environment]::GetEnvironmentVariable("COZYPAD_RENAME_SOURCE")',
+  '$target = [Environment]::GetEnvironmentVariable("COZYPAD_RENAME_TARGET")',
+  'try {',
+  '  if ([IO.Directory]::Exists($source)) {',
+  '    [IO.Directory]::Move($source, $target)',
+  '  } else {',
+  '    [IO.File]::Move($source, $target)',
+  '  }',
+  '} catch {',
+  '  [Console]::Error.WriteLine($_.Exception.Message)',
+  '  exit 1',
+  '}',
+].join('; ');
+
+/** Node's fs.rename replaces destinations, so use host-native no-clobber moves. */
+async function renameWithoutOverwrite(source: string, target: string): Promise<void> {
+  let result: { code: number | null; stderr: string };
+  if (process.platform === 'win32') {
+    result = await runHostUtility(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_NO_CLOBBER_RENAME_SCRIPT],
+      {
+        COZYPAD_RENAME_SOURCE: source,
+        COZYPAD_RENAME_TARGET: target,
+      },
+    );
+  } else {
+    result = await runHostUtility('/bin/mv', ['-n', '-T', '--', source, target]);
+  }
+
+  const sourceStillExists = await pathExists(source);
+  if (result.code === 0 && !sourceStillExists) return;
+  if (await pathExists(target)) {
+    throw new Error(`Destination already exists: ${target}`);
+  }
+  const detail = result.stderr.trim();
+  throw new Error(detail === '' ? `Rename failed: ${source}` : `Rename failed: ${detail}`);
+}
+
+function runHostUtility(
+  command: string,
+  args: readonly string[],
+  env?: Readonly<Record<string, string>>,
+): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, [...args], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, ...env },
+    });
+    let stderr = '';
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, stderr }));
+  });
+}
+
+function assertDirectChild(directory: string, target: string): void {
+  if (!hostPathsEqual(path.dirname(target), directory)) {
+    throw new Error('File name must be a single path segment');
+  }
+}
+
+function assertValidBasename(name: string): void {
+  if (
+    name === '' ||
+    name === '.' ||
+    name === '..' ||
+    name.length > 255 ||
+    name.includes('/') ||
+    /[\u0000-\u001f\u007f]/u.test(name)
+  ) {
+    throw new Error(`Invalid file name: ${name}`);
+  }
+  if (process.platform !== 'win32') return;
+  if (
+    /[\\:*?"<>|]/u.test(name) ||
+    /[. ]$/u.test(name) ||
+    /^(?:con|prn|aux|nul|clock\$|com[0-9]|lpt[0-9])(?:\..*)?$/iu.test(name)
+  ) {
+    throw new Error(`Invalid Windows file name: ${name}`);
+  }
+}
+
+function hostPathsEqual(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 function resolveHome(inputPath: string): string {

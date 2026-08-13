@@ -1,116 +1,9 @@
-import type { RemoteFileItem } from '@cozypad/contracts';
+import {
+  MAX_INLINE_FILE_OPEN_BYTES,
+  type RemoteFileItem,
+} from '@cozypad/contracts';
 
-export const MAX_EDITABLE_TEXT_BYTES = 2 * 1024 * 1024;
-
-const TEXT_EXTENSIONS = new Set([
-  'adoc',
-  'asciidoc',
-  'astro',
-  'bash',
-  'bat',
-  'bib',
-  'c',
-  'cc',
-  'cfg',
-  'cjs',
-  'cmd',
-  'conf',
-  'cpp',
-  'cs',
-  'css',
-  'csv',
-  'cxx',
-  'dart',
-  'diff',
-  'dockerignore',
-  'editorconfig',
-  'env',
-  'erl',
-  'err',
-  'ex',
-  'exs',
-  'fish',
-  'fs',
-  'fsx',
-  'gitconfig',
-  'gitignore',
-  'gql',
-  'go',
-  'graphql',
-  'h',
-  'hpp',
-  'hrl',
-  'htm',
-  'html',
-  'hxx',
-  'ini',
-  'java',
-  'js',
-  'json',
-  'json5',
-  'jsonl',
-  'jsx',
-  'kt',
-  'kts',
-  'less',
-  'lock',
-  'log',
-  'lua',
-  'markdown',
-  'md',
-  'mdx',
-  'mjs',
-  'ndjson',
-  'npmrc',
-  'org',
-  'out',
-  'patch',
-  'php',
-  'pl',
-  'pm',
-  'properties',
-  'ps1',
-  'py',
-  'pyi',
-  'r',
-  'rb',
-  'rs',
-  'rst',
-  'sass',
-  'scala',
-  'scss',
-  'sh',
-  'sql',
-  'svelte',
-  'svg',
-  'swift',
-  'tex',
-  'toml',
-  'ts',
-  'tsv',
-  'tsx',
-  'txt',
-  'vb',
-  'vue',
-  'xml',
-  'yaml',
-  'yml',
-  'yarnrc',
-  'zsh',
-]);
-
-const TEXT_FILE_NAMES = new Set([
-  'authors',
-  'changelog',
-  'contributing',
-  'copying',
-  'dockerfile',
-  'gemfile',
-  'license',
-  'makefile',
-  'procfile',
-  'readme',
-]);
+export const MAX_EDITABLE_TEXT_BYTES = MAX_INLINE_FILE_OPEN_BYTES;
 
 const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
   apng: 'image/png',
@@ -132,13 +25,35 @@ export function extensionOf(name: string): string {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
+/**
+ * Extension is intentionally not a text allow-list. Like VS Code, CozyPad
+ * first gives a reasonably sized file a chance, then rejects binary content.
+ */
 export function isTextPreviewFile(item: RemoteFileItem): boolean {
-  const lowerName = item.name.toLowerCase();
-  if (lowerName.startsWith('.') && !lowerName.includes('.', 1)) return true;
-  if (TEXT_FILE_NAMES.has(lowerName)) return true;
-  const extension = extensionOf(lowerName);
-  if (extension === '' && item.sizeBytes <= MAX_EDITABLE_TEXT_BYTES) return true;
-  return TEXT_EXTENSIONS.has(extension);
+  return (
+    item.sizeBytes <= MAX_EDITABLE_TEXT_BYTES &&
+    imagePreviewMimeType(item) === null &&
+    extensionOf(item.name) !== 'pdf'
+  );
+}
+
+/**
+ * Decode only byte sequences that can be edited and saved losslessly as UTF-8.
+ * NUL bytes follow VS Code's initial binary-file screening. Other encodings
+ * remain unsupported until the editor can preserve their original encoding.
+ */
+export function decodeTextPreview(bytes: Uint8Array): string | null {
+  const sampleLength = Math.min(bytes.length, 512);
+  for (let index = 0; index < sampleLength; index += 1) {
+    if (bytes[index] === 0) return null;
+  }
+
+  try {
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  } catch {
+    return null;
+  }
 }
 
 export function isMarkdownPreviewFile(item: RemoteFileItem): boolean {

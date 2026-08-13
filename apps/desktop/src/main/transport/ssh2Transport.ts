@@ -383,8 +383,8 @@ export class Ssh2Transport implements TransportPort {
     return this.requireHost().fsReadText(filePath, maxBytes, offset);
   }
 
-  async fsReadBytes(filePath: string): Promise<string> {
-    return this.requireHost().fsReadBytes(filePath);
+  async fsReadBytes(filePath: string, maxBytes: number): Promise<string> {
+    return this.requireHost().fsReadBytes(filePath, maxBytes);
   }
 
   async fsWrite(filePath: string, data: Uint8Array): Promise<void> {

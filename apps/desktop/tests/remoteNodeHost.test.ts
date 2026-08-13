@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,11 +10,14 @@ import {
   type Ssh2DuplexExecStreamLike,
 } from '../src/main/transport/remoteNodeHost';
 
+type EventEmitterEvent = Parameters<EventEmitter['on']>[0];
+type EventEmitterListener = Parameters<EventEmitter['on']>[1];
+
 function runnerChannel(
   child: ChildProcessWithoutNullStreams,
 ): Ssh2DuplexExecStreamLike {
   const channel = {
-    on(event: string, listener: (...args: any[]) => void) {
+    on(event: EventEmitterEvent, listener: EventEmitterListener) {
       if (event === 'data' || event === 'end') child.stdout.on(event, listener);
       else if (event === 'error') child.on('error', listener);
       else if (event === 'close') child.on('exit', listener);
@@ -55,6 +59,12 @@ describe('remote Node host runner', () => {
       await expect(
         host.fsReadText(path.join(directory, 'note.txt'), 1024, 0),
       ).resolves.toBe('shared-runtime');
+      await expect(
+        host.fsReadBytes(path.join(directory, 'note.txt'), 1024),
+      ).resolves.toBe(Buffer.from('shared-runtime').toString('base64'));
+      await expect(
+        host.fsReadBytes(path.join(directory, 'note.txt'), 4),
+      ).rejects.toThrow('File is too large to read');
 
       const remoteProcess = await host.spawnProcess({
         command: process.execPath,

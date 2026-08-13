@@ -13,6 +13,9 @@ import type {
   HostRpcResponse,
 } from './remoteHostProtocol';
 
+type EventEmitterEvent = Parameters<EventEmitter['on']>[0];
+type EventEmitterListener = Parameters<EventEmitter['on']>[1];
+
 export interface Ssh2ExecStreamLike {
   on(event: 'data', listener: (chunk: Uint8Array) => void): this;
   on(event: 'close', listener: (code: number | null) => void): this;
@@ -79,7 +82,7 @@ export interface RemoteHostRuntime {
   writeFile(filePath: string, data: Uint8Array): Promise<void>;
   fsList(dirPath: string): Promise<DirectoryListing>;
   fsReadText(filePath: string, maxBytes: number, offset: number): Promise<string>;
-  fsReadBytes(filePath: string): Promise<string>;
+  fsReadBytes(filePath: string, maxBytes: number): Promise<string>;
   fsWrite(filePath: string, data: Uint8Array): Promise<void>;
   fsCreate(directory: string, name: string, kind: 'file' | 'directory'): Promise<void>;
   fsRename(filePath: string, newName: string): Promise<void>;
@@ -122,7 +125,7 @@ class RemoteNodeProcess extends EventEmitter implements RemoteHostProcess {
     });
   }
 
-  override on(event: string, listener: (...args: any[]) => void): this {
+  override on(event: EventEmitterEvent, listener: EventEmitterListener): this {
     super.on(event, listener);
     if (event === 'error' && this.pendingError !== null) {
       const error = this.pendingError;
@@ -247,8 +250,8 @@ export class RemoteNodeHostClient implements RemoteHostRuntime {
     return this.request('fsReadText', { filePath, maxBytes, offset });
   }
 
-  fsReadBytes(filePath: string): Promise<string> {
-    return this.request('fsReadBytes', { filePath });
+  fsReadBytes(filePath: string, maxBytes: number): Promise<string> {
+    return this.request('fsReadBytes', { filePath, maxBytes });
   }
 
   fsWrite(filePath: string, data: Uint8Array): Promise<void> {

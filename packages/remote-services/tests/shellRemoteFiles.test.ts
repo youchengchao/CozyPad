@@ -126,8 +126,25 @@ describe('ShellRemoteFiles operations', () => {
   it('rename rejects names with slashes without touching the remote', async () => {
     const { exec, commands } = fakeExec(['']);
     const files = new ShellRemoteFiles(exec);
-    await expect(files.rename('/a/b', 'x/y')).rejects.toThrow('cannot');
+    await expect(files.rename('/a/b', 'x/y')).rejects.toThrow('valid POSIX');
     expect(commands).toHaveLength(0);
+  });
+
+  it('validates POSIX basenames before create or rename reaches the remote', async () => {
+    const { exec, commands } = fakeExec(['']);
+    const files = new ShellRemoteFiles(exec);
+    await expect(files.create('/a', '..', 'directory')).rejects.toThrow('valid POSIX');
+    await expect(files.rename('/a/b', 'bad\u0000name')).rejects.toThrow('valid POSIX');
+    await expect(files.rename('/a/b', '\ud83d\udca1'.repeat(64))).rejects.toThrow('valid POSIX');
+    expect(commands).toHaveLength(0);
+  });
+
+  it('uses a no-clobber rename and verifies that the source moved', async () => {
+    const { exec, commands } = fakeExec(['']);
+    const files = new ShellRemoteFiles(exec);
+    await files.rename('/a/source', 'target');
+    expect(commands[0]).toContain('mv -nT -- "$src" "$target"');
+    expect(commands[0]).toContain('[ -e "$src" ] || [ -L "$src" ]');
   });
 
   it('readBytes maps __TOO_LARGE__ into a friendly error', async () => {
@@ -138,12 +155,21 @@ describe('ShellRemoteFiles operations', () => {
     expect(commands[0]).toContain('33554432');
   });
 
+  it('reads through a bounded snapshot and rejects files that change size', async () => {
+    const { exec, commands } = fakeExec(['']);
+    const files = new ShellRemoteFiles(exec);
+    await files.readBytes('/note', 4);
+    expect(commands[0]).toContain('head -c 5 -- "$target" > "$snapshot"');
+    expect(commands[0]).toContain('[ "$captured" -ne "$size" ]');
+    expect(commands[0]).toContain('base64 -w 0 "$snapshot"');
+  });
+
   it('create builds mkdir vs touch variants', async () => {
     const { exec, commands } = fakeExec(['', '']);
     const files = new ShellRemoteFiles(exec);
     await files.create('~/projects', 'data', 'directory');
     await files.create('~/projects', 'run.log', 'file');
-    expect(commands[0]).toContain('mkdir "$target"');
-    expect(commands[1]).toContain(': > "$target"');
+    expect(commands[0]).toContain('mkdir -- "$target"');
+    expect(commands[1]).toContain('set -C; : > "$target"');
   });
 });

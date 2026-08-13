@@ -33,9 +33,26 @@ export const FsPathRequestSchema = z.object({
 });
 export type FsPathRequest = z.infer<typeof FsPathRequestSchema>;
 
+/** Matches VS Code's remote large-file confirmation threshold. */
+export const MAX_INLINE_FILE_OPEN_BYTES = 10 * 1024 * 1024;
+/** Bounds content sent through the desktop inline-editor write path. */
+export const MAX_INLINE_FILE_WRITE_BYTES = 10 * 1024 * 1024;
+/** Keeps existing explicit downloads bounded independently of inline previews. */
+export const MAX_FILE_TRANSFER_BYTES = 32 * 1024 * 1024;
+
+export const FsReadBytesRequestSchema = FsPathRequestSchema.extend({
+  maxBytes: z.number().int().positive().max(MAX_FILE_TRANSFER_BYTES).optional(),
+});
+export type FsReadBytesRequest = z.infer<typeof FsReadBytesRequestSchema>;
+
 export const FsReadRequestSchema = z.object({
   path: z.string().min(1),
-  maxBytes: z.number().int().positive().default(2 * 1024 * 1024),
+  maxBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_INLINE_FILE_OPEN_BYTES)
+    .default(2 * 1024 * 1024),
   offset: z.number().int().min(0).default(0),
   requestId: z.string().optional(),
 });
@@ -43,7 +60,7 @@ export type FsReadRequest = z.infer<typeof FsReadRequestSchema>;
 
 export const FsWriteRequestSchema = z.object({
   path: z.string().min(1),
-  contentBase64: z.string(),
+  contentBase64: z.string().max(Math.ceil(MAX_INLINE_FILE_WRITE_BYTES / 3) * 4),
   requestId: z.string().optional(),
 });
 export type FsWriteRequest = z.infer<typeof FsWriteRequestSchema>;

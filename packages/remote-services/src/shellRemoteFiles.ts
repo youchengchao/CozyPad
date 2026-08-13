@@ -1,13 +1,18 @@
 import type { DirectoryListing, RemoteFileItem } from '@cozypad/contracts';
-import { quoteShellArg } from '@cozypad/contracts';
+import {
+  MAX_FILE_TRANSFER_BYTES,
+  base64DecodedByteLength,
+  quoteShellArg,
+} from '@cozypad/contracts';
 import type { RemoteFilesPort } from './RemoteFilesPort';
 
 export type RemoteExec = (command: string, timeoutMs?: number) => Promise<string>;
 
 export { quoteShellArg };
 
-export const MAX_REMOTE_FILE_BYTES = 32 * 1024 * 1024;
+export const MAX_REMOTE_FILE_BYTES = MAX_FILE_TRANSFER_BYTES;
 export const MAX_INLINE_FILE_WRITE_BYTES = 4 * 1024 * 1024;
+const MAX_POSIX_BASENAME_BYTES = 255;
 
 function throwOnErrorMarker(output: string, fallback: string): string {
   if (output.startsWith('__ERROR__')) {
@@ -15,6 +20,19 @@ function throwOnErrorMarker(output: string, fallback: string): string {
     throw new Error(parts.length > 1 ? parts[1]!.trim() : fallback);
   }
   return output;
+}
+
+function assertValidPosixBasename(name: string, label = 'Name'): void {
+  if (
+    name === '' ||
+    name === '.' ||
+    name === '..' ||
+    name.includes('/') ||
+    /[\u0000-\u001f\u007f]/u.test(name) ||
+    new TextEncoder().encode(name).byteLength > MAX_POSIX_BASENAME_BYTES
+  ) {
+    throw new Error(`${label} must be a valid POSIX file name.`);
+  }
 }
 
 /**
@@ -117,10 +135,29 @@ if [ "$size" -gt ${maxBytes} ]; then
   echo "__TOO_LARGE__\t$size\t${maxBytes}"
   exit 2
 fi
+snapshot="$(mktemp)" || {
+  echo "__ERROR__\tUnable to create a bounded read snapshot."
+  exit 1
+}
+trap 'rm -f -- "$snapshot"' 0 HUP INT TERM
+if ! head -c ${maxBytes + 1} -- "$target" > "$snapshot"; then
+  echo "__ERROR__\tUnable to read file: $target"
+  exit 1
+fi
+captured=$(wc -c < "$snapshot" 2>/dev/null || echo 0)
+final_size=$(wc -c < "$target" 2>/dev/null || echo 0)
+if [ "$captured" -gt ${maxBytes} ]; then
+  echo "__TOO_LARGE__\t$captured\t${maxBytes}"
+  exit 2
+fi
+if [ "$captured" -ne "$size" ] || [ "$final_size" -ne "$size" ]; then
+  echo "__ERROR__\tFile changed while it was being read: $target"
+  exit 1
+fi
 if base64 --help 2>&1 | grep -q -- '-w'; then
-  base64 -w 0 "$target"
+  base64 -w 0 "$snapshot"
 else
-  base64 "$target" | tr -d '\\n'
+  base64 "$snapshot" | tr -d '\\n'
 fi
 `;
     const output = (await this.exec(command, 35000)).trim();
@@ -139,7 +176,7 @@ fi
     contentBase64: string,
     maxBytes = MAX_INLINE_FILE_WRITE_BYTES,
   ): Promise<void> {
-    const approximateBytes = Math.floor((contentBase64.length * 3) / 4);
+    const approximateBytes = base64DecodedByteLength(contentBase64);
     if (approximateBytes > maxBytes) {
       throw new Error(
         `File is too large to save from inline editor (${approximateBytes} bytes, limit ${maxBytes} bytes).`,
@@ -187,8 +224,8 @@ fi
   }
 
   async create(directory: string, name: string, kind: 'file' | 'directory'): Promise<void> {
-    if (name.includes('/')) throw new Error('Name cannot contain /.');
-    const makeCommand = kind === 'file' ? ': > "$target"' : 'mkdir "$target"';
+    assertValidPosixBasename(name);
+    const makeCommand = kind === 'file' ? '( set -C; : > "$target" )' : 'mkdir -- "$target"';
     const command = `dir=${quoteShellArg(directory)}
 name=${quoteShellArg(name)}
 case "$dir" in
@@ -200,7 +237,7 @@ if [ ! -d "$dir" ]; then
   exit 1
 fi
 target="$dir/$name"
-if [ -e "$target" ]; then
+if [ -e "$target" ] || [ -L "$target" ]; then
   echo "__ERROR__\tAlready exists: $target"
   exit 1
 fi
@@ -213,17 +250,28 @@ fi
   }
 
   async rename(path: string, newName: string): Promise<void> {
-    if (newName.trim() === '' || newName.includes('/')) {
-      throw new Error('New name cannot be empty or contain /.');
-    }
+    assertValidPosixBasename(newName, 'New name');
     const command = `src=${quoteShellArg(path)}
 dir=$(dirname -- "$src")
-if [ -e "$dir"/${quoteShellArg(newName.trim())} ]; then
-  echo "__ERROR__\tDestination already exists: ${newName.trim()}"
+new_name=${quoteShellArg(newName)}
+target="$dir/$new_name"
+if [ "$src" = "$target" ]; then
+  exit 0
+fi
+if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+  echo "__ERROR__\tSource does not exist: $src"
   exit 1
 fi
-if ! mv -- "$src" "$dir"/${quoteShellArg(newName.trim())}; then
+if [ -e "$target" ] || [ -L "$target" ]; then
+  echo "__ERROR__\tDestination already exists: $new_name"
+  exit 1
+fi
+if ! mv -nT -- "$src" "$target"; then
   echo "__ERROR__\tRename failed. Check permissions."
+  exit 1
+fi
+if [ -e "$src" ] || [ -L "$src" ]; then
+  echo "__ERROR__\tDestination already exists: $new_name"
   exit 1
 fi
 `;

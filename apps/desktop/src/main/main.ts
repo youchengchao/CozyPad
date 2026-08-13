@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
 import {
   BrowserWindow,
   Menu,
@@ -10,7 +9,13 @@ import {
   session,
   shell,
 } from 'electron';
-import { IpcChannels, base64ToBytes } from '@cozypad/contracts';
+import {
+  IpcChannels,
+  MAX_INLINE_FILE_OPEN_BYTES,
+  MAX_INLINE_FILE_WRITE_BYTES,
+  base64DecodedByteLength,
+  base64ToBytes,
+} from '@cozypad/contracts';
 import { TmuxRuntime } from '@cozypad/tmux-runtime';
 import { TmuxRemoteSettings } from '@cozypad/remote-services';
 import type { RemoteSettingsPort } from '@cozypad/remote-services';
@@ -18,7 +23,6 @@ import { ShellTmuxProvisioner } from '@cozypad/remote-services';
 import type { TmuxProvisionerPort } from '@cozypad/remote-services';
 import { TmuxSessionWatcher } from './tmuxWatcher';
 import type { RemoteFilesPort } from '@cozypad/remote-services';
-import { ShellRemoteFiles } from '@cozypad/remote-services';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { AgentCommunicationService } from './agentCommunicationService';
 import { AcpAgentRuntime } from './acp/acpAgentRuntime';
@@ -567,10 +571,33 @@ class TransportRemoteFiles implements RemoteFilesPort {
     return this.transport.fsReadText(path, maxBytes, offset);
   }
   async readBytes(path: string, maxBytes?: number, signal?: AbortSignal) {
-    return this.transport.fsReadBytes(path);
+    if (signal?.aborted) throw new Error('read aborted');
+    return this.transport.fsReadBytes(path, maxBytes ?? MAX_INLINE_FILE_OPEN_BYTES);
   }
-  write(path: string, contentBase64: string, maxBytes?: number, signal?: AbortSignal) {
-    return this.transport.fsWrite(path, base64ToBytes(contentBase64));
+  write(
+    path: string,
+    contentBase64: string,
+    maxBytes = MAX_INLINE_FILE_WRITE_BYTES,
+    signal?: AbortSignal,
+  ) {
+    if (signal?.aborted) return Promise.reject(new Error('write aborted'));
+    const encodedBytes = base64DecodedByteLength(contentBase64);
+    if (encodedBytes > maxBytes) {
+      return Promise.reject(
+        new Error(
+          `File is too large to save (${encodedBytes} bytes, limit ${maxBytes} bytes).`,
+        ),
+      );
+    }
+    const data = base64ToBytes(contentBase64);
+    if (data.byteLength > maxBytes) {
+      return Promise.reject(
+        new Error(
+          `File is too large to save (${data.byteLength} bytes, limit ${maxBytes} bytes).`,
+        ),
+      );
+    }
+    return this.transport.fsWrite(path, data);
   }
   create(directory: string, name: string, kind: 'file' | 'directory') {
     return this.transport.fsCreate(directory, name, kind);

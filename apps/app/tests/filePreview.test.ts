@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RemoteFileItem } from '@cozypad/contracts';
 import {
   MAX_EDITABLE_TEXT_BYTES,
+  decodeTextPreview,
   imagePreviewMimeType,
   isMarkdownPreviewFile,
   isTextPreviewFile,
@@ -18,8 +19,8 @@ function file(name: string, sizeBytes = 100): RemoteFileItem {
 }
 
 describe('file preview policy', () => {
-  it('allows a broader set of text-readable files up to two MiB', () => {
-    expect(MAX_EDITABLE_TEXT_BYTES).toBe(2 * 1024 * 1024);
+  it('allows any non-preview-specific extension up to ten MiB', () => {
+    expect(MAX_EDITABLE_TEXT_BYTES).toBe(10 * 1024 * 1024);
     for (const name of [
       'README',
       '.env',
@@ -29,9 +30,30 @@ describe('file preview policy', () => {
       'script.ps1',
       'component.vue',
       'diagram.svg',
+      '.claude.json.backup',
+      'service.project-config',
     ]) {
       expect(isTextPreviewFile(file(name)), name).toBe(true);
     }
+  });
+
+  it('defers unknown and traditionally binary extensions to content detection', () => {
+    expect(isTextPreviewFile(file('archive.zip'))).toBe(true);
+    expect(isTextPreviewFile(file('program.exe'))).toBe(true);
+    expect(isTextPreviewFile(file('photo.png'))).toBe(false);
+    expect(isTextPreviewFile(file('document.pdf'))).toBe(false);
+    expect(isTextPreviewFile(file('huge.custom', MAX_EDITABLE_TEXT_BYTES + 1))).toBe(false);
+  });
+
+  it('accepts valid UTF-8 regardless of extension and rejects binary bytes', () => {
+    expect(decodeTextPreview(new TextEncoder().encode('{"ok":true}'))).toBe(
+      '{"ok":true}',
+    );
+    expect(
+      decodeTextPreview(new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69])),
+    ).toBe('hi');
+    expect(decodeTextPreview(new Uint8Array([0x50, 0x4b, 0x00, 0x01]))).toBeNull();
+    expect(decodeTextPreview(new Uint8Array([0xc3, 0x28]))).toBeNull();
   });
 
   it('recognises Markdown documents rendered by the shared renderer', () => {

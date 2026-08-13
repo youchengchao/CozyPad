@@ -158,7 +158,10 @@ async function execute(request: HostRpcRequest): Promise<unknown> {
         numberParam(params, 'offset'),
       );
     case 'fsReadBytes':
-      return host.fsReadBytes(stringParam(params, 'filePath'));
+      return host.fsReadBytes(
+        stringParam(params, 'filePath'),
+        numberParam(params, 'maxBytes'),
+      );
     case 'fsWrite':
       await host.fsWrite(
         stringParam(params, 'filePath'),

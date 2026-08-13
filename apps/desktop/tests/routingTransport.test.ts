@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TerminalOpenRequest } from '@cozypad/contracts';
+import type { DirectoryListing, TerminalOpenRequest } from '@cozypad/contracts';
 import type { TransportEvents, TransportPort } from '../src/main/transport/TransportPort';
 import { RoutingTransport } from '../src/main/transport/routingTransport';
 import { LOCAL_PROFILE } from '../src/main/transport/localTransport';
@@ -33,7 +33,7 @@ class RecordingTransport implements TransportPort {
     this.calls.push(`write:${path}`);
     return Promise.resolve();
   }
-  fsList(path: string): Promise<any> {
+  fsList(path: string): Promise<DirectoryListing> {
     this.calls.push(`fsList:${path}`);
     return Promise.resolve({ path, items: [], truncated: false });
   }
@@ -41,8 +41,8 @@ class RecordingTransport implements TransportPort {
     this.calls.push(`fsReadText:${path}`);
     return Promise.resolve('');
   }
-  fsReadBytes(path: string): Promise<string> {
-    this.calls.push(`fsReadBytes:${path}`);
+  fsReadBytes(path: string, maxBytes: number): Promise<string> {
+    this.calls.push(`fsReadBytes:${path}:${maxBytes}`);
     return Promise.resolve('');
   }
   fsWrite(path: string): Promise<void> {

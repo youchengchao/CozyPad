@@ -20,6 +20,7 @@ import {
   DeleteProfileRequestSchema,
   FsCreateRequestSchema,
   FsPathRequestSchema,
+  FsReadBytesRequestSchema,
   FsReadRequestSchema,
   FsRenameRequestSchema,
   FsTransferRequestSchema,
@@ -139,7 +140,10 @@ const bridge: PlatformBridge = {
     ipcRenderer.invoke(IpcChannels.fsRead, FsReadRequestSchema.parse(request)),
 
   fsReadBytes: (request) =>
-    ipcRenderer.invoke(IpcChannels.fsReadBytes, FsPathRequestSchema.parse(request)),
+    ipcRenderer.invoke(
+      IpcChannels.fsReadBytes,
+      FsReadBytesRequestSchema.parse(request),
+    ),
 
   fsWrite: (request) =>
     ipcRenderer.invoke(IpcChannels.fsWrite, FsWriteRequestSchema.parse(request)),
