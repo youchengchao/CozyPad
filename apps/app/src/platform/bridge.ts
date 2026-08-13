@@ -29,7 +29,11 @@ function getTimeoutForMethod(methodName: string): number {
   if (['fsList', 'listProfiles', 'readClipboard'].includes(methodName)) {
     return FAST_TIMEOUT_MS;
   }
-  if (['uploadAgentAttachments', 'reviveAgentSession'].includes(methodName)) {
+  if (
+    ['detectAgent', 'uploadAgentAttachments', 'reviveAgentSession'].includes(
+      methodName,
+    )
+  ) {
     return LONG_TIMEOUT_MS;
   }
   return DEFAULT_TIMEOUT_MS;

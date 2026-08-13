@@ -44,6 +44,7 @@ class SshPlugin : Plugin() {
     private val terminalIds = AtomicInteger(0)
     private val pendingHostKeys = ConcurrentHashMap<String, HostKeyDecision>()
     private val hostKeyIds = AtomicInteger(0)
+    private val connectAttempts = SshConnectAttemptGate()
     @Volatile private var backgroundEnabled = false
     @Volatile private var backgroundHost = ""
     private val agentBridge by lazy {
@@ -156,10 +157,11 @@ class SshPlugin : Plugin() {
         val host = target.host
         val port = target.port
         val username = target.username
+        val attemptId = connectAttempts.begin()
+        cancelPendingHostKeys()
 
         thread(name = "cozypad-ssh-connect") {
             try {
-                disconnectInternal()
                 SshCryptoProvider.ensureInstalled()
                 val config = DefaultConfig()
                 config.keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
@@ -167,7 +169,7 @@ class SshPlugin : Plugin() {
                 val ssh = SSHClient(config)
                 ssh.connectTimeout = 15_000
                 ssh.timeout = 0
-                ssh.addHostKeyVerifier(promptingVerifier(host, port))
+                ssh.addHostKeyVerifier(promptingVerifier(host, port, attemptId))
                 SshConnectionPolicy.configureBeforeConnect(ssh)
                 ssh.connect(host, port)
                 when (credential) {
@@ -181,7 +183,15 @@ class SshPlugin : Plugin() {
                     }
                     is SshCredential.Password -> ssh.authPassword(username, credential.password)
                 }
-                client = ssh
+                val installed = connectAttempts.runIfCurrent(attemptId) {
+                    disconnectCurrentClient()
+                    client = ssh
+                }
+                if (!installed) {
+                    ssh.disconnect()
+                    call.reject("SSH connection superseded")
+                    return@thread
+                }
 
                 // 網路掉線或對端關閉時也要通知 UI，而不是靜靜地失效。
                 thread(name = "cozypad-ssh-watch") {
@@ -202,7 +212,10 @@ class SshPlugin : Plugin() {
                 notifyListeners("connectionState", JSObject().put("state", "connected"))
                 call.resolve()
             } catch (error: Exception) {
-                client = null
+                if (!connectAttempts.isCurrent(attemptId)) {
+                    call.reject("SSH connection superseded")
+                    return@thread
+                }
                 notifyListeners(
                     "connectionState",
                     JSObject().put("state", "error").put("error", error.message ?: "connect failed"),
@@ -240,9 +253,10 @@ class SshPlugin : Plugin() {
             .put("hasCredential", status.hasCredential)
             .put("credentialPersisted", status.persisted)
 
-    private fun promptingVerifier(host: String, port: Int): HostKeyVerifier =
+    private fun promptingVerifier(host: String, port: Int, attemptId: Int): HostKeyVerifier =
         object : HostKeyVerifier {
             override fun verify(hostname: String, p: Int, key: PublicKey): Boolean {
+                if (!connectAttempts.isCurrent(attemptId)) return false
                 val fingerprint = SshHostKeyFingerprint.sha256(key)
                 val known = hostKeyStore.get(host, port)
                 when (SshHostKeyFingerprint.match(known, key)) {
@@ -256,19 +270,23 @@ class SshPlugin : Plugin() {
 
                 val requestId = "hk-${hostKeyIds.incrementAndGet()}"
                 val decision = HostKeyDecision(host, port, fingerprint)
-                pendingHostKeys[requestId] = decision
-                notifyListeners(
-                    "hostKeyPrompt",
-                    JSObject()
-                        .put("requestId", requestId)
-                        .put("host", host)
-                        .put("port", port)
-                        .put("keyType", key.algorithm ?: "unknown")
-                        .put("fingerprintSha256", fingerprint)
-                        .put("status", if (known == null) "new" else "changed")
-                        .put("previousFingerprint", known ?: ""),
-                )
+                val registered = connectAttempts.runIfCurrent(attemptId) {
+                    pendingHostKeys[requestId] = decision
+                    notifyListeners(
+                        "hostKeyPrompt",
+                        JSObject()
+                            .put("requestId", requestId)
+                            .put("host", host)
+                            .put("port", port)
+                            .put("keyType", key.algorithm ?: "unknown")
+                            .put("fingerprintSha256", fingerprint)
+                            .put("status", if (known == null) "new" else "changed")
+                            .put("previousFingerprint", known ?: ""),
+                    )
+                }
+                if (!registered) return false
                 val answered = decision.latch.await(3, TimeUnit.MINUTES)
+                if (!connectAttempts.isCurrent(attemptId)) return false
                 pendingHostKeys.remove(requestId)
                 return answered && decision.accepted
             }
@@ -413,7 +431,7 @@ class SshPlugin : Plugin() {
         }
     }
 
-    private fun disconnectInternal() {
+    private fun disconnectCurrentClient() {
         val ssh = synchronized(this) {
             val current = client
             client = null
@@ -424,6 +442,20 @@ class SshPlugin : Plugin() {
             ssh?.disconnect()
         } catch (_: Exception) {
         }
+    }
+
+    private fun cancelPendingHostKeys() {
+        for (decision in pendingHostKeys.values) {
+            decision.accepted = false
+            decision.latch.countDown()
+        }
+        pendingHostKeys.clear()
+    }
+
+    private fun disconnectInternal() {
+        connectAttempts.invalidate()
+        cancelPendingHostKeys()
+        disconnectCurrentClient()
     }
 
     private fun markDisconnected(ssh: SSHClient, error: String? = null) {

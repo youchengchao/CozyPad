@@ -72,6 +72,45 @@ describe('AgentsWorkspace Layout & IDE Theme Suite', () => {
       expect(cssContent).toContain('.mobile-session-back');
       expect(cssContent).toContain('grid-template-columns: auto minmax(0, 1fr);');
     });
+    it('uses a compact action menu and keeps the session list full-height in mobile landscape', () => {
+      const cssPath = resolve(__dirname, '../../../../src/styles.css');
+      const workspacePath = resolve(__dirname, '../AgentsWorkspace.tsx');
+      const cssContent = readFileSync(cssPath, 'utf-8');
+      const workspaceContent = readFileSync(workspacePath, 'utf-8');
+
+      expect(workspaceContent).toContain("bridge.kind === 'capacitor' ? ' native-mobile'");
+      expect(workspaceContent).toContain('className="agent-landscape-menu"');
+      expect(workspaceContent).toContain('aria-label="Agent session menu"');
+      expect(workspaceContent).toContain('aria-label="Select agent"');
+      expect(workspaceContent).toContain('aria-label="Find session"');
+      expect(workspaceContent).toContain('aria-label="Session status"');
+
+      expect(cssContent).toContain('@media (orientation: landscape)');
+      expect(cssContent).toContain('.agents-workspace.native-mobile > .agent-tabs');
+      expect(cssContent).toContain('.agents-workspace.native-mobile .agent-landscape-menu');
+      expect(cssContent).toContain(
+        '.agents-workspace.native-mobile .agent-panes.mobile-pane-sessions .session-list',
+      );
+      expect(cssContent).toContain(
+        '.agents-workspace.native-mobile .agent-panes.mobile-pane-sessions .session-new',
+      );
+    });
+
+    it('does not misreport a failed capability probe as an unavailable agent', () => {
+      const workspacePath = resolve(__dirname, '../AgentsWorkspace.tsx');
+      const bridgePath = resolve(__dirname, '../../../platform/bridge.ts');
+      const workspaceContent = readFileSync(workspacePath, 'utf-8');
+      const bridgeContent = readFileSync(bridgePath, 'utf-8');
+
+      expect(workspaceContent).toContain('detectionError: detail');
+      expect(workspaceContent).toContain('偵測失敗');
+      expect(workspaceContent).toContain('這不是「Agent 不可用」的證據');
+      expect(workspaceContent).toContain('重新偵測');
+      expect(bridgeContent).toContain(
+        "['detectAgent', 'uploadAgentAttachments', 'reviveAgentSession']",
+      );
+    });
+
   });
 
   describe('Split Panel Resizing & Boundary Constraints', () => {

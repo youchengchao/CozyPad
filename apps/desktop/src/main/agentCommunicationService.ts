@@ -365,15 +365,28 @@ elif command -v readlink >/dev/null 2>&1; then
   cozypad_real_path="$(readlink -f "$cozypad_executable" 2>/dev/null || echo "$cozypad_executable")"
 fi
 echo "__COZYPAD_REAL_PATH__=$cozypad_real_path"
-cozypad_version_output="$("$cozypad_executable" --version 2>&1)"
-cozypad_version_status=$?
+cozypad_optional() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 3s "$cozypad_executable" "$@" 2>&1
+    return $?
+  fi
+  return 124
+}
+${
+  agentKind === 'agy'
+    ? 'cozypad_version_output=""\ncozypad_version_status=124'
+    : 'cozypad_version_output="$(cozypad_optional --version)"\ncozypad_version_status=$?'
+}
 echo "__COZYPAD_VERSION__=$(echo "$cozypad_version_output" | head -n 1)"
 echo "__COZYPAD_VERSION_STATUS__=$cozypad_version_status"
 echo "__COZYPAD_VERSION_OUTPUT_BEGIN__"
 echo "$cozypad_version_output"
 echo "__COZYPAD_VERSION_OUTPUT_END__"
-cozypad_help_output="$("$cozypad_executable" --help 2>&1)"
-cozypad_help_status=$?
+${
+  agentKind === 'agy'
+    ? 'cozypad_help_output=""\ncozypad_help_status=124'
+    : 'cozypad_help_output="$(cozypad_optional --help)"\ncozypad_help_status=$?'
+}
 echo "__COZYPAD_HELP_STATUS__=$cozypad_help_status"
 echo "__COZYPAD_HELP_OUTPUT_BEGIN__"
 echo "$cozypad_help_output"
@@ -382,7 +395,7 @@ cozypad_protocol_help_output=""
 cozypad_protocol_help_status=0
 ${
   agentKind === 'codex'
-    ? 'cozypad_protocol_help_output="$("$cozypad_executable" app-server --help 2>&1)"\ncozypad_protocol_help_status=$?'
+    ? 'cozypad_protocol_help_output="$(cozypad_optional app-server --help)"\ncozypad_protocol_help_status=$?'
     : ':'
 }
 echo "__COZYPAD_PROTOCOL_HELP_STATUS__=$cozypad_protocol_help_status"
@@ -1023,8 +1036,10 @@ export class AgentCommunicationService implements AgentCommunicationPort {
           ...(versionStatus === 0 || versionOutput === '' ? [] : [versionOutput]),
           ...(helpStatus === 0 || helpOutput === '' ? [] : [helpOutput]),
         ].join('\n');
-        const probeSucceeded =
-          versionStatus === 0 &&
+        // Finding the executable and proving that both its entry point and
+        // real path live under the user's home establishes installation.
+        // Version/help calls are bounded, optional capability enrichment.
+        const capabilityProbeSucceeded =
           helpStatus === 0 &&
           (request.agentKind !== 'codex' || protocolHelpStatus === 0);
         const whichMismatch =
@@ -1037,11 +1052,10 @@ export class AgentCommunicationService implements AgentCommunicationPort {
           isPathInsideHome(executablePath, remote.homeDirectory) &&
           isPathInsideHome(realPath, remote.homeDirectory) &&
           !whichMismatch;
-        const nativeAgy =
-          request.agentKind === 'agy' && userScoped && probeSucceeded;
+        const nativeAgy = request.agentKind === 'agy' && userScoped;
         const structured =
           userScoped &&
-          probeSucceeded &&
+          capabilityProbeSucceeded &&
           (request.agentKind === 'claude'
             ? helpOutput.includes('--output-format') &&
               helpOutput.includes('--input-format')
@@ -1072,18 +1086,20 @@ export class AgentCommunicationService implements AgentCommunicationPort {
           ...(version === undefined ? {} : { version }),
           installationScope: userScoped ? 'user' : 'system',
           environment: remote.environment,
-          supportsStructuredOutput: structured,
+          // AGY's structured protocol is supplied by packages/adapter-agy;
+          // its CLI help text is not the source of that capability.
+          supportsStructuredOutput: compatible,
           supportsResume:
             userScoped &&
-            probeSucceeded &&
-            (request.agentKind === 'codex' ||
-              (request.agentKind === 'claude' && helpOutput.includes('--resume')) ||
-              (request.agentKind === 'agy' &&
-                helpOutput.includes('--conversation'))),
+            ((request.agentKind === 'codex' && capabilityProbeSucceeded) ||
+              (request.agentKind === 'claude' &&
+                capabilityProbeSucceeded &&
+                helpOutput.includes('--resume')) ||
+              request.agentKind === 'agy'),
           supportsInteractiveApproval: approvals,
           supportsDangerouslySkipPermissions:
             userScoped &&
-            probeSucceeded &&
+            capabilityProbeSucceeded &&
             (request.agentKind === 'claude'
               ? helpOutput.includes('--dangerously-skip-permissions')
               : request.agentKind === 'codex'
@@ -1095,7 +1111,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
             ? {
                 detail: `${executable} resolved to ${executablePath ?? 'an unknown executable'}, but CozyPad requires a per-user installation whose executable and real path are both under ${remote.homeDirectory}`,
               }
-            : probeError !== ''
+            : request.agentKind !== 'agy' && probeError !== ''
               ? { detail: `${executable} capability probe failed:\n${probeError}` }
             : !compatible
               ? {

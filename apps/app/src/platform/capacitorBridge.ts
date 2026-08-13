@@ -189,6 +189,7 @@ export function createCapacitorBridge(
   >();
   let agentRequestCounter = 1;
   let agentBridgeReady: Promise<void> | null = null;
+  let connectionAttemptId = 0;
 
   const publicProfile = (profile: StoredProfile): ConnectionProfile => ({
     id: profile.id,
@@ -245,6 +246,13 @@ export function createCapacitorBridge(
   const failAgentRequests = (error: Error): void => {
     for (const pending of pendingAgentRequests.values()) pending.reject(error);
     pendingAgentRequests.clear();
+  };
+  const reportAgentBridgeFailure = (error: unknown): void => {
+    const bridgeError = error instanceof Error ? error : new Error(String(error));
+    failAgentRequests(bridgeError);
+    agentErrorListeners.forEach((listener) =>
+      listener({ message: bridgeError.message }),
+    );
   };
 
   const callAgent = async <T>(
@@ -495,6 +503,7 @@ export function createCapacitorBridge(
     },
 
     async connect({ profileId }) {
+      const attemptId = ++connectionAttemptId;
       await load();
       const profile = profiles.find((entry) => entry.id === profileId);
       if (!profile) throw new Error(`unknown profile: ${profileId}`);
@@ -509,23 +518,37 @@ export function createCapacitorBridge(
           username: profile.username,
           authMethod,
         });
-        agentBridgeReady = ssh.startAgentBridge({
+      } catch (error) {
+        if (attemptId !== connectionAttemptId) return;
+        agentBridgeReady = null;
+        failAgentRequests(new Error('SSH connection failed'));
+        await ssh.disconnect().catch(() => undefined);
+        connectedProfileId = null;
+        emitState(profileId, 'error', error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+
+      if (attemptId !== connectionAttemptId) return;
+      connectedProfileId = profileId;
+      startTelemetry(profileId);
+
+      try {
+        const ready = ssh.startAgentBridge({
           profileId,
           name: profile.name,
           host: profile.host,
           port: profile.port,
           username: profile.username,
         });
-        await agentBridgeReady;
-        connectedProfileId = profileId;
-        startTelemetry(profileId);
+        agentBridgeReady = ready;
+        void ready.catch((error: unknown) => {
+          if (agentBridgeReady !== ready) return;
+          agentBridgeReady = null;
+          reportAgentBridgeFailure(error);
+        });
       } catch (error) {
         agentBridgeReady = null;
-        failAgentRequests(new Error('Agent bridge failed to connect'));
-        await ssh.disconnect().catch(() => undefined);
-        connectedProfileId = null;
-        emitState(profileId, 'error', error instanceof Error ? error.message : String(error));
-        throw error;
+        reportAgentBridgeFailure(error);
       }
       // 與桌面一致：連上後立即偵測 tmux，缺少或過舊時由 UI 詢問安裝。
       void provisioner
@@ -535,6 +558,7 @@ export function createCapacitorBridge(
     },
 
     async disconnect() {
+      connectionAttemptId += 1;
       const ready = agentBridgeReady;
       agentBridgeReady = null;
       failAgentRequests(new Error('Agent bridge disconnected'));

@@ -81,12 +81,12 @@ class FakeTransport {
             '__COZYPAD_EXECUTABLE__=/home/researcher/.local/bin/agy',
             '__COZYPAD_WHICH__=/home/researcher/.local/bin/agy',
             '__COZYPAD_REAL_PATH__=/home/researcher/.local/bin/agy',
-            '__COZYPAD_VERSION__=agy 1.1.9',
-            '__COZYPAD_VERSION_STATUS__=0',
-            '__COZYPAD_HELP_STATUS__=0',
-            '--print --output-format text json stream-json',
-            '--conversation --log-file --sandbox',
-            '--dangerously-skip-permissions --disable-slash-commands',
+            '__COZYPAD_VERSION__=',
+            '__COZYPAD_VERSION_STATUS__=124',
+            '__COZYPAD_HELP_STATUS__=124',
+            '__COZYPAD_HELP_OUTPUT_BEGIN__',
+            '__COZYPAD_HELP_OUTPUT_END__',
+            '__COZYPAD_PROTOCOL_HELP_STATUS__=0',
           ].join('\n'),
         );
       }
@@ -502,6 +502,27 @@ describe('AgentCommunicationService', () => {
     expect(installation.detail).toContain('requires a per-user installation');
   });
 
+  it('accepts AGY from the user home without waiting for version or help', async () => {
+    const installation = await service.detect({
+      profileId: 'profile-1',
+      agentKind: 'agy',
+    });
+
+    expect(installation).toMatchObject({
+      installed: true,
+      installationScope: 'user',
+      executablePath: '/home/researcher/.local/bin/agy',
+      supportsStructuredOutput: true,
+      supportsResume: true,
+    });
+    expect(installation.launchModes.map((mode) => mode.id)).toContain('default');
+    const capabilityProbe = transport.commands.find((command) =>
+      command.includes("command -v 'agy'"),
+    );
+    expect(capabilityProbe).not.toContain('cozypad_optional --version');
+    expect(capabilityProbe).not.toContain('cozypad_optional --help');
+  });
+
   it('says so when the agent offers no mode matching the requested permissions', async () => {
     // Permission flags no longer ride the pane script — the pane is a
     // placeholder and the mode goes to the agent via session/set_mode. When
@@ -534,7 +555,7 @@ describe('AgentCommunicationService', () => {
       profileId: 'profile-1',
       agentKind: 'agy',
       cwd: '/srv/deep-learning',
-      launchMode: 'sandbox',
+      launchMode: 'default',
     });
 
     expect(bundle.session).toMatchObject({

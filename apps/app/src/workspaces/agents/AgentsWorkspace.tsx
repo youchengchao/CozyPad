@@ -761,6 +761,7 @@ export function AgentsWorkspace({
         try {
           return await bridge.detectAgent({ profileId, agentKind: kind });
         } catch (detectionError) {
+          const detail = errorText(detectionError);
           return {
             agentKind: kind,
             installed: false,
@@ -768,7 +769,8 @@ export function AgentsWorkspace({
             supportsResume: false,
             supportsInteractiveApproval: false,
             launchModes: [],
-            detail: errorText(detectionError),
+            detectionError: detail,
+            detail,
           } satisfies AgentInstallation;
         }
       }),
@@ -885,6 +887,8 @@ export function AgentsWorkspace({
     [timeline],
   );
   const installation = installations[agent];
+  const agentDetectionError = installation?.detectionError;
+  const agentDetectionFailed = agentDetectionError !== undefined;
   // Mirrors what create() actually accepts — an enabled button that the
   // service then refuses is worse than a disabled one with a reason.
   const canCreate =
@@ -896,7 +900,43 @@ export function AgentsWorkspace({
     installation.launchModes.length > 0;
   const agentUnavailable =
     installation !== undefined &&
+    !agentDetectionFailed &&
     (!installation.installed || !installation.supportsStructuredOutput);
+
+  const retryAgentDetection = async (): Promise<void> => {
+    if (!connected || profileId === null) return;
+    const retryingAgent = agent;
+    setInstallations((current) => {
+      const next = { ...current };
+      delete next[retryingAgent];
+      return next;
+    });
+    try {
+      const detected = await bridge.detectAgent({
+        profileId,
+        agentKind: retryingAgent,
+      });
+      setInstallations((current) => ({
+        ...current,
+        [retryingAgent]: detected,
+      }));
+    } catch (detectionError) {
+      const detail = errorText(detectionError);
+      setInstallations((current) => ({
+        ...current,
+        [retryingAgent]: {
+          agentKind: retryingAgent,
+          installed: false,
+          supportsStructuredOutput: false,
+          supportsResume: false,
+          supportsInteractiveApproval: false,
+          launchModes: [],
+          detectionError: detail,
+          detail,
+        },
+      }));
+    }
+  };
 
 
   const badge = (kind: AgentKind) => {
@@ -1486,7 +1526,11 @@ export function AgentsWorkspace({
   };
 
   return (
-    <div className={`agents-workspace mobile-pane-${mobilePane}`}>
+    <div
+      className={`agents-workspace mobile-pane-${mobilePane}${
+        bridge.kind === 'capacitor' ? ' native-mobile' : ''
+      }`}
+    >
       <div className="agent-tabs">
         {AGENTS.map(({ kind, label }) => {
           const info = badge(kind);
@@ -1519,6 +1563,64 @@ export function AgentsWorkspace({
           ＋
         </button>
       </div>
+
+      <details className="agent-landscape-menu">
+        <summary aria-label="Agent session menu">
+          <span>{AGENTS.find((entry) => entry.kind === agent)?.label}</span>
+          <span aria-hidden="true">&#9776;</span>
+        </summary>
+        <div className="agent-landscape-menu-panel">
+          <label>
+            <span>Agent</span>
+            <select
+              aria-label="Select agent"
+              value={agent}
+              onChange={(event) => {
+                setAgent(event.target.value as AgentKind);
+                setMobilePane('sessions');
+              }}
+            >
+              {AGENTS.map(({ kind, label }) => (
+                <option key={kind} value={kind}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Find session</span>
+            <input
+              type="search"
+              aria-label="Find session"
+              placeholder="Filter sessions..."
+              value={filters[agent]}
+              onChange={(event) =>
+                setFilters((current) => ({ ...current, [agent]: event.target.value }))
+              }
+            />
+          </label>
+          <label>
+            <span>Status</span>
+            <select
+              aria-label="Session status"
+              value={bucketFilter}
+              onChange={(event) =>
+                setBucketFilter(event.target.value as SessionBucket | 'all')
+              }
+            >
+              <option value="all">all</option>
+              {(Object.keys(BUCKET_LABEL) as SessionBucket[]).map((bucket) => (
+                <option key={bucket} value={bucket}>
+                  {BUCKET_LABEL[bucket]} ({bucketCounts[bucket]})
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" disabled={!canCreate || busy} onClick={openCreate}>
+            New session
+          </button>
+        </div>
+      </details>
 
       {error !== null ? (
         <div className="agent-error-banner">
@@ -1564,6 +1666,19 @@ export function AgentsWorkspace({
                     ? `${reconnect.secondsLeft}s 後進行第 ${reconnect.attempt} 次重連嘗試`
                     : '已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入或新建。Agent 對話會在遠端指定路徑建立 tmux session。'}
                 </p>
+              </div>
+            ) : agentDetectionFailed ? (
+              <div className="agent-availability-banner" role="status">
+                <strong>
+                  {AGENTS.find((entry) => entry.kind === agent)?.label} 偵測失敗
+                </strong>
+                <p>{agentDetectionError}</p>
+                <p className="hint">
+                  尚未判定是否安裝；這不是「Agent 不可用」的證據。
+                </p>
+                <button type="button" onClick={() => void retryAgentDetection()}>
+                  重新偵測
+                </button>
               </div>
             ) : agentUnavailable ? (
               <div className="agent-availability-banner" role="status">

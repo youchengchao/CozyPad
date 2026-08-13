@@ -93,7 +93,11 @@ export function SettingsWorkspace({
   };
 
   return (
-    <div className="settings-workspace">
+    <div
+      className={`settings-workspace${
+        bridgeKind === 'capacitor' ? ' native-mobile' : ''
+      }`}
+    >
       <div className="card">
         <h3>遠端設定（套用在主機上）</h3>
         <p className="hint settings-note">

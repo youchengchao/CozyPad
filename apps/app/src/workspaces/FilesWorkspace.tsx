@@ -25,6 +25,23 @@ import {
   isMarkdownPreviewFile,
   isTextPreviewFile,
 } from './filePreview';
+import {
+  EMPTY_FILE_TABS,
+  activateFileTab,
+  activeFileTab,
+  isFileTabDirty,
+  removeFileTab,
+  updateFileTab,
+} from './fileTabs';
+import type { FileTab } from './fileTabs';
+import {
+  FILES_SIDEBAR_DEFAULT,
+  FILES_SIDEBAR_MIN,
+  clampFilesSidebarWidth,
+  filesSidebarMaxWidth,
+} from './filesSidebarWidth';
+
+const FILES_SIDEBAR_STORAGE_KEY = 'cozypad-files-sidebar-width';
 
 interface FilesWorkspaceProps {
   connected: boolean;
@@ -86,7 +103,6 @@ function TreeRow({
 export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
-  const [activeLine, setActiveLine] = useState<number | undefined>(undefined);
   const [homePath, setHomePath] = useState<string | null>(null);
   const [children, setChildren] = useState<Record<string, RemoteFileItem[]>>({});
   const [truncatedDirs, setTruncatedDirs] = useState<Set<string>>(new Set());
@@ -95,35 +111,117 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [menu, setMenu] = useState<{ item: RemoteFileItem; x: number; y: number } | null>(
     null,
   );
-  /** openPath 定義在 confirmDiscard 之前，用 ref 打通順序。 */
-  const confirmDiscardRef = useRef<() => boolean>(() => true);
   /** 遠端剪貼簿：Copy/Move 兩段式操作的暫存（Flutter 版同款行為）。 */
   const [clipboard, setClipboard] = useState<{
     item: RemoteFileItem;
     mode: 'copy' | 'move';
   } | null>(null);
-  const [selected, setSelected] = useState<RemoteFileItem | null>(null);
+  const [fileTabs, setFileTabs] = useState(() => EMPTY_FILE_TABS);
   const [mobilePane, setMobilePane] = useState<'tree' | 'preview'>('tree');
-  const [draft, setDraft] = useState<{ path: string; text: string; saved: string } | null>(
-    null,
-  );
-  const [pdfData, setPdfData] = useState<{ path: string; dataBase64: string } | null>(null);
-  const [imageData, setImageData] = useState<{
-    path: string;
-    dataBase64: string;
-    mimeType: string;
-  } | null>(null);
-  const [mdPreview, setMdPreview] = useState(false);
+  const [fileView, setFileView] = useState<'list' | 'grid'>('list');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pwd, setPwd] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dialogInput, setDialogInput] = useState('');
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const mobileMenuRef = useRef<HTMLDetailsElement>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState<number>();
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const stored = localStorage.getItem(FILES_SIDEBAR_STORAGE_KEY);
+      if (stored !== null) {
+        const parsed = Number(stored);
+        if (Number.isFinite(parsed)) return clampFilesSidebarWidth(parsed);
+      }
+    } catch {
+      // localStorage can be unavailable in privacy-restricted webviews.
+    }
+    return FILES_SIDEBAR_DEFAULT;
+  });
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const activeTab = activeFileTab(fileTabs);
+  const selected = activeTab?.item ?? null;
+  const draft = activeTab?.draft ?? null;
+  const dirty = isFileTabDirty(activeTab);
+  const hasOpenFiles = fileTabs.tabs.length > 0;
+  const isNativeMobile = bridge.kind === 'capacitor';
+  const displayedSidebarWidth = clampFilesSidebarWidth(sidebarWidth, workspaceWidth);
 
   useEffect(() => {
     if (selected === null) setMobilePane('tree');
   }, [selected]);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (workspace === null || typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) setWorkspaceWidth(entry.contentRect.width);
+    });
+    observer.observe(workspace);
+    return () => observer.disconnect();
+  }, []);
+
+  const clampSidebar = useCallback(
+    (width: number) => clampFilesSidebarWidth(width, workspaceRef.current?.clientWidth),
+    [],
+  );
+
+  const persistSidebarWidth = useCallback((width: number) => {
+    try {
+      localStorage.setItem(FILES_SIDEBAR_STORAGE_KEY, String(width));
+    } catch {
+      // Ignore storage failures; resizing still works for this session.
+    }
+  }, []);
+
+  const onResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      sidebarDragRef.current = { startX: event.clientX, startWidth: displayedSidebarWidth };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [displayedSidebarWidth],
+  );
+
+  const onResizePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (sidebarDragRef.current === null) return;
+      const width = clampSidebar(
+        sidebarDragRef.current.startWidth + event.clientX - sidebarDragRef.current.startX,
+      );
+      setSidebarWidth(width);
+      persistSidebarWidth(width);
+    },
+    [clampSidebar, persistSidebarWidth],
+  );
+
+  const onResizePointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (sidebarDragRef.current === null) return;
+      const width = clampSidebar(
+        sidebarDragRef.current.startWidth + event.clientX - sidebarDragRef.current.startX,
+      );
+      sidebarDragRef.current = null;
+      setSidebarWidth(width);
+      persistSidebarWidth(width);
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // Capture may already be released by the browser.
+      }
+    },
+    [clampSidebar, persistSidebarWidth],
+  );
+
+  const onResizeDoubleClick = useCallback(() => {
+    setSidebarWidth(FILES_SIDEBAR_DEFAULT);
+    persistSidebarWidth(FILES_SIDEBAR_DEFAULT);
+  }, [persistSidebarWidth]);
 
   const showFlash = (message: string) => {
     setFlash(message);
@@ -169,14 +267,10 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   /** 切換目前目錄（Home、/、breadcrumb 或任意路徑）。 */
   const openPath = useCallback(
     async (path: string) => {
-      if (!confirmDiscardRef.current()) return;
       const listing = await loadDir(path);
       if (listing === null) return;
       setCurrentPath(listing.path);
-      setSelected(null);
-      setDraft(null);
-      setPdfData(null);
-      setImageData(null);
+      setMobilePane('tree');
     },
     [loadDir],
   );
@@ -185,10 +279,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     if (!connected) {
       setCurrentPath(null);
       setChildren({});
-      setSelected(null);
-      setDraft(null);
-      setPdfData(null);
-      setImageData(null);
+      setFileTabs(EMPTY_FILE_TABS);
       setPwd(null);
       return;
     }
@@ -230,54 +321,57 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       .catch(report);
   };
 
-  /** 有未存檔變更時先確認，避免切換檔案靜默丟失編輯內容。 */
-  const confirmDiscard = (): boolean => {
-    if (draft === null || draft.text === draft.saved) return true;
+  /** 關閉分頁前保護該檔案尚未儲存的編輯。 */
+  const confirmDiscard = (tab: FileTab | null): boolean => {
+    if (tab === null || !isFileTabDirty(tab)) return true;
     return window.confirm(
-      `${draft.path.slice(draft.path.lastIndexOf('/') + 1)} 有未儲存的變更，要放棄嗎？`,
+      `${tab.item.name} 尚有未儲存的變更，確定關閉？`,
     );
   };
 
-  const closeFile = () => {
-    if (!confirmDiscard()) return;
-    setSelected(null);
-    setDraft(null);
-    setPdfData(null);
-    setImageData(null);
-    setMdPreview(false);
-    setActiveLine(undefined);
-    setMobilePane('tree');
+  const discardFile = (path: string) => {
+    setFileTabs((current) => removeFileTab(current, path));
+  };
+
+  const closeFile = (path: string) => {
+    const tab = fileTabs.tabs.find((candidate) => candidate.item.path === path) ?? null;
+    if (!confirmDiscard(tab)) return;
+    discardFile(path);
   };
 
   const openFile = (item: RemoteFileItem, line?: number) => {
-    if (!confirmDiscard()) return;
+    const existing = fileTabs.tabs.some((tab) => tab.item.path === item.path);
+    setFileTabs((current) => activateFileTab(current, item, line));
+    setMobilePane('preview');
+    if (existing) return;
+
     if (item.type === 'l') {
-      setSelected(item);
-      setMobilePane('preview');
-      setDraft(null);
-      setPdfData(null);
-      setImageData(null);
-      setActiveLine(undefined);
+      setFileTabs((current) =>
+        updateFileTab(current, item.path, (tab) => ({ ...tab, loading: false })),
+      );
       return;
     }
-    setSelected(item);
-    setMobilePane('preview');
-    setDraft(null);
-    setPdfData(null);
-    setImageData(null);
-    setMdPreview(false);
-    setActiveLine(line);
 
     const imageMimeType = imagePreviewMimeType(item);
     if (imageMimeType !== null) {
       setBusy(true);
       void bridge
         .fsReadBytes({ path: item.path })
-        .then(({ dataBase64 }) =>
-          setImageData({ path: item.path, dataBase64, mimeType: imageMimeType }),
-        )
+        .then(({ dataBase64 }) => {
+          setFileTabs((current) =>
+            updateFileTab(current, item.path, (tab) => ({
+              ...tab,
+              imageData: { dataBase64, mimeType: imageMimeType },
+            })),
+          );
+        })
         .catch(report)
-        .finally(() => setBusy(false));
+        .finally(() => {
+          setFileTabs((current) =>
+            updateFileTab(current, item.path, (tab) => ({ ...tab, loading: false })),
+          );
+          setBusy(false);
+        });
       return;
     }
 
@@ -285,20 +379,48 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       setBusy(true);
       void bridge
         .fsReadBytes({ path: item.path })
-        .then(({ dataBase64 }) => setPdfData({ path: item.path, dataBase64 }))
+        .then(({ dataBase64 }) => {
+          setFileTabs((current) =>
+            updateFileTab(current, item.path, (tab) => ({
+              ...tab,
+              pdfDataBase64: dataBase64,
+            })),
+          );
+        })
         .catch(report)
-        .finally(() => setBusy(false));
+        .finally(() => {
+          setFileTabs((current) =>
+            updateFileTab(current, item.path, (tab) => ({ ...tab, loading: false })),
+          );
+          setBusy(false);
+        });
       return;
     }
 
-    if (!isTextPreviewFile(item) || item.sizeBytes > MAX_EDITABLE_TEXT_BYTES) return;
+    if (!isTextPreviewFile(item) || item.sizeBytes > MAX_EDITABLE_TEXT_BYTES) {
+      setFileTabs((current) =>
+        updateFileTab(current, item.path, (tab) => ({ ...tab, loading: false })),
+      );
+      return;
+    }
     void bridge
       .fsRead({ path: item.path, maxBytes: MAX_EDITABLE_TEXT_BYTES, offset: 0 })
       .then(({ content }) => {
-        setDraft({ path: item.path, text: content, saved: content });
-        if (isMarkdownPreviewFile(item)) setMdPreview(true);
+        setFileTabs((current) =>
+          updateFileTab(current, item.path, (tab) => ({
+            ...tab,
+            draft: { text: content, saved: content },
+            markdownPreview: isMarkdownPreviewFile(item),
+            loading: false,
+          })),
+        );
       })
-      .catch(report);
+      .catch((err: unknown) => {
+        report(err);
+        setFileTabs((current) =>
+          updateFileTab(current, item.path, (tab) => ({ ...tab, loading: false })),
+        );
+      });
   };
 
   const openFileByPath = useCallback(
@@ -380,14 +502,23 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   };
 
   const saveDraft = () => {
-    if (!draft) return;
+    const path = activeTab?.item.path;
+    if (!draft || path === undefined) return;
+    const savedText = draft.text;
     setBusy(true);
     bridge
-      .fsWrite({ path: draft.path, contentBase64: textToBase64(draft.text) })
+      .fsWrite({ path, contentBase64: textToBase64(savedText) })
       .then(() => {
-        setDraft((current) => (current ? { ...current, saved: current.text } : current));
+        setFileTabs((current) =>
+          updateFileTab(current, path, (tab) => ({
+            ...tab,
+            draft: tab.draft
+              ? { ...tab.draft, saved: savedText }
+              : tab.draft,
+          })),
+        );
         showFlash('已儲存');
-        void refreshDirs(parentOf(draft.path));
+        void refreshDirs(parentOf(path));
       })
       .catch(report)
       .finally(() => setBusy(false));
@@ -463,8 +594,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       action = bridge
         .fsRename({ path: dialog.item.path, newName: input })
         .then(() => {
-          setSelected(null);
-          setDraft(null);
+          discardFile(dialog.item.path);
           done('已重新命名', parentOf(dialog.item.path));
         });
     } else if (dialog.kind === 'move' || dialog.kind === 'copy-to') {
@@ -478,15 +608,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           : bridge.fsCopy({ sourcePath: dialog.item.path, destinationDirectory: input });
       action = call.then(({ path }) => {
         if (dialog.kind === 'move') {
-          setSelected(null);
-          setDraft(null);
+          discardFile(dialog.item.path);
         }
         done(dialog.kind === 'move' ? '已移動' : '已複製', parentOf(dialog.item.path), parentOf(path));
       });
     } else {
       action = bridge.fsDelete({ path: dialog.item.path }).then(() => {
-        setSelected(null);
-        setDraft(null);
+        discardFile(dialog.item.path);
         done('已刪除', parentOf(dialog.item.path));
       });
     }
@@ -495,18 +623,31 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
 
   const currentDir = currentPath ?? pwd ?? '~';
 
-  const dirty = draft !== null && draft.text !== draft.saved;
-  confirmDiscardRef.current = confirmDiscard;
+  const closeFileMenu = () => {
+    mobileMenuRef.current?.removeAttribute('open');
+  };
+
+  const openPathDialog = () => {
+    closeFileMenu();
+    setJumpValue(currentDir);
+    setJumpOpen(true);
+  };
+
+  const openCreateDialog = (kind: 'new-file' | 'new-folder') => {
+    closeFileMenu();
+    setDialogInput('');
+    setDialog({ kind, dir: currentDir });
+  };
 
   // 有未存檔內容時關閉 app／重新整理要先提醒。
   useEffect(() => {
-    if (!dirty) return;
+    if (!fileTabs.tabs.some((tab) => isFileTabDirty(tab))) return;
     const onBeforeUnload = (event: BeforeUnloadEvent): void => {
       event.preventDefault();
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [dirty]);
+  }, [fileTabs.tabs]);
 
   const renderListing = (dirPath: string) => {
     const items = directoryItems(children, dirPath);
@@ -516,11 +657,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     const rows = items.map((item) => {
       const isDir = item.type === 'd';
       const kind = fileKindOf(item);
+      const active = selected?.path === item.path;
+      const open = fileTabs.tabs.some((tab) => tab.item.path === item.path);
       return (
-        <div key={item.path}>
+        <div key={item.path} className="file-item-wrap">
           <TreeRow
             item={item}
-            className={`tree-row${selected?.path === item.path ? ' tree-row-active' : ''}`}
+            className={`${fileView === 'grid' ? 'file-grid-card' : 'tree-row'}${active ? ' tree-row-active' : ''}${open ? ' file-item-open' : ''}`}
             onOpenMenu={(x, y) => setMenu({ item, x, y })}
             onClick={() => {
               if (isDir) void openPath(item.path);
@@ -535,16 +678,28 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 : `${item.path}（右鍵或長按顯示選單）`
             }
           >
-            <span className={`tree-caret${isDir ? '' : ' tree-caret-empty'}`}>
-              {isDir ? '›' : ''}
-            </span>
-            <FileIcon kind={kind} />
-            <span className="tree-name">{item.name}</span>
-            {item.type === 'l' ? <span className="tree-arrow">→</span> : null}
-            {item.executable === true && item.type === 'f' ? (
-              <span className="tree-badge tree-badge-exec">x</span>
-            ) : null}
-            {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
+            {fileView === 'grid' ? (
+              <>
+                <FileIcon kind={kind} size={34} />
+                <span className="file-grid-name">{item.name}</span>
+                <span className="file-grid-meta">
+                  {isDir ? 'Folder' : `${Math.max(1, Math.ceil(item.sizeBytes / 1024))} KB`}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className={`tree-caret${isDir ? '' : ' tree-caret-empty'}`}>
+                  {isDir ? '›' : ''}
+                </span>
+                <FileIcon kind={kind} />
+                <span className="tree-name">{item.name}</span>
+                {item.type === 'l' ? <span className="tree-arrow">→</span> : null}
+                {item.executable === true && item.type === 'f' ? (
+                  <span className="tree-badge tree-badge-exec">x</span>
+                ) : null}
+                {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
+              </>
+            )}
           </TreeRow>
         </div>
       );
@@ -557,7 +712,11 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         </div>,
       );
     }
-    return rows;
+    return (
+      <div className={`file-items file-items-${fileView}`}>
+        {rows}
+      </div>
+    );
   };
 
   const copyToClipboardText = (text: string, label: string) => {
@@ -624,7 +783,6 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         showFlash(`已暫存移動：${item.name}`);
         return;
       case 'duplicate':
-        setSelected(item);
         duplicate(item);
         return;
       case 'copyName':
@@ -641,7 +799,6 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         showFlash('已設定 pwd');
         return;
       case 'download':
-        setSelected(item);
         setTimeout(() => download(item), 0);
         return;
       case 'delete':
@@ -664,10 +821,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         showFlash(mode === 'copy' ? '已複製' : '已移動');
         if (mode === 'move') {
           setClipboard(null);
-          if (selected?.path === item.path) {
-            setSelected(null);
-            setDraft(null);
-          }
+          discardFile(item.path);
         }
         void refreshDirs(parentOf(item.path), parentOf(path), destination);
       })
@@ -688,8 +842,98 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   }
 
   return (
-    <div className={`files-workspace mobile-pane-${mobilePane}`}>
-      <aside className="files-tree">
+    <div
+      className={`files-workspace mobile-pane-${mobilePane}${
+        isNativeMobile ? ' native-mobile' : ''
+      }${hasOpenFiles ? ' files-has-open-files' : ' files-browser-only'}${
+        sidebarCollapsed && hasOpenFiles && !isNativeMobile ? ' files-sidebar-collapsed' : ''
+      }`}
+      ref={workspaceRef}
+    >
+      <aside className="files-tree" style={{ width: displayedSidebarWidth }}>
+        <details className="files-mobile-menu" ref={mobileMenuRef}>
+          <summary aria-label="File browser menu">
+            <span className="files-mobile-menu-title">Files</span>
+            <span className="mono files-mobile-menu-path" title={currentDir}>
+              {currentDir}
+            </span>
+            <span aria-hidden="true">&#9776;</span>
+          </summary>
+          <div className="files-mobile-menu-panel">
+            <button
+              type="button"
+              aria-current={
+                currentPath !== null && currentPath === homePath ? 'location' : undefined
+              }
+              onClick={() => {
+                closeFileMenu();
+                void openPath('~');
+              }}
+            >
+              ⌂ Home
+            </button>
+            <button
+              type="button"
+              aria-current={currentPath === '/' ? 'location' : undefined}
+              onClick={() => {
+                closeFileMenu();
+                void openPath('/');
+              }}
+            >
+              / Root
+            </button>
+            {pwd !== null ? (
+              <button
+                type="button"
+                aria-current={pwd === currentPath ? 'location' : undefined}
+                onClick={() => {
+                  closeFileMenu();
+                  void openPath(pwd);
+                }}
+              >
+                ↦ pwd
+              </button>
+            ) : null}
+            <button
+              type="button"
+              aria-label="Enter file path"
+              onClick={openPathDialog}
+            >
+              ⤓ 路徑…
+            </button>
+            <button
+              type="button"
+              onClick={() => openCreateDialog('new-file')}
+            >
+              ＋檔案
+            </button>
+            <button
+              type="button"
+              onClick={() => openCreateDialog('new-folder')}
+            >
+              ＋資料夾
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                closeFileMenu();
+                void refreshDirs(...Object.keys(children));
+              }}
+            >
+              ↻ 重新整理
+            </button>
+            <button
+              type="button"
+              aria-pressed={fileView === 'list'}
+              onClick={() => {
+                closeFileMenu();
+                setFileView(fileView === 'list' ? 'grid' : 'list');
+              }}
+            >
+              {fileView === 'list' ? '▦ 圖示檢視' : '☷ 列表檢視'}
+            </button>
+          </div>
+        </details>
         <div className="files-roots">
           <button
             className={currentPath !== null && currentPath === homePath ? 'root-active' : ''}
@@ -711,25 +955,55 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             </button>
           ) : null}
           <button
-            onClick={() => {
-              setJumpValue(currentDir);
-              setJumpOpen(true);
-            }}
+            onClick={openPathDialog}
             title="跳到指定路徑"
           >
             ⤓ 路徑…
           </button>
         </div>
         <div className="files-toolbar">
-          <button onClick={() => setDialog({ kind: 'new-file', dir: currentDir })}>
+          <button onClick={() => openCreateDialog('new-file')}>
             ＋檔案
           </button>
-          <button onClick={() => setDialog({ kind: 'new-folder', dir: currentDir })}>
+          <button onClick={() => openCreateDialog('new-folder')}>
             ＋資料夾
           </button>
           <button onClick={() => void refreshDirs(...Object.keys(children))} title="重新整理">
             ↻
           </button>
+          <span className="file-view-toggle" role="group" aria-label="File view">
+            <button
+              type="button"
+              className={fileView === 'list' ? 'view-active' : ''}
+              aria-label="List view"
+              aria-pressed={fileView === 'list'}
+              title="列表檢視"
+              onClick={() => setFileView('list')}
+            >
+              ☷
+            </button>
+            <button
+              type="button"
+              className={fileView === 'grid' ? 'view-active' : ''}
+              aria-label="Grid view"
+              aria-pressed={fileView === 'grid'}
+              title="圖示檢視"
+              onClick={() => setFileView('grid')}
+            >
+              ▦
+            </button>
+          </span>
+            {hasOpenFiles ? (
+              <button
+                type="button"
+                className="files-sidebar-collapse"
+                aria-label="Collapse file sidebar"
+                title="Collapse file sidebar"
+                onClick={() => setSidebarCollapsed(true)}
+              >
+                &lsaquo;
+              </button>
+            ) : null}
         </div>
         {clipboard !== null ? (
           <div className="clipboard-bar">
@@ -782,7 +1056,69 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           )}
         </div>
       </aside>
+      <div
+        className="pane-resize-handle files-resize-handle"
+        onPointerDown={onResizePointerDown}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerUp}
+        onPointerCancel={onResizePointerUp}
+        onDoubleClick={onResizeDoubleClick}
+        role="separator"
+        aria-label="Resize file sidebar"
+        aria-orientation="vertical"
+        aria-valuenow={Math.round(displayedSidebarWidth)}
+        aria-valuemin={FILES_SIDEBAR_MIN}
+        aria-valuemax={filesSidebarMaxWidth(workspaceWidth)}
+        title="拖曳調整側欄寬度，連按兩下重設"
+      />
       <div className="files-preview">
+        {fileTabs.tabs.length > 0 ? (
+          <div className="file-tabs" role="tablist" aria-label="Open files">
+            <button
+              type="button"
+              className="files-sidebar-show"
+              aria-label="Show file sidebar"
+              title="Show file sidebar"
+              onClick={() => setSidebarCollapsed(false)}
+            >
+              Files
+            </button>
+            {fileTabs.tabs.map((tab) => {
+              const tabDirty = isFileTabDirty(tab);
+              const tabActive = tab.item.path === fileTabs.activePath;
+              return (
+                <div
+                  key={tab.item.path}
+                  className={`file-tab${tabActive ? ' file-tab-active' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="file-tab-main"
+                    role="tab"
+                    aria-selected={tabActive}
+                    title={tab.item.path}
+                    onClick={() => {
+                      setFileTabs((current) => ({ ...current, activePath: tab.item.path }));
+                      setMobilePane('preview');
+                    }}
+                  >
+                    <FileIcon kind={fileKindOf(tab.item)} />
+                    <span>{tab.item.name}</span>
+                    {tabDirty ? <span className="file-tab-dirty" aria-label="Unsaved">●</span> : null}
+                  </button>
+                  <button
+                    type="button"
+                    className="file-tab-close"
+                    aria-label={`Close ${tab.item.name}`}
+                    onClick={() => closeFile(tab.item.path)}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="breadcrumb-bar">
           {breadcrumbs.map((crumb, index) => (
             <span key={crumb.path} className="crumb-wrap">
@@ -800,8 +1136,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
               <button
                 type="button"
                 className="mobile-file-close"
-                onClick={closeFile}
-                aria-label="Close file and return to file list"
+                onClick={() => setMobilePane('tree')}
+                aria-label="Return to file list"
               >
                 <span aria-hidden="true">&larr;</span>
                 Files
@@ -818,8 +1154,17 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                   </button>
                 ) : null}
                 {draft && isMarkdownPreviewFile(selected) ? (
-                  <button onClick={() => setMdPreview((preview) => !preview)}>
-                    {mdPreview ? '編輯' : '預覽'}
+                  <button
+                    onClick={() =>
+                      setFileTabs((current) =>
+                        updateFileTab(current, selected.path, (tab) => ({
+                          ...tab,
+                          markdownPreview: !tab.markdownPreview,
+                        })),
+                      )
+                    }
+                  >
+                    {activeTab?.markdownPreview ? '編輯' : '預覽'}
                   </button>
                 ) : null}
                 <button onClick={() => copyToClipboardText(selected.path, '路徑已複製')}>
@@ -876,15 +1221,19 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 <p>{children[selected.path]?.length ?? '…'} 個項目</p>
                 <p className="hint">pwd: {pwd ?? '—'}</p>
               </div>
+            ) : activeTab?.loading ? (
+              <div className="placeholder">
+                <p>載入檔案…</p>
+              </div>
             ) : imagePreviewMimeType(selected) !== null ? (
-              imageData && imageData.path === selected.path ? (
+              activeTab?.imageData ? (
                 <div className="image-preview" data-testid="file-image-preview">
                   <img
-                    src={`data:${imageData.mimeType};base64,${imageData.dataBase64}`}
+                    src={`data:${activeTab.imageData.mimeType};base64,${activeTab.imageData.dataBase64}`}
                     alt={selected.name}
                   />
                   <span>
-                    {(selected.sizeBytes / 1024).toFixed(1)} KB · {imageData.mimeType}
+                    {(selected.sizeBytes / 1024).toFixed(1)} KB · {activeTab.imageData.mimeType}
                   </span>
                 </div>
               ) : (
@@ -893,24 +1242,34 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 </div>
               )
             ) : isPdf(selected) ? (
-              pdfData && pdfData.path === selected.path ? (
-                <PdfViewer dataBase64={pdfData.dataBase64} fileName={selected.name} />
+              activeTab?.pdfDataBase64 ? (
+                <PdfViewer dataBase64={activeTab.pdfDataBase64} fileName={selected.name} />
               ) : (
                 <div className="placeholder">
                   <p>載入 PDF…</p>
                 </div>
               )
-            ) : draft && isMarkdownPreviewFile(selected) && mdPreview ? (
+            ) : draft && isMarkdownPreviewFile(selected) && activeTab?.markdownPreview ? (
               <div className="md-preview markdown markdown-doc">
                 <MarkdownView>{draft.text}</MarkdownView>
               </div>
             ) : draft ? (
               <CodeEditor
-                path={draft.path}
+                path={selected.path}
                 value={draft.text}
-                line={activeLine}
+                line={activeTab?.activeLine}
                 onChange={(text) =>
-                  setDraft((current) => (current ? { ...current, text } : current))
+                  setFileTabs((current) =>
+                    updateFileTab(current, selected.path, (tab) => ({
+                      ...tab,
+                      draft: tab.draft
+                        ? {
+                            ...tab.draft,
+                            text,
+                          }
+                        : tab.draft,
+                    })),
+                  )
                 }
                 onSave={saveDraft}
               />

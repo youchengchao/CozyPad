@@ -43,6 +43,11 @@ export const AgentInstallationSchema = z.object({
   supportsInteractiveApproval: z.boolean(),
   supportsDangerouslySkipPermissions: z.boolean().optional(),
   launchModes: z.array(AgentLaunchModeSchema).default([]),
+  /**
+   * The capability probe itself failed, so installation/capability fields are
+   * placeholders rather than evidence that the executable is absent.
+   */
+  detectionError: z.string().min(1).optional(),
   detail: z.string().optional(),
 });
 export type AgentInstallation = z.infer<typeof AgentInstallationSchema>;

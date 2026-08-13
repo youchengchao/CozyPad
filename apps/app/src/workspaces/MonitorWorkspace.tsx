@@ -96,7 +96,11 @@ export function MonitorWorkspace({ connected, host }: MonitorWorkspaceProps) {
   );
 
   return (
-    <div className="monitor-workspace">
+    <div
+      className={`monitor-workspace${
+        bridge.kind === 'capacitor' ? ' native-mobile' : ''
+      }`}
+    >
       <div className="monitor-header">
         <span className="monitor-host">{host ?? 'Remote host'}</span>
         <span className={`dot ${connected ? 'dot-ok' : 'dot-off'}`} />

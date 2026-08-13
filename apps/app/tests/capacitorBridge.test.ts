@@ -334,6 +334,153 @@ describe('createCapacitorBridge telemetry', () => {
     expect(bridge.saveDownload).toBeUndefined();
   });
 
+  it('keeps SSH connected when Agent bridge startup times out', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store } = createNativePlugins();
+    vi.mocked(ssh.startAgentBridge).mockRejectedValueOnce(
+      new Error('Timeout expired: 30000 MILLISECONDS'),
+    );
+    const bridge = createCapacitorBridge(ssh, store, download);
+    const errors: string[] = [];
+    bridge.onAgentCommunicationError(({ message }) => errors.push(message));
+    const profile = await bridge.saveProfile({
+      name: 'Agent host',
+      host: 'agent.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+
+    await expect(bridge.connect({ profileId: profile.id })).resolves.toBeUndefined();
+    await vi.waitFor(() =>
+      expect(errors).toEqual(['Timeout expired: 30000 MILLISECONDS']),
+    );
+
+    expect(ssh.disconnect).not.toHaveBeenCalled();
+    expect(ssh.stopAgentBridge).not.toHaveBeenCalled();
+  });
+
+  it('cleans up native SSH when the SSH connection itself fails', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store } = createNativePlugins();
+    vi.mocked(ssh.connect).mockRejectedValueOnce(new Error('Authentication failed'));
+    const bridge = createCapacitorBridge(ssh, store, download);
+    const profile = await bridge.saveProfile({
+      name: 'Agent host',
+      host: 'agent.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+
+    await expect(bridge.connect({ profileId: profile.id })).rejects.toThrow(
+      'Authentication failed',
+    );
+
+    expect(ssh.startAgentBridge).not.toHaveBeenCalled();
+    expect(ssh.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a stale SSH failure after a newer connection succeeds', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store } = createNativePlugins();
+    let rejectFirstConnect: ((reason?: unknown) => void) | undefined;
+    const firstConnect = new Promise<void>((_resolve, reject) => {
+      rejectFirstConnect = reject;
+    });
+    vi.mocked(ssh.connect)
+      .mockImplementationOnce(() => firstConnect)
+      .mockResolvedValueOnce(undefined);
+    const bridge = createCapacitorBridge(ssh, store, download);
+    const firstProfile = await bridge.saveProfile({
+      name: 'First host',
+      host: 'first.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+    const secondProfile = await bridge.saveProfile({
+      name: 'Second host',
+      host: 'second.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+
+    const staleConnect = bridge.connect({ profileId: firstProfile.id });
+    await vi.waitFor(() => expect(ssh.connect).toHaveBeenCalledOnce());
+    await bridge.connect({ profileId: secondProfile.id });
+    rejectFirstConnect?.(new Error('stale SSH timeout'));
+
+    await expect(staleConnect).resolves.toBeUndefined();
+    expect(ssh.disconnect).not.toHaveBeenCalled();
+    expect(ssh.startAgentBridge).toHaveBeenCalledOnce();
+    expect(ssh.startAgentBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ profileId: secondProfile.id }),
+    );
+  });
+
+  it('ignores a stale Agent bridge failure after a newer connection starts', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store } = createNativePlugins();
+    let rejectFirstBridge: ((reason?: unknown) => void) | undefined;
+    const firstBridge = new Promise<void>((_resolve, reject) => {
+      rejectFirstBridge = reject;
+    });
+    vi.mocked(ssh.startAgentBridge)
+      .mockImplementationOnce(() => firstBridge)
+      .mockResolvedValueOnce(undefined);
+    const bridge = createCapacitorBridge(ssh, store, download);
+    const errors: string[] = [];
+    bridge.onAgentCommunicationError(({ message }) => errors.push(message));
+    const firstProfile = await bridge.saveProfile({
+      name: 'First host',
+      host: 'first.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+    const secondProfile = await bridge.saveProfile({
+      name: 'Second host',
+      host: 'second.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+
+    await bridge.connect({ profileId: firstProfile.id });
+    await bridge.connect({ profileId: secondProfile.id });
+    rejectFirstBridge?.(new Error('stale bridge timeout'));
+    await firstBridge.catch(() => undefined);
+
+    expect(errors).toEqual([]);
+    expect(ssh.disconnect).not.toHaveBeenCalled();
+  });
+
   it('routes Agent detection through the native request and response channel', async () => {
     vi.stubGlobal('document', {
       visibilityState: 'visible',
