@@ -381,9 +381,16 @@ export function ConnectionManager({
 interface HostKeyDialogProps {
   prompt: HostKeyPromptEvent;
   onRespond(accept: boolean): void;
+  responding?: boolean;
+  error?: string | null;
 }
 
-export function HostKeyDialog({ prompt, onRespond }: HostKeyDialogProps) {
+export function HostKeyDialog({
+  prompt,
+  onRespond,
+  responding = false,
+  error = null,
+}: HostKeyDialogProps) {
   const changed = prompt.status === "changed";
   return (
     <div className="modal-overlay">
@@ -417,13 +424,21 @@ export function HostKeyDialog({ prompt, onRespond }: HostKeyDialogProps) {
             </>
           ) : null}
         </div>
+        {error !== null ? <div className="error-banner">{error}</div> : null}
         <div className="form-actions">
-          <button onClick={() => onRespond(false)}>中止連線</button>
+          <button disabled={responding} onClick={() => onRespond(false)}>
+            中止連線
+          </button>
           <button
             className={changed ? "danger" : "primary"}
+            disabled={responding}
             onClick={() => onRespond(true)}
           >
-            {changed ? "仍然信任並更新" : "信任並繼續"}
+            {responding
+              ? "處理中…"
+              : changed
+                ? "仍然信任並更新"
+                : "信任並繼續"}
           </button>
         </div>
       </div>

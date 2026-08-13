@@ -21,6 +21,13 @@ internal class SshConnectAttemptGate {
     }
 
     @Synchronized
+    fun invalidateIfCurrent(attemptId: Int): Boolean {
+        if (attemptId != currentId) return false
+        currentId += 1
+        return true
+    }
+
+    @Synchronized
     fun isCurrent(attemptId: Int): Boolean = attemptId == currentId
 
     @Synchronized

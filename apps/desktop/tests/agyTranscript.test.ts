@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   MAX_AGY_TRANSCRIPT_TEXT,
   decodeAgySteps,
@@ -28,8 +28,7 @@ describe('latestAgyConversationId time window', () => {
     await write('newer-foreign.db', anchor + 45 * 60_000);
     await write('older-foreign.db', anchor - 6 * 60 * 60_000);
 
-    const previousHome = process.env.USERPROFILE;
-    process.env.USERPROFILE = home;
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
     try {
       expect(await latestAgyConversationId()).toBe('newer-foreign');
       expect(
@@ -42,8 +41,7 @@ describe('latestAgyConversationId time window', () => {
         await latestAgyConversationId({ notBefore: anchor + 90 * 60_000 }),
       ).toBeUndefined();
     } finally {
-      if (previousHome === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = previousHome;
+      homedir.mockRestore();
       await rm(home, { recursive: true, force: true });
     }
   });

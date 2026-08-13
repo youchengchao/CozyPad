@@ -21,6 +21,7 @@ function createNativePlugins(): {
   saveFile: ReturnType<typeof vi.fn>;
   exec: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
+  cancelRequest: ReturnType<typeof vi.fn>;
   agentRequest: ReturnType<typeof vi.fn>;
   listeners: Map<string, (payload: Record<string, unknown>) => void>;
   values: Map<string, string>;
@@ -36,6 +37,7 @@ function createNativePlugins(): {
     return { output: '' };
   });
   const connect = vi.fn(async () => undefined);
+  const cancelRequest = vi.fn(async () => ({ cancelled: true }));
   const saveFile = vi.fn(
     async ({ fileName }: { fileName: string }) => ({
       fileName,
@@ -112,6 +114,7 @@ function createNativePlugins(): {
       nativeCredentials.delete(profileId);
     }),
     disconnect: vi.fn(async () => undefined),
+    cancelRequest,
     exec,
     openTerminal: vi.fn(async () => ({ terminalId: 'mobile-test' })),
     writeTerminal: vi.fn(async () => undefined),
@@ -151,6 +154,7 @@ function createNativePlugins(): {
     saveFile,
     exec,
     connect,
+    cancelRequest,
     agentRequest,
     listeners,
     values,
@@ -389,6 +393,47 @@ describe('createCapacitorBridge telemetry', () => {
 
     expect(ssh.startAgentBridge).not.toHaveBeenCalled();
     expect(ssh.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('passes the transport request ID to native connect cancellation', async () => {
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    });
+    const { download, ssh, store, connect, cancelRequest } = createNativePlugins();
+    let finishConnect!: () => void;
+    connect.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishConnect = resolve;
+        }),
+    );
+    const bridge = createCapacitorBridge(ssh, store, download);
+    const profile = await bridge.saveProfile({
+      name: 'Agent host',
+      host: 'agent.example.test',
+      port: 22,
+      username: 'cozy',
+      authMethod: 'password',
+      password: 'test-only',
+      rememberCredential: true,
+    });
+
+    const connecting = bridge.connect({
+      profileId: profile.id,
+      requestId: 'connect-request-1',
+    });
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
+    await bridge.cancelRequest('connect-request-1');
+
+    expect(connect).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'connect-request-1' }),
+    );
+    expect(cancelRequest).toHaveBeenCalledWith({
+      requestId: 'connect-request-1',
+    });
+    finishConnect();
+    await expect(connecting).resolves.toBeUndefined();
   });
 
   it('ignores a stale SSH failure after a newer connection succeeds', async () => {

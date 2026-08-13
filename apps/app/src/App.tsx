@@ -28,7 +28,10 @@ import { MonitorWorkspace } from './workspaces/MonitorWorkspace';
 import { ResearchWorkspace } from './workspaces/ResearchWorkspace';
 import { SettingsWorkspace } from './workspaces/SettingsWorkspace';
 import { TerminalWorkspace } from './workspaces/TerminalWorkspace';
-import { reconnectDelayMs } from './reconnectPolicy';
+import {
+  isRetryableConnectError,
+  reconnectDelayMs,
+} from './reconnectPolicy';
 
 type WorkspaceId = 'agents' | 'research' | 'terminal' | 'files' | 'monitor' | 'settings';
 
@@ -40,8 +43,6 @@ const NAV_ITEMS: { id: WorkspaceId; label: string; icon: () => React.ReactElemen
   { id: 'monitor', label: 'Monitor', icon: () => <MonitorIcon /> },
   { id: 'settings', label: 'Settings', icon: () => <SettingsIcon /> },
 ];
-
-const INITIAL_CONNECT_MAX_ATTEMPTS = 3;
 
 export function App() {
   const bridge = useMemo(() => getBridge(), []);
@@ -55,6 +56,8 @@ export function App() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [credentialPrompt, setCredentialPrompt] = useState<ConnectionProfile | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
+  const [hostKeyResponding, setHostKeyResponding] = useState(false);
+  const [hostKeyResponseError, setHostKeyResponseError] = useState<string | null>(null);
   const [startupWarnings, setStartupWarnings] = useState<string[]>([]);
   const [tmuxStatus, setTmuxStatus] = useState<TmuxStatus | null>(null);
   const [tmuxPromptDismissed, setTmuxPromptDismissed] = useState(false);
@@ -93,7 +96,15 @@ export function App() {
     void refreshProfiles();
   }, [refreshProfiles]);
 
-  useEffect(() => bridge.onHostKeyPrompt(setHostKeyPrompt), [bridge]);
+  useEffect(
+    () =>
+      bridge.onHostKeyPrompt((prompt) => {
+        setHostKeyPrompt(prompt);
+        setHostKeyResponding(false);
+        setHostKeyResponseError(null);
+      }),
+    [bridge],
+  );
 
 
   useEffect(() => {
@@ -139,8 +150,12 @@ export function App() {
         .catch((err: unknown) => {
           connectInFlight.current = false;
           setState('error');
-          setError(String(err));
-          scheduleRef.current(profileId);
+          setError(err instanceof Error ? err.message : String(err));
+          const retryable = isRetryableConnectError(err);
+          if (!retryable) manualDisconnect.current = true;
+          if (wasConnected.current && retryable) {
+            scheduleRef.current(profileId);
+          }
         });
     },
     [bridge],
@@ -149,11 +164,6 @@ export function App() {
   const scheduleReconnect = useCallback(
     (profileId: string) => {
       if (manualDisconnect.current || reconnectScheduled.current || connectInFlight.current) return;
-      if (!wasConnected.current && attempts.current >= INITIAL_CONNECT_MAX_ATTEMPTS) {
-        setReconnect(null);
-        setError('自動重連失敗（3 次）——請手動重新連線');
-        return;
-      }
       reconnectScheduled.current = true;
       const delayMs = reconnectDelayMs(attempts.current);
       attempts.current += 1;
@@ -200,7 +210,13 @@ export function App() {
       }
       if (event.state === 'error') {
         connectInFlight.current = false;
-        if (!manualDisconnect.current && wasConnected.current) {
+        const retryable = isRetryableConnectError(event.error ?? '');
+        if (!retryable) manualDisconnect.current = true;
+        if (
+          !manualDisconnect.current &&
+          wasConnected.current &&
+          retryable
+        ) {
           scheduleRef.current(event.profileId);
         }
       }
@@ -243,12 +259,44 @@ export function App() {
   };
 
   const handleDisconnect = () => {
+    const profileId = connectedId ?? selectedId;
     manualDisconnect.current = true;
     wasConnected.current = false;
     connectInFlight.current = false;
     clearTimers();
     setReconnect(null);
-    if (selectedId !== null) void bridge.disconnect({ profileId: selectedId });
+    setHostKeyPrompt(null);
+    setHostKeyResponding(false);
+    setHostKeyResponseError(null);
+    if (profileId !== null) {
+      void bridge.disconnect({ profileId }).catch((disconnectError: unknown) => {
+        setState('error');
+        setError(
+          disconnectError instanceof Error
+            ? disconnectError.message
+            : String(disconnectError),
+        );
+      });
+    }
+  };
+
+  const respondToHostKey = async (accept: boolean): Promise<void> => {
+    const prompt = hostKeyPrompt;
+    if (prompt === null || hostKeyResponding) return;
+    setHostKeyResponding(true);
+    setHostKeyResponseError(null);
+    try {
+      await bridge.respondHostKey({ requestId: prompt.requestId, accept });
+      setHostKeyPrompt(null);
+    } catch (responseError) {
+      setHostKeyResponseError(
+        responseError instanceof Error
+          ? responseError.message
+          : String(responseError),
+      );
+    } finally {
+      setHostKeyResponding(false);
+    }
   };
 
   const submitCredential = async (credential: CredentialSubmission) => {
@@ -314,16 +362,16 @@ export function App() {
           Picking a different host from the list turns this into the action that
           switches to it; Disconnect only applies to the host in use.
         */}
-        {state === 'connected' && selectedId === connectedId ? (
+        {state === 'connecting' ? (
+          <button onClick={handleDisconnect}>Cancel</button>
+        ) : state === 'connected' && selectedId === connectedId ? (
           <button onClick={handleDisconnect}>Disconnect</button>
         ) : (
           <button
             onClick={handleConnect}
-            disabled={!selectedProfile || state === 'connecting'}
+            disabled={!selectedProfile}
           >
-            {state === 'connecting'
-              ? 'Connecting…'
-              : state === 'connected'
+            {state === 'connected'
                 ? '切換到這台'
                 : 'Connect'}
           </button>
@@ -343,13 +391,7 @@ export function App() {
           >
             立即重連
           </button>
-          <button
-            onClick={() => {
-              manualDisconnect.current = true;
-              clearTimers();
-              setReconnect(null);
-            }}
-          >
+          <button onClick={handleDisconnect}>
             取消
           </button>
         </div>
@@ -450,10 +492,9 @@ export function App() {
       {hostKeyPrompt ? (
         <HostKeyDialog
           prompt={hostKeyPrompt}
-          onRespond={(accept) => {
-            void bridge.respondHostKey({ requestId: hostKeyPrompt.requestId, accept });
-            setHostKeyPrompt(null);
-          }}
+          responding={hostKeyResponding}
+          error={hostKeyResponseError}
+          onRespond={(accept) => void respondToHostKey(accept)}
         />
       ) : null}
     </div>

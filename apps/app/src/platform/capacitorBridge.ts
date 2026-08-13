@@ -48,6 +48,7 @@ interface SshPlugin {
     port: number;
     username: string;
     authMethod: AuthenticationMethod;
+    requestId?: string;
   }): Promise<void>;
   configureCredential(options: {
     profileId: string;
@@ -68,7 +69,10 @@ interface SshPlugin {
     authMethod: AuthenticationMethod;
   }): Promise<{ hasCredential: boolean; credentialPersisted: boolean }>;
   deleteCredential(options: { profileId: string }): Promise<void>;
-  disconnect(): Promise<void>;
+  disconnect(options?: { profileId?: string }): Promise<void>;
+  cancelRequest?(options: { requestId: string }): Promise<{
+    cancelled?: boolean;
+  } | void>;
   exec(options: {
     command: string;
     timeoutMs?: number;
@@ -185,7 +189,11 @@ export function createCapacitorBridge(
   >();
   const pendingAgentRequests = new Map<
     number,
-    { resolve(value: unknown): void; reject(error: Error): void }
+    {
+      resolve(value: unknown): void;
+      reject(error: Error): void;
+      transportRequestId?: string;
+    }
   >();
   let agentRequestCounter = 1;
   let agentBridgeReady: Promise<void> | null = null;
@@ -264,10 +272,17 @@ export function createCapacitorBridge(
     }
     await agentBridgeReady;
     const id = agentRequestCounter++;
+    const transportRequestId =
+      params !== null &&
+      typeof params === 'object' &&
+      typeof (params as Record<string, unknown>).requestId === 'string'
+        ? ((params as Record<string, unknown>).requestId as string)
+        : undefined;
     return new Promise<T>((resolve, reject) => {
       pendingAgentRequests.set(id, {
         resolve: (value) => resolve(value as T),
         reject,
+        ...(transportRequestId === undefined ? {} : { transportRequestId }),
       });
       void ssh
         .agentRequest({
@@ -326,17 +341,24 @@ export function createCapacitorBridge(
   // ── 原生事件轉接 ─────────────────────────────────────────────────────
   void ssh.addListener('connectionState', (payload) => {
     const state = String(payload.state) as ConnectionState;
-    // 沒有 activeProfileId 就沒有可重連的目標；帶空字串會讓自動重連連到不存在的 profile。
-    if (activeProfileId === null) return;
+    const nativeProfileId =
+      typeof payload.profileId === 'string' && payload.profileId !== ''
+        ? payload.profileId
+        : null;
+    const profileId = nativeProfileId ?? activeProfileId;
+    // 沒有 profileId 就沒有可重連的目標；帶空字串會讓自動重連連到不存在的 profile。
+    if (profileId === null) return;
     if (state === 'connected') {
-      connectedProfileId = activeProfileId;
+      connectedProfileId = profileId;
     }
     if (state === 'disconnected' || state === 'error') {
       // 連線已死，繼續輪詢只會每 5 秒失敗一次。
-      connectedProfileId = null;
-      telemetry.stop();
+      if (connectedProfileId === profileId) {
+        connectedProfileId = null;
+        telemetry.stop();
+      }
     }
-    emitState(activeProfileId, state, payload.error as string | undefined);
+    emitState(profileId, state, payload.error as string | undefined);
   });
   void ssh.addListener('terminalOutput', (payload) => {
     const event: TerminalOutputEvent = {
@@ -351,9 +373,13 @@ export function createCapacitorBridge(
   });
   void ssh.addListener('hostKeyPrompt', (payload) => {
     const previous = String(payload.previousFingerprint ?? '');
+    const profileId =
+      typeof payload.profileId === 'string' && payload.profileId !== ''
+        ? payload.profileId
+        : (activeProfileId ?? '');
     const event: HostKeyPromptEvent = {
       requestId: String(payload.requestId),
-      profileId: activeProfileId ?? '',
+      profileId,
       host: String(payload.host),
       port: Number(payload.port),
       keyType: String(payload.keyType),
@@ -502,7 +528,7 @@ export function createCapacitorBridge(
       await persistProfiles();
     },
 
-    async connect({ profileId }) {
+    async connect({ profileId, requestId }) {
       const attemptId = ++connectionAttemptId;
       await load();
       const profile = profiles.find((entry) => entry.id === profileId);
@@ -517,12 +543,13 @@ export function createCapacitorBridge(
           port: profile.port,
           username: profile.username,
           authMethod,
+          ...(requestId === undefined ? {} : { requestId }),
         });
       } catch (error) {
         if (attemptId !== connectionAttemptId) return;
         agentBridgeReady = null;
         failAgentRequests(new Error('SSH connection failed'));
-        await ssh.disconnect().catch(() => undefined);
+        await ssh.disconnect({ profileId }).catch(() => undefined);
         connectedProfileId = null;
         emitState(profileId, 'error', error instanceof Error ? error.message : String(error));
         throw error;
@@ -557,7 +584,7 @@ export function createCapacitorBridge(
         .catch(() => undefined);
     },
 
-    async disconnect() {
+    async disconnect({ profileId }) {
       connectionAttemptId += 1;
       const ready = agentBridgeReady;
       agentBridgeReady = null;
@@ -565,7 +592,8 @@ export function createCapacitorBridge(
       if (ready !== null) await ssh.stopAgentBridge().catch(() => undefined);
       connectedProfileId = null;
       telemetry.stop();
-      await ssh.disconnect();
+      await ssh.disconnect({ profileId });
+      if (activeProfileId === profileId) activeProfileId = null;
     },
 
     onConnectionState(listener) {
@@ -751,6 +779,13 @@ export function createCapacitorBridge(
 
     cleanupRemote: (removeTmuxBinary) => provisioner.cleanup(removeTmuxBinary),
 
-    cancelRequest: () => Promise.resolve(),
+    async cancelRequest(requestId) {
+      for (const [id, pending] of pendingAgentRequests) {
+        if (pending.transportRequestId !== requestId) continue;
+        pendingAgentRequests.delete(id);
+        pending.reject(new Error('Request cancelled'));
+      }
+      await ssh.cancelRequest?.({ requestId });
+    },
   };
 }

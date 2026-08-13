@@ -36,6 +36,8 @@ import kotlin.concurrent.thread
 class SshPlugin : Plugin() {
 
     @Volatile private var client: SSHClient? = null
+    @Volatile private var clientProfileId: String? = null
+    @Volatile private var pendingConnect: PendingConnect? = null
     private val credentialPersistence by lazy { AndroidSshCredentialPersistence(context) }
     private val credentialVault by lazy { SshCredentialVault(credentialPersistence) }
     private val legacyMigration by lazy { LegacySshMigration(context, credentialPersistence) }
@@ -58,6 +60,8 @@ class SshPlugin : Plugin() {
     )
 
     private class HostKeyDecision(
+        val attemptId: Int,
+        val profileId: String,
         val host: String,
         val port: Int,
         val fingerprint: String,
@@ -65,6 +69,13 @@ class SshPlugin : Plugin() {
         val latch = CountDownLatch(1)
         @Volatile var accepted = false
     }
+
+    private class PendingConnect(
+        val attemptId: Int,
+        val requestId: String?,
+        val profileId: String,
+        val ssh: SSHClient,
+    )
 
     override fun load() {
         super.load()
@@ -141,6 +152,7 @@ class SshPlugin : Plugin() {
     @PluginMethod
     fun connect(call: PluginCall) {
         val profileId = call.getString("profileId") ?: return call.reject("profileId is required")
+        val requestId = call.getString("requestId")
         val target = readTarget(call) ?: return
         val authMethod = call.getString("authMethod") ?: "password"
         val credential = try {
@@ -159,19 +171,35 @@ class SshPlugin : Plugin() {
         val username = target.username
         val attemptId = connectAttempts.begin()
         cancelPendingHostKeys()
+        abortPendingConnect()
 
         thread(name = "cozypad-ssh-connect") {
+            var pending: PendingConnect? = null
             try {
                 SshCryptoProvider.ensureInstalled()
                 val config = DefaultConfig()
                 config.keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
                 SshSecurityPolicy.configure(config)
                 val ssh = SSHClient(config)
+                pending = PendingConnect(attemptId, requestId, profileId, ssh)
+                val registered = connectAttempts.runIfCurrent(attemptId) {
+                    synchronized(this) {
+                        pendingConnect = pending
+                    }
+                }
+                if (!registered) {
+                    forceClose(ssh)
+                    call.reject("SSH connection superseded")
+                    return@thread
+                }
                 ssh.connectTimeout = 15_000
                 ssh.timeout = 0
-                ssh.addHostKeyVerifier(promptingVerifier(host, port, attemptId))
+                ssh.addHostKeyVerifier(promptingVerifier(profileId, host, port, attemptId))
                 SshConnectionPolicy.configureBeforeConnect(ssh)
                 ssh.connect(host, port)
+                // Host-key confirmation is interactive and is allowed to wait. Once
+                // transport setup finishes, authentication itself must be bounded.
+                ssh.timeout = 15_000
                 when (credential) {
                     is SshCredential.PrivateKey -> {
                         val keyProvider = SshPrivateKeyLoader.load(
@@ -183,15 +211,24 @@ class SshPlugin : Plugin() {
                     }
                     is SshCredential.Password -> ssh.authPassword(username, credential.password)
                 }
+                ssh.timeout = 0
+                var previousClient: SSHClient? = null
                 val installed = connectAttempts.runIfCurrent(attemptId) {
-                    disconnectCurrentClient()
-                    client = ssh
+                    synchronized(this) {
+                        if (pendingConnect === pending) pendingConnect = null
+                        previousClient = client
+                        client = ssh
+                        clientProfileId = profileId
+                    }
                 }
                 if (!installed) {
-                    ssh.disconnect()
+                    clearPendingConnect(pending)
+                    forceClose(ssh)
                     call.reject("SSH connection superseded")
                     return@thread
                 }
+                closeAllShells()
+                closeGracefully(previousClient)
 
                 // 網路掉線或對端關閉時也要通知 UI，而不是靜靜地失效。
                 thread(name = "cozypad-ssh-watch") {
@@ -209,16 +246,36 @@ class SshPlugin : Plugin() {
                     backgroundHost = "$username@$host"
                     SshForegroundService.start(context, backgroundHost)
                 }
-                notifyListeners("connectionState", JSObject().put("state", "connected"))
+                notifyListeners(
+                    "connectionState",
+                    JSObject().put("state", "connected").put("profileId", profileId),
+                )
                 call.resolve()
             } catch (error: Exception) {
+                pending?.let {
+                    clearPendingConnect(it)
+                    val wasInstalled = synchronized(this) {
+                        if (client !== it.ssh) {
+                            false
+                        } else {
+                            client = null
+                            clientProfileId = null
+                            true
+                        }
+                    }
+                    if (wasInstalled) closeAllShells()
+                    forceClose(it.ssh)
+                }
                 if (!connectAttempts.isCurrent(attemptId)) {
                     call.reject("SSH connection superseded")
                     return@thread
                 }
                 notifyListeners(
                     "connectionState",
-                    JSObject().put("state", "error").put("error", error.message ?: "connect failed"),
+                    JSObject()
+                        .put("state", "error")
+                        .put("profileId", profileId)
+                        .put("error", error.message ?: "connect failed"),
                 )
                 call.reject(error.message ?: "connect failed", error)
             }
@@ -253,7 +310,12 @@ class SshPlugin : Plugin() {
             .put("hasCredential", status.hasCredential)
             .put("credentialPersisted", status.persisted)
 
-    private fun promptingVerifier(host: String, port: Int, attemptId: Int): HostKeyVerifier =
+    private fun promptingVerifier(
+        profileId: String,
+        host: String,
+        port: Int,
+        attemptId: Int,
+    ): HostKeyVerifier =
         object : HostKeyVerifier {
             override fun verify(hostname: String, p: Int, key: PublicKey): Boolean {
                 if (!connectAttempts.isCurrent(attemptId)) return false
@@ -269,13 +331,14 @@ class SshPlugin : Plugin() {
                 }
 
                 val requestId = "hk-${hostKeyIds.incrementAndGet()}"
-                val decision = HostKeyDecision(host, port, fingerprint)
+                val decision = HostKeyDecision(attemptId, profileId, host, port, fingerprint)
                 val registered = connectAttempts.runIfCurrent(attemptId) {
                     pendingHostKeys[requestId] = decision
                     notifyListeners(
                         "hostKeyPrompt",
                         JSObject()
                             .put("requestId", requestId)
+                            .put("profileId", profileId)
                             .put("host", host)
                             .put("port", port)
                             .put("keyType", key.algorithm ?: "unknown")
@@ -285,7 +348,7 @@ class SshPlugin : Plugin() {
                     )
                 }
                 if (!registered) return false
-                val answered = decision.latch.await(3, TimeUnit.MINUTES)
+                val answered = decision.latch.await(60, TimeUnit.SECONDS)
                 if (!connectAttempts.isCurrent(attemptId)) return false
                 pendingHostKeys.remove(requestId)
                 return answered && decision.accepted
@@ -298,29 +361,53 @@ class SshPlugin : Plugin() {
     fun respondHostKey(call: PluginCall) {
         val requestId = call.getString("requestId") ?: return call.reject("requestId is required")
         val accept = call.getBoolean("accept") ?: false
-        pendingHostKeys[requestId]?.let {
-            if (accept) {
-                try {
-                    hostKeyStore.put(it.host, it.port, it.fingerprint)
-                } catch (error: Exception) {
-                    it.accepted = false
-                    it.latch.countDown()
-                    pendingHostKeys.remove(requestId)
-                    return call.reject(error.message ?: "unable to save SSH host key")
-                }
-            }
-            it.accepted = accept
-            it.latch.countDown()
+        val decision = pendingHostKeys.remove(requestId)
+            ?: return call.reject("unknown or expired SSH host key request")
+        if (!connectAttempts.isCurrent(decision.attemptId)) {
+            decision.latch.countDown()
+            return call.reject("expired SSH host key request")
         }
+        if (accept) {
+            try {
+                hostKeyStore.put(decision.host, decision.port, decision.fingerprint)
+            } catch (error: Exception) {
+                decision.accepted = false
+                decision.latch.countDown()
+                return call.reject(error.message ?: "unable to save SSH host key")
+            }
+        }
+        decision.accepted = accept
+        decision.latch.countDown()
         call.resolve()
     }
 
     @PluginMethod
     fun disconnect(call: PluginCall) {
+        val requestedProfileId = call.getString("profileId")
         stopBackgroundService()
-        disconnectInternal()
-        notifyListeners("connectionState", JSObject().put("state", "disconnected"))
+        val disconnectedProfileId = disconnectInternal() ?: requestedProfileId
+        val event = JSObject().put("state", "disconnected")
+        if (!disconnectedProfileId.isNullOrBlank()) {
+            event.put("profileId", disconnectedProfileId)
+        }
+        notifyListeners("connectionState", event)
         call.resolve()
+    }
+
+    @PluginMethod
+    fun cancelRequest(call: PluginCall) {
+        val requestId = call.getString("requestId") ?: return call.reject("requestId is required")
+        val pending = synchronized(this) {
+            pendingConnect?.takeIf { it.requestId == requestId }
+        }
+        if (pending == null || !connectAttempts.invalidateIfCurrent(pending.attemptId)) {
+            call.resolve(JSObject().put("cancelled", false))
+            return
+        }
+        cancelPendingHostKeys(pending.attemptId)
+        clearPendingConnect(pending)
+        forceClose(pending.ssh)
+        call.resolve(JSObject().put("cancelled", true))
     }
 
     @PluginMethod
@@ -431,39 +518,79 @@ class SshPlugin : Plugin() {
         }
     }
 
-    private fun disconnectCurrentClient() {
-        val ssh = synchronized(this) {
-            val current = client
-            client = null
-            current
-        }
-        closeAllShells()
+    private fun closeGracefully(ssh: SSHClient?) {
+        if (ssh == null) return
         try {
-            ssh?.disconnect()
+            ssh.disconnect()
         } catch (_: Exception) {
         }
     }
 
-    private fun cancelPendingHostKeys() {
-        for (decision in pendingHostKeys.values) {
+    /** Closing the socket first interrupts connect/auth reads immediately. */
+    private fun forceClose(ssh: SSHClient) {
+        try {
+            ssh.socket?.close()
+        } catch (_: Exception) {
+        }
+        closeGracefully(ssh)
+    }
+
+    private fun clearPendingConnect(pending: PendingConnect?): Boolean = synchronized(this) {
+        if (pending == null || pendingConnect !== pending) return@synchronized false
+        pendingConnect = null
+        true
+    }
+
+    private fun abortPendingConnect(): PendingConnect? {
+        val pending = synchronized(this) {
+            val current = pendingConnect
+            pendingConnect = null
+            current
+        }
+        pending?.let { forceClose(it.ssh) }
+        return pending
+    }
+
+    private fun disconnectCurrentClient(): String? {
+        var profileId: String? = null
+        val ssh = synchronized(this) {
+            val current = client
+            profileId = clientProfileId
+            client = null
+            clientProfileId = null
+            current
+        }
+        closeAllShells()
+        closeGracefully(ssh)
+        return profileId
+    }
+
+    private fun cancelPendingHostKeys(attemptId: Int? = null) {
+        for ((requestId, decision) in pendingHostKeys) {
+            if (attemptId != null && decision.attemptId != attemptId) continue
+            if (!pendingHostKeys.remove(requestId, decision)) continue
             decision.accepted = false
             decision.latch.countDown()
         }
-        pendingHostKeys.clear()
     }
 
-    private fun disconnectInternal() {
+    private fun disconnectInternal(): String? {
         connectAttempts.invalidate()
         cancelPendingHostKeys()
-        disconnectCurrentClient()
+        agentBridge.stop()
+        val pending = abortPendingConnect()
+        return disconnectCurrentClient() ?: pending?.profileId
     }
 
     private fun markDisconnected(ssh: SSHClient, error: String? = null) {
+        var profileId: String? = null
         val wasCurrent = synchronized(this) {
             if (client !== ssh) {
                 false
             } else {
+                profileId = clientProfileId
                 client = null
+                clientProfileId = null
                 true
             }
         }
@@ -477,6 +604,7 @@ class SshPlugin : Plugin() {
         closeAllShells()
         stopBackgroundService()
         val event = JSObject().put("state", "disconnected")
+        if (!profileId.isNullOrBlank()) event.put("profileId", profileId)
         if (!error.isNullOrBlank()) event.put("error", error)
         notifyListeners("connectionState", event)
     }

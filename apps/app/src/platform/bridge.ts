@@ -23,7 +23,7 @@ const LONG_TIMEOUT_MS = 45_000;
  * confirmation is the user message echoing back on the timeline, not this
  * call resolving.
  */
-const UNBOUNDED_METHODS = new Set(['sendAgentMessage']);
+const UNBOUNDED_METHODS = new Set(['connect', 'sendAgentMessage']);
 
 function getTimeoutForMethod(methodName: string): number {
   if (['fsList', 'listProfiles', 'readClipboard'].includes(methodName)) {
@@ -39,7 +39,7 @@ function getTimeoutForMethod(methodName: string): number {
   return DEFAULT_TIMEOUT_MS;
 }
 
-function wrapResilientBridge(rawBridge: PlatformBridge): PlatformBridge {
+export function wrapResilientBridge(rawBridge: PlatformBridge): PlatformBridge {
   if ((rawBridge as unknown as Record<string, unknown>).__resilientWrapped) {
     return rawBridge;
   }
@@ -75,10 +75,19 @@ function wrapResilientBridge(rawBridge: PlatformBridge): PlatformBridge {
             typeof args[0] === 'object' &&
             !Array.isArray(args[0])
           ) {
-            requestId = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
-            args[0] = { ...(args[0] as Record<string, unknown>), requestId };
+            const options = args[0] as Record<string, unknown>;
+            requestId =
+              typeof options.requestId === 'string' && options.requestId !== ''
+                ? options.requestId
+                : Math.random().toString(36).substring(2) +
+                  Math.random().toString(36).substring(2);
+            if (options.requestId !== requestId) {
+              args[0] = { ...options, requestId };
+            }
           }
-          const result = (original as Function).apply(rawBridge, args);
+          const result = (
+            original as (...callArgs: unknown[]) => unknown
+          ).apply(rawBridge, args);
           if (
             result !== null &&
             (typeof result === 'object' || typeof result === 'function') &&

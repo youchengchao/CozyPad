@@ -1,7 +1,7 @@
 {
   "name": "@cozypad/mobile",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.3.4",
   "scripts": {
     "sync": "pnpm --filter @cozypad/desktop build && pnpm --filter @cozypad/app build && cap sync android && node scripts/copy-agent-host.mjs",
     "apk": "node scripts/build-release.mjs",

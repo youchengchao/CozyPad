@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { reconnectDelayMs } from '../src/reconnectPolicy';
+import {
+  isRetryableConnectError,
+  reconnectDelayMs,
+} from '../src/reconnectPolicy';
 
 describe('reconnectDelayMs', () => {
   it('backs off and then remains capped', () => {
@@ -11,5 +14,18 @@ describe('reconnectDelayMs', () => {
       30_000,
       30_000,
     ]);
+  });
+});
+
+describe('isRetryableConnectError', () => {
+  it('does not retry errors that require user action', () => {
+    expect(isRetryableConnectError(new Error('Authentication failed'))).toBe(false);
+    expect(isRetryableConnectError('Host key rejected')).toBe(false);
+    expect(isRetryableConnectError('Connection cancelled')).toBe(false);
+  });
+
+  it('allows reconnecting an established session after a transient network error', () => {
+    expect(isRetryableConnectError(new Error('Connection reset by peer'))).toBe(true);
+    expect(isRetryableConnectError('Socket timeout')).toBe(true);
   });
 });

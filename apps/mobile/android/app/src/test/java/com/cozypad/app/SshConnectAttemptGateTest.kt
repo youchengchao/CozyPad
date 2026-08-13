@@ -37,4 +37,16 @@ class SshConnectAttemptGateTest {
         assertFalse(gate.isCurrent(attempt))
         assertFalse(gate.runIfCurrent(attempt) {})
     }
+
+    @Test
+    fun requestCancellationCannotInvalidateANewerAttempt() {
+        val gate = SshConnectAttemptGate()
+        val older = gate.begin()
+        val newer = gate.begin()
+
+        assertFalse(gate.invalidateIfCurrent(older))
+        assertTrue(gate.isCurrent(newer))
+        assertTrue(gate.invalidateIfCurrent(newer))
+        assertFalse(gate.isCurrent(newer))
+    }
 }
