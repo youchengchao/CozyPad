@@ -66,13 +66,14 @@ describe('AgentsWorkspace Layout & IDE Theme Suite', () => {
       expect(workspaceContent).toContain("setMobilePane('sessions')");
       expect(workspaceContent).toContain('aria-label="Back to sessions"');
 
-      expect(cssContent).toContain('.agents-workspace.mobile-pane-chat > .agent-tabs');
+      expect(workspaceContent).toContain('className="agent-landscape-menu"');
+      expect(cssContent).toContain('.agent-landscape-menu');
       expect(cssContent).toContain('.agent-panes.mobile-pane-sessions .chat-column');
       expect(cssContent).toContain('.agent-panes.mobile-pane-chat .session-sidebar');
       expect(cssContent).toContain('.mobile-session-back');
       expect(cssContent).toContain('grid-template-columns: auto minmax(0, 1fr);');
     });
-    it('uses a compact action menu and keeps the session list full-height in mobile landscape', () => {
+    it('uses one hamburger menu in every layout and keeps mobile landscape full-height', () => {
       const cssPath = resolve(__dirname, '../../../../src/styles.css');
       const workspacePath = resolve(__dirname, '../AgentsWorkspace.tsx');
       const cssContent = readFileSync(cssPath, 'utf-8');
@@ -81,12 +82,21 @@ describe('AgentsWorkspace Layout & IDE Theme Suite', () => {
       expect(workspaceContent).toContain("bridge.kind === 'capacitor' ? ' native-mobile'");
       expect(workspaceContent).toContain('className="agent-landscape-menu"');
       expect(workspaceContent).toContain('aria-label="Agent session menu"');
+      expect(workspaceContent).toContain('className="agent-menu-hamburger"');
       expect(workspaceContent).toContain('aria-label="Select agent"');
+      expect(workspaceContent).toContain('aria-label="Session workspace"');
+      expect(workspaceContent).toContain('aria-label="Session archive state"');
       expect(workspaceContent).toContain('aria-label="Find session"');
       expect(workspaceContent).toContain('aria-label="Session status"');
+      expect(workspaceContent).not.toContain('className="agent-tabs"');
+      expect(workspaceContent).not.toContain('className="session-filter-wrapper"');
+      expect(workspaceContent).not.toContain('className="session-bucket-filter"');
+      expect(cssContent).not.toContain('.agent-tabs');
+      expect(cssContent).toContain(
+        '.agent-landscape-menu:not([open]) > .agent-landscape-menu-panel',
+      );
 
       expect(cssContent).toContain('@media (orientation: landscape)');
-      expect(cssContent).toContain('.agents-workspace.native-mobile > .agent-tabs');
       expect(cssContent).toContain('.agents-workspace.native-mobile .agent-landscape-menu');
       expect(cssContent).toContain(
         '.agents-workspace.native-mobile .agent-panes.mobile-pane-sessions .session-list',

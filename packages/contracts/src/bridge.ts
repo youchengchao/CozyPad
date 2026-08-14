@@ -32,6 +32,7 @@ import type { TelemetrySnapshot } from './telemetry';
 import type {
   AgentCommunicationErrorEvent,
   AgentAttachment,
+  ArchiveAgentSessionRequest,
   AgentDetectionRequest,
   AgentInstallation,
   AgentSessionBundle,
@@ -154,6 +155,12 @@ export interface PlatformBridge {
    * resuming the bound conversation when the agent supports it.
    */
   reviveAgentSession(request: AgentSessionRequest): Promise<AgentSessionBundle>;
+  /** Hide a session without deleting its timeline or native conversation. */
+  archiveAgentSession(
+    request: ArchiveAgentSessionRequest,
+  ): Promise<AgentSessionBundle>;
+  /** Return an archived session to the active collection without auto-starting it. */
+  restoreAgentSession(request: AgentSessionRequest): Promise<AgentSessionBundle>;
   /**
    * Canonical Markdown recovered from AGY's own local conversation store.
    * Fresh sessions must include their exact submitted prompt so the backend

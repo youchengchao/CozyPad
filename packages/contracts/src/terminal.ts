@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const TerminalOpenRequestSchema = z.object({
   profileId: z.string().min(1),
+  /** Captured when the tab is created; later PWD changes do not move it. */
+  cwd: z.string().trim().min(1),
   cols: z.number().int().min(1).max(1000),
   rows: z.number().int().min(1).max(1000),
 });

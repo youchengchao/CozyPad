@@ -340,8 +340,8 @@ export interface MarkdownViewProps {
  * everything else. `#anchor`, `mailto:` and other schemes used to dispatch
  * too, yanking the user out of the chat with nothing to show for it.
  */
-function pathTargetOf(href: string): string | null {
-  if (href.startsWith('file:')) return href;
+export function pathTargetOf(href: string): string | null {
+  if (/^file:/iu.test(href)) return href;
   // Checked before the scheme test: `C:\notes.md` is a drive path, not a URL.
   if (/^[A-Za-z]:[\\/]/u.test(href)) return href;
   if (/^[a-z][a-z0-9+.-]*:/iu.test(href)) return null;

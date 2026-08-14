@@ -60,6 +60,10 @@ export type AgentDetectionRequest = z.infer<typeof AgentDetectionRequestSchema>;
 
 export const AgentSessionListRequestSchema = z.object({
   profileId: z.string().min(1),
+  /** Host-canonical workspace identity. Omit to query every workspace. */
+  projectId: z.string().min(1).optional(),
+  /** Omitted by legacy callers and interpreted as `active`. */
+  archive: z.enum(['active', 'archived', 'all']).optional(),
 });
 export type AgentSessionListRequest = z.infer<typeof AgentSessionListRequestSchema>;
 
@@ -111,6 +115,14 @@ export const AgentSessionRequestSchema = z.object({
   requestId: z.string().optional(),
 });
 export type AgentSessionRequest = z.infer<typeof AgentSessionRequestSchema>;
+
+export const ArchiveAgentSessionRequestSchema = AgentSessionRequestSchema.extend({
+  /** Required before hiding an in-flight execution or unanswered interaction. */
+  stopActive: z.boolean().optional(),
+});
+export type ArchiveAgentSessionRequest = z.infer<
+  typeof ArchiveAgentSessionRequestSchema
+>;
 
 export const AgyTranscriptRequestSchema = AgentSessionRequestSchema.extend({
   /** Exact submitted prompt used to safely identify a fresh local conversation. */

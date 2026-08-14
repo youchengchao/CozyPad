@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   AgentAttachmentSchema,
@@ -15,6 +15,7 @@ import {
 import type {
   AgentCommunicationErrorEvent,
   AgentAttachment,
+  ArchiveAgentSessionRequest,
   AgentDetectionRequest,
   AgentInstallation,
   AgentLaunchMode,
@@ -42,7 +43,10 @@ import type {
 import { AGY_CONVERSATION_META_KEY } from '@cozypad/adapter-agy';
 import { reconcileSessions } from '@cozypad/tmux-runtime';
 import type { TmuxRuntime } from '@cozypad/tmux-runtime';
-import type { AcpSessionContinuation } from './acp/acpAgentRuntime';
+import type {
+  AcpDiscoveredSession,
+  AcpSessionContinuation,
+} from './acp/acpAgentRuntime';
 import type { ProfileStorePort } from './profileStore';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -86,11 +90,19 @@ interface StoredAgentSession {
    * different conversation id.
    */
   resumeContinuity?: 'continued' | 'new' | 'assumed';
+  /** Deterministic tie-breaker for same-millisecond cross-client updates. */
+  registryMutationId?: string;
+}
+
+interface SessionTombstone {
+  deletedAt: string;
+  mutationId: string;
 }
 
 interface PersistedAgentStore {
-  version: 1;
+  version: 2;
   sessions: StoredAgentSession[];
+  tombstones?: Record<string, SessionTombstone>;
 }
 
 interface ResolvedRemoteEnvironment {
@@ -118,9 +130,13 @@ export interface AgentCommunicationPort {
   connected(profileId: string): Promise<void>;
   disconnected(profileId: string): void;
   detect(request: AgentDetectionRequest): Promise<AgentInstallation>;
-  list(request: AgentSessionListRequest): AgentSessionBundle[];
+  list(
+    request: AgentSessionListRequest,
+  ): AgentSessionBundle[] | Promise<AgentSessionBundle[]>;
   create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle>;
   revive(request: AgentSessionRequest): Promise<AgentSessionBundle>;
+  archive(request: ArchiveAgentSessionRequest): Promise<AgentSessionBundle>;
+  restore(request: AgentSessionRequest): Promise<AgentSessionBundle>;
   rename(request: RenameAgentSessionRequest): Promise<void>;
   delete(request: AgentSessionRequest): Promise<DeleteAgentSessionResult>;
   uploadAttachments(
@@ -139,6 +155,8 @@ export interface AgentCommunicationServiceOptions {
   tmux: AgentTmuxPort;
   profileStore: ProfileStorePort;
   storePath: string;
+  /** The store is physically scoped to one target host (for remote host RPC). */
+  hostScopedStore?: boolean;
   getHostFingerprint(profileId: string): string | undefined;
   /**
    * Returns a terminal a session is already running in, when the runtime owns
@@ -160,6 +178,11 @@ export interface AgentCommunicationServiceOptions {
    * revived session's transcript. Absent on hosts without one.
    */
   readLocalAgyTranscript?(conversationId?: string): Promise<AgyRecoveredTurn[]>;
+  /** Enumerates native history from the target host's own home directory. */
+  discoverStoredSessions?(
+    agentKind: string,
+    homeDirectory: string,
+  ): Promise<AcpDiscoveredSession[]>;
   /**
    * Called when the session store could not be read and was moved aside.
    *
@@ -174,6 +197,11 @@ export interface AgentCommunicationServiceOptions {
    */
   acp?: {
     has(sessionId: string): boolean;
+    discover?(
+      agentKind: string,
+      cwd: string,
+      remote?: boolean,
+    ): Promise<AcpDiscoveredSession[]>;
     start(
       sessionId: string,
       cwd: string,
@@ -215,7 +243,7 @@ export interface AgentCommunicationServiceOptions {
  * reports it to the user when a store does not match, and a number that appears
  * in a message and in a comparison must not be able to drift apart.
  */
-export const STORE_VERSION = 1;
+export const STORE_VERSION = 2;
 
 const EMPTY_EVENTS: AgentCommunicationEvents = {
   onSessionChanged: () => undefined,
@@ -794,6 +822,9 @@ function parseStoredSession(value: unknown): StoredAgentSession | null {
       : {}),
     ...(activeTurn === undefined ? {} : { activeTurn }),
     ...(value.revived === true ? { revived: true } : {}),
+    ...(typeof value.registryMutationId === 'string'
+      ? { registryMutationId: value.registryMutationId }
+      : {}),
   };
 }
 
@@ -803,8 +834,18 @@ export class AgentCommunicationService implements AgentCommunicationPort {
   private sessions = new Map<string, StoredAgentSession>();
   private activeProfileId: string | null = null;
   private persistQueue = Promise.resolve();
+  private readonly persistedSnapshots = new Map<string, string>();
+  private readonly tombstones = new Map<string, SessionTombstone>();
+  private readonly pendingDeletions = new Set<string>();
   private readonly completing = new Set<string>();
   private readonly installations = new Map<string, AgentInstallation>();
+  private readonly nativeDiscoveryInFlight = new Map<string, Promise<void>>();
+  private readonly leaseOwner = `${process.pid}-${randomUUID()}`;
+  private readonly heldSessionLeases = new Set<string>();
+  private readonly managedSessionIds = new Set<string>();
+  private leaseHeartbeat: NodeJS.Timeout | null = null;
+  private leaseHeartbeatRunning = false;
+  private leaseReleaseQueue = Promise.resolve();
   private readonly remoteEnvironments = new Map<
     string,
     Promise<ResolvedRemoteEnvironment>
@@ -850,7 +891,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       await this.quarantineStore('the file has no session list');
       return;
     }
-    if (parsed.version !== STORE_VERSION) {
+    if (parsed.version !== 1 && parsed.version !== STORE_VERSION) {
       await this.quarantineStore(
         `it was written by a different version of CozyPad (store version ${String(parsed.version)}, this build reads ${STORE_VERSION})`,
       );
@@ -858,7 +899,26 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     }
     for (const value of parsed.sessions) {
       const session = parseStoredSession(value);
-      if (session !== null) this.sessions.set(session.record.id, session);
+      if (session !== null) {
+        this.sessions.set(session.record.id, session);
+        this.persistedSnapshots.set(session.record.id, JSON.stringify(session));
+      }
+    }
+    if (isRecord(parsed.tombstones)) {
+      for (const [sessionId, value] of Object.entries(parsed.tombstones)) {
+        if (
+          isRecord(value) &&
+          typeof value.deletedAt === 'string' &&
+          typeof value.mutationId === 'string'
+        ) {
+          this.tombstones.set(sessionId, {
+            deletedAt: value.deletedAt,
+            mutationId: value.mutationId,
+          });
+          this.sessions.delete(sessionId);
+          this.persistedSnapshots.delete(sessionId);
+        }
+      }
     }
   }
 
@@ -893,12 +953,64 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     // host is in use the moment the connection is established.
     this.options.onHostChanged?.(profileId);
     this.clearDiscovery(profileId);
+    const hostId = this.hostIdFor(profileId);
+    let identityMigrated = false;
+    for (const stored of this.sessions.values()) {
+      const legacyMatch =
+        stored.record.provisionalIdentity.connectionProfileId === profileId;
+      const hostMatch = stored.record.provisionalIdentity.hostId === hostId;
+      if (!legacyMatch && !hostMatch && this.options.hostScopedStore !== true) {
+        continue;
+      }
+      const provisionalIdentity = {
+        ...stored.record.provisionalIdentity,
+        hostId,
+        ...(this.options.hostScopedStore === true
+          ? { connectionProfileId: profileId }
+          : {}),
+      };
+      const identity =
+        stored.record.identity === null
+          ? null
+          : {
+              ...stored.record.identity,
+              hostId,
+              ...(this.options.hostScopedStore === true
+                ? { connectionProfileId: profileId }
+                : {}),
+            };
+      if (
+        stored.record.provisionalIdentity.hostId !== hostId ||
+        (this.options.hostScopedStore === true && !legacyMatch) ||
+        stored.record.identity?.hostId !== identity?.hostId
+      ) {
+        stored.record = { ...stored.record, provisionalIdentity, identity };
+        identityMigrated = true;
+      }
+      try {
+        const canonicalCwd = await this.options.transport.fsRealpath(
+          stored.record.cwd,
+        );
+        if (
+          canonicalCwd !== stored.record.cwd ||
+          stored.record.projectId !== canonicalCwd
+        ) {
+          stored.record = {
+            ...stored.record,
+            cwd: canonicalCwd,
+            projectId: canonicalCwd,
+          };
+          stored.project = projectName(canonicalCwd);
+          identityMigrated = true;
+        }
+      } catch {
+        // A removed or temporarily inaccessible workspace must not make every
+        // other session disappear. Revive will surface the filesystem error.
+      }
+    }
     const now = new Date().toISOString();
     const records = [...this.sessions.values()]
-      .filter(
-        (session) =>
-          session.record.provisionalIdentity.connectionProfileId === profileId,
-      )
+      .filter((session) => this.belongsToProfile(session, profileId))
       .map((session) => session.record);
     let live;
     try {
@@ -914,7 +1026,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       stored.record = record;
       this.emitSession(stored);
     }
-    await this.persist();
+    if (identityMigrated || result.updated.length > 0) await this.persist();
   }
 
   disconnected(profileId: string): void {
@@ -923,12 +1035,15 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     const now = new Date().toISOString();
     for (const stored of this.sessions.values()) {
       if (
-        stored.record.provisionalIdentity.connectionProfileId === profileId &&
+        this.belongsToProfile(stored, profileId) &&
+        (this.managedSessionIds.has(stored.record.id) ||
+          this.heldSessionLeases.has(stored.record.id)) &&
         stored.record.status !== 'exited'
       ) {
         // Leaving the host ends its agents; the bound conversation survives
         // and Resume continues it.
         this.options.acp?.stop(stored.record.id);
+        this.releaseSessionLeaseSoon(stored.record.id);
         this.finalizeInFlightItems(stored);
         this.expirePendingInteractions(stored);
         stored.activeTurn = undefined;
@@ -936,14 +1051,27 @@ export class AgentCommunicationService implements AgentCommunicationPort {
         stored.record = { ...stored.record, status: 'disconnected', updatedAt: now };
         this.emitSession(stored);
       }
+      this.managedSessionIds.delete(stored.record.id);
     }
     void this.persist().catch(() => undefined);
+  }
+
+  /** Flushes ownership and registry state before a target host bridge exits. */
+  async shutdown(profileId: string): Promise<void> {
+    this.disconnected(profileId);
+    await Promise.all([
+      this.leaseReleaseQueue.catch(() => undefined),
+      this.persistQueue.catch(() => undefined),
+    ]);
   }
 
   private clearDiscovery(profileId: string): void {
     this.remoteEnvironments.delete(profileId);
     for (const key of this.installations.keys()) {
-      if (key.startsWith(`${profileId}:`)) this.installations.delete(key);
+      if (key.startsWith(`${profileId}:`)) {
+        this.installations.delete(key);
+        this.nativeDiscoveryInFlight.delete(key);
+      }
     }
   }
 
@@ -969,7 +1097,10 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     this.assertConnected(request.profileId);
     const cacheKey = `${request.profileId}:${request.agentKind}`;
     const cached = this.installations.get(cacheKey);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      await this.refreshNativeDiscovery(request.profileId, request.agentKind, cached);
+      return cached;
+    }
     const executable = request.agentKind;
     const remote = await this.inspectRemoteEnvironment(request.profileId);
     let installation: AgentInstallation;
@@ -1132,17 +1263,298 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       }
     }
     this.installations.set(cacheKey, installation);
+    await this.refreshNativeDiscovery(request.profileId, request.agentKind, installation);
     return installation;
   }
 
-  list(request: AgentSessionListRequest): AgentSessionBundle[] {
-    return [...this.sessions.values()]
-      .filter(
+  private async refreshNativeDiscovery(
+    profileId: string,
+    agentKind: CreateAgentSessionRequest['agentKind'],
+    installation: AgentInstallation,
+  ): Promise<void> {
+    const cacheKey = `${profileId}:${agentKind}`;
+    const current = this.nativeDiscoveryInFlight.get(cacheKey);
+    if (current !== undefined) return current;
+    const pending = this.discoverNativeSessions(
+      profileId,
+      agentKind,
+      installation.installed && installation.supportsStructuredOutput,
+    )
+      .catch((error) => {
+        this.events.onError({
+          message: `Unable to discover ${agentLabelFor(agentKind)} native conversations: ${this.errorMessage(error)}`,
+        });
+      })
+      .finally(() => {
+        if (this.nativeDiscoveryInFlight.get(cacheKey) === pending) {
+          this.nativeDiscoveryInFlight.delete(cacheKey);
+        }
+      });
+    this.nativeDiscoveryInFlight.set(cacheKey, pending);
+    return pending;
+  }
+
+  private async discoverNativeSessions(
+    profileId: string,
+    agentKind: CreateAgentSessionRequest['agentKind'],
+    includeAcp: boolean,
+  ): Promise<void> {
+    const remote = await this.inspectRemoteEnvironment(profileId);
+    const sources: Array<Promise<AcpDiscoveredSession[]>> = [];
+    const acp = this.options.acp;
+    // AGY does not implement ACP session/list. Starting its adapter only to
+    // learn that fact adds latency and used to leave every native DB invisible.
+    if (includeAcp && agentKind !== 'agy' && acp?.discover !== undefined) {
+      // Keep the runtime as the receiver. AcpAgentRuntime.discover reads private
+      // spawn fields through `this`; extracting it as a bare callback makes
+      // `this` undefined and turns native discovery into a misleading error.
+      sources.push(
+        acp.discover(
+          agentKind,
+          remote.homeDirectory,
+          this.options.isLocalHost?.(profileId) !== true,
+        ),
+      );
+    }
+    if (this.options.discoverStoredSessions !== undefined) {
+      sources.push(
+        this.options.discoverStoredSessions(agentKind, remote.homeDirectory),
+      );
+    }
+    if (sources.length === 0) return;
+    const settled = await Promise.allSettled(sources);
+    const successful = settled.filter(
+      (result): result is PromiseFulfilledResult<AcpDiscoveredSession[]> =>
+        result.status === 'fulfilled',
+    );
+    if (successful.length === 0) {
+      throw (settled[0] as PromiseRejectedResult).reason;
+    }
+    const merged = new Map<string, AcpDiscoveredSession>();
+    for (const result of successful) {
+      for (const session of result.value) {
+        const previous = merged.get(session.sessionId);
+        merged.set(session.sessionId, {
+          ...previous,
+          ...session,
+          title: session.title ?? previous?.title,
+          updatedAt: session.updatedAt ?? previous?.updatedAt,
+        });
+      }
+    }
+    const sessions = [...merged.values()];
+    // Disconnect is a hard access boundary. A slow native scan that completes
+    // afterwards must not repopulate the registry or emit late host data.
+    if (this.activeProfileId !== profileId) return;
+    if (sessions.length === 0) return;
+    const profile = this.options.profileStore.get(profileId);
+    const fingerprint = this.options.getHostFingerprint(profileId);
+    if (profile === undefined || fingerprint === undefined) return;
+    const hostId = this.hostIdFor(profileId);
+    let changed = false;
+    for (const native of sessions) {
+      const alreadyRegistered = [...this.sessions.values()].find(
         (stored) =>
-          stored.record.provisionalIdentity.connectionProfileId === request.profileId,
+          this.belongsToProfile(stored, profileId) &&
+          stored.record.provisionalIdentity.agentKind === agentKind &&
+          stored.record.identity?.agentConversationId === native.sessionId,
+      );
+      if (alreadyRegistered !== undefined) {
+        if (
+          native.updatedAt !== undefined &&
+          Number.isFinite(Date.parse(native.updatedAt)) &&
+          native.updatedAt.localeCompare(alreadyRegistered.record.updatedAt) > 0
+        ) {
+          alreadyRegistered.record = {
+            ...alreadyRegistered.record,
+            updatedAt: new Date(native.updatedAt).toISOString(),
+          };
+          alreadyRegistered.registryMutationId = randomUUID();
+          changed = true;
+        }
+        continue;
+      }
+      let cwd = native.cwd;
+      try {
+        cwd = await this.options.transport.fsRealpath(native.cwd);
+      } catch {
+        // Native history can outlive its workspace. Keep it discoverable and
+        // let Resume report that the path must be restored or changed.
+      }
+      const now = new Date().toISOString();
+      const updatedAt =
+        native.updatedAt !== undefined &&
+        Number.isFinite(Date.parse(native.updatedAt))
+          ? new Date(native.updatedAt).toISOString()
+          : now;
+      const id = randomUUID();
+      const runtimeId = `native-${agentKind}-${id}`;
+      const record: RemoteAgentSessionRecord = {
+        id,
+        identity: {
+          hostId,
+          connectionProfileId: profileId,
+          remoteHostFingerprint: fingerprint,
+          tmuxSocket: this.options.tmux.socketName,
+          tmuxSessionId: runtimeId,
+          agentKind,
+          agentConversationId: native.sessionId,
+        },
+        provisionalIdentity: {
+          hostId,
+          connectionProfileId: profileId,
+          tmuxSocket: this.options.tmux.socketName,
+          tmuxSessionId: runtimeId,
+          agentKind,
+          launchNonce: randomUUID(),
+        },
+        projectId: cwd,
+        cwd,
+        title:
+          native.title ?? `Imported ${agentLabelFor(agentKind)} conversation`,
+        status: 'exited',
+        archivedAt: null,
+        tmuxCreatedEpoch: null,
+        createdAt: updatedAt,
+        updatedAt,
+        lastEventSequence: 0,
+      };
+      this.sessions.set(id, {
+        record,
+        paneId: runtimeId,
+        host: `${profile.username}@${profile.host}`,
+        project: projectName(cwd),
+        timeline: [
+          {
+            kind: 'notice',
+            id: `notice-imported-${randomUUID()}`,
+            timestamp: updatedAt,
+            text: `Imported from ${agentLabelFor(agentKind)} native history. Resume loads the original conversation when the agent still supports it.`,
+          },
+        ],
+        turnCounter: 0,
+        slashCommands: [],
+        attachments: {},
+        interactionMode: 'chat',
+        launchMode: agentKind === 'codex' ? 'workspace-request' : 'default',
+        registryMutationId: randomUUID(),
+      });
+      changed = true;
+    }
+    if (!changed) return;
+    await this.persist();
+    for (const stored of this.sessions.values()) {
+      if (!this.belongsToProfile(stored, profileId)) continue;
+      this.emitSession(stored);
+      this.emitTimeline(stored);
+    }
+  }
+
+  list(request: AgentSessionListRequest): AgentSessionBundle[] {
+    // Disconnect is an access boundary, not an offline-preview mode. In
+    // particular, do not refresh the desktop registry from disk for a host the
+    // user is no longer connected to.
+    if (this.activeProfileId !== request.profileId) return [];
+    this.refreshFromDiskSync();
+    const archive = request.archive ?? 'active';
+    return [...this.sessions.values()]
+      .filter((stored) => this.belongsToProfile(stored, request.profileId))
+      .filter((stored) =>
+        request.projectId === undefined
+          ? true
+          : stored.record.projectId === request.projectId,
       )
+      .filter((stored) => {
+        if (archive === 'all') return true;
+        const archived = stored.record.archivedAt !== null;
+        return archive === 'archived' ? archived : !archived;
+      })
       .sort((left, right) => right.record.updatedAt.localeCompare(left.record.updatedAt))
       .map((stored) => this.bundle(stored));
+  }
+
+  /** Raw, lossless records used only to migrate the former desktop-local index. */
+  exportHostSessions(profileId: string): unknown[] {
+    this.refreshFromDiskSync();
+    return [...this.sessions.values()]
+      .filter((stored) => this.belongsToProfile(stored, profileId))
+      .map((stored) => JSON.parse(JSON.stringify(stored)) as unknown);
+  }
+
+  async importHostSessions(
+    profileId: string,
+    entries: readonly unknown[],
+  ): Promise<number> {
+    this.assertConnected(profileId);
+    let imported = 0;
+    const hostId = this.hostIdFor(profileId);
+    for (const entry of entries) {
+      const stored = parseStoredSession(entry);
+      if (stored === null || this.tombstones.has(stored.record.id)) continue;
+      const existing = this.sessions.get(stored.record.id);
+      if (existing !== undefined && this.compareStored(existing, stored) >= 0) {
+        continue;
+      }
+      let canonicalCwd = stored.record.cwd;
+      try {
+        canonicalCwd = await this.options.transport.fsRealpath(canonicalCwd);
+      } catch {
+        // Preserve a removed workspace so its conversation can still be read
+        // and archived; Resume will report the concrete path failure.
+      }
+      stored.record = {
+        ...stored.record,
+        cwd: canonicalCwd,
+        projectId: canonicalCwd,
+        status:
+          stored.record.status === 'exited' || stored.record.status === 'error'
+            ? stored.record.status
+            : 'disconnected',
+        provisionalIdentity: {
+          ...stored.record.provisionalIdentity,
+          hostId,
+          connectionProfileId: profileId,
+        },
+        identity:
+          stored.record.identity === null
+            ? null
+            : {
+                ...stored.record.identity,
+                hostId,
+                connectionProfileId: profileId,
+              },
+      };
+      stored.project = projectName(canonicalCwd);
+      stored.registryMutationId = randomUUID();
+      this.sessions.set(stored.record.id, stored);
+      imported += 1;
+    }
+    if (imported > 0) {
+      await this.persist();
+      for (const stored of this.sessions.values()) {
+        if (this.belongsToProfile(stored, profileId)) {
+          this.emitSession(stored);
+          this.emitTimeline(stored);
+        }
+      }
+    }
+    return imported;
+  }
+
+  async forgetMigratedHostSessions(profileId: string): Promise<void> {
+    const ids = [...this.sessions.values()]
+      .filter((stored) => this.belongsToProfile(stored, profileId))
+      .map((stored) => stored.record.id);
+    if (ids.length === 0) return;
+    for (const sessionId of ids) {
+      this.sessions.delete(sessionId);
+      this.tombstones.set(sessionId, {
+        deletedAt: new Date().toISOString(),
+        mutationId: randomUUID(),
+      });
+      this.pendingDeletions.add(sessionId);
+    }
+    await this.persist();
   }
 
   /**
@@ -1156,6 +1568,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
 
   async create(request: CreateAgentSessionRequest): Promise<AgentSessionBundle> {
     this.assertConnected(request.profileId);
+    const canonicalCwd = await this.options.transport.fsRealpath(request.cwd);
     // Every agent is a chat session now. agy used to be forced to `terminal`,
     // which meant CozyPad drove its TUI and read the answer back off a 120x40
     // screen — the path that concatenated prompts, lost their first character,
@@ -1209,28 +1622,30 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     try {
       runtime = await this.options.tmux.newSession({
         name: id,
-        cwd: request.cwd,
+        cwd: canonicalCwd,
         argv: [remote.commandShell, '-lc', launchScript],
       });
     } catch (error) {
-      throw await this.withStartupDiagnostics(id, request.cwd, remote, error);
+      throw await this.withStartupDiagnostics(id, canonicalCwd, remote, error);
     }
     const record: RemoteAgentSessionRecord = {
       id,
       identity: null,
       provisionalIdentity: {
+        hostId: this.hostIdFor(request.profileId),
         connectionProfileId: request.profileId,
         tmuxSocket: this.options.tmux.socketName,
         tmuxSessionId: runtime.sessionId,
         agentKind: request.agentKind,
         launchNonce: randomUUID(),
       },
-      projectId: request.cwd,
-      cwd: request.cwd,
+      projectId: canonicalCwd,
+      cwd: canonicalCwd,
       title:
         request.title ??
         `New ${agentLabel} conversation`,
       status: 'starting',
+      archivedAt: null,
       tmuxCreatedEpoch: runtime.createdEpoch,
       createdAt: now,
       updatedAt: now,
@@ -1240,7 +1655,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       record,
       paneId: runtime.paneId,
       host: `${profile.username}@${profile.host}`,
-      project: projectName(request.cwd),
+      project: projectName(canonicalCwd),
       timeline: [],
       turnCounter: 0,
       slashCommands: [],
@@ -1249,6 +1664,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       launchMode,
     };
     this.sessions.set(id, stored);
+    this.managedSessionIds.add(id);
     await this.writeRemoteMetadata(stored);
     await this.persist();
     this.emitSession(stored);
@@ -1285,7 +1701,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     } catch (error) {
       const surfacedError = await this.withStartupDiagnostics(
         id,
-        request.cwd,
+        canonicalCwd,
         remote,
         error,
       );
@@ -1314,20 +1730,28 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     continuation?: AcpSessionContinuation,
   ): Promise<{ continued: boolean; appliedModeId?: string }> {
     if (this.options.acp === undefined) return { continued: false };
+    await this.claimSessionLease(stored.record.id);
+    this.managedSessionIds.add(stored.record.id);
     const agentKind = stored.record.provisionalIdentity.agentKind;
     const launchMode = stored.launchMode;
-    const started = await this.options.acp.start(
-      stored.record.id,
-      stored.record.cwd,
-      agentKind,
-      continuation,
-      // 'default' means "whatever the agent starts in"; anything else is a
-      // choice the agent must be asked to honour.
-      launchMode === undefined || launchMode === 'default' ? undefined : launchMode,
-      this.options.isLocalHost?.(
-        stored.record.provisionalIdentity.connectionProfileId,
-      ) !== true,
-    );
+    let started: Awaited<ReturnType<NonNullable<AgentCommunicationServiceOptions['acp']>['start']>>;
+    try {
+      started = await this.options.acp.start(
+        stored.record.id,
+        stored.record.cwd,
+        agentKind,
+        continuation,
+        // 'default' means "whatever the agent starts in"; anything else is a
+        // choice the agent must be asked to honour.
+        launchMode === undefined || launchMode === 'default' ? undefined : launchMode,
+        this.options.isLocalHost?.(
+          this.profileIdForSession(stored),
+        ) !== true,
+      );
+    } catch (error) {
+      await this.releaseSessionLease(stored.record.id);
+      throw error;
+    }
     // Claude and Codex return the native conversation id as the ACP session
     // id. Persisting it lets a later revive continue the same backend thread.
     // AGY reports its id in the first prompt response's `_meta` instead.
@@ -1394,7 +1818,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     agentConversationId: string,
   ): void {
     if (stored.record.identity?.agentConversationId === agentConversationId) return;
-    const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    const profileId = this.profileIdForSession(stored);
     const fingerprint = this.options.getHostFingerprint(profileId);
     if (fingerprint === undefined) {
       this.events.onError({
@@ -1432,6 +1856,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
    * out here rather than left dangling until the next app restart.
    */
   noteAgentExit(sessionId: string, detail: string): void {
+    this.releaseSessionLeaseSoon(sessionId);
     const stored = this.sessions.get(sessionId);
     if (stored === undefined) return;
     const status = stored.record.status;
@@ -1478,7 +1903,10 @@ export class AgentCommunicationService implements AgentCommunicationPort {
    */
   async revive(request: AgentSessionRequest): Promise<AgentSessionBundle> {
     const stored = this.requireSession(request.sessionId);
-    const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    if (stored.record.archivedAt !== null) {
+      throw new Error('Restore this archived conversation before resuming it');
+    }
+    const profileId = this.profileIdForSession(stored);
     this.assertConnected(profileId);
     if (
       stored.record.status !== 'exited' &&
@@ -1495,6 +1923,8 @@ export class AgentCommunicationService implements AgentCommunicationPort {
         .hasSession(stored.record.provisionalIdentity.tmuxSessionId)
         .catch(() => false);
       if (runtimeAlive) {
+        await this.claimSessionLease(stored.record.id);
+        this.managedSessionIds.add(stored.record.id);
         stored.activeTurn = undefined;
         stored.activeAgentTurnId = undefined;
         stored.record = {
@@ -1522,6 +1952,7 @@ export class AgentCommunicationService implements AgentCommunicationPort {
       stored.launchMode ?? (agentKind === 'codex' ? 'workspace-request' : 'default');
     const remote = await this.inspectRemoteEnvironment(profileId);
     const id = stored.record.id;
+    await this.assertNoForeignSessionLease(id);
     // An errored launch can leave its runtime session behind, and the local
     // runtime keeps a dead session's name until it is killed — either would
     // block the relaunch.
@@ -1666,6 +2097,76 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     }
   }
 
+  async archive(
+    request: ArchiveAgentSessionRequest,
+  ): Promise<AgentSessionBundle> {
+    const stored = this.requireSession(request.sessionId);
+    if (stored.record.archivedAt !== null) return this.bundle(stored);
+
+    const inFlight =
+      stored.record.status === 'starting' ||
+      stored.record.status === 'running' ||
+      stored.record.status === 'waiting_approval';
+    if (inFlight && request.stopActive !== true) {
+      throw new Error('Stop the active Agent execution before archiving this session');
+    }
+    await this.assertNoForeignSessionLease(stored.record.id);
+
+    const profileId = this.profileIdForSession(stored);
+    const connected =
+      this.activeProfileId !== null &&
+      this.belongsToProfile(stored, this.activeProfileId);
+    // `disconnected` means the ACP owner left; the durable tmux placeholder
+    // may still be alive. Reconnect before archiving so it can be verified and
+    // removed instead of leaking a hidden host process.
+    const runtimeMayBeAlive = stored.record.status !== 'exited';
+    if (runtimeMayBeAlive) {
+      if (!connected) {
+        throw new Error('Reconnect to the session host before archiving its live process');
+      }
+      this.options.acp?.stop(stored.record.id);
+      await this.releaseSessionLease(stored.record.id);
+      this.finalizeInFlightItems(stored);
+      this.expirePendingInteractions(stored);
+      stored.activeTurn = undefined;
+      stored.activeAgentTurnId = undefined;
+      const target = stored.record.provisionalIdentity.tmuxSessionId;
+      const alive = await this.options.tmux.hasSession(target).catch(() => false);
+      if (alive) await this.options.tmux.killSession(target);
+      stored.record = { ...stored.record, status: 'exited' };
+    }
+
+    const now = new Date().toISOString();
+    stored.record = {
+      ...stored.record,
+      archivedAt: now,
+      updatedAt: now,
+      provisionalIdentity: {
+        ...stored.record.provisionalIdentity,
+        connectionProfileId: profileId,
+      },
+    };
+    await this.releaseSessionLease(stored.record.id);
+    this.managedSessionIds.delete(stored.record.id);
+    await this.persist();
+    this.emitSession(stored);
+    this.emitTimeline(stored);
+    return this.bundle(stored);
+  }
+
+  async restore(request: AgentSessionRequest): Promise<AgentSessionBundle> {
+    const stored = this.requireSession(request.sessionId);
+    if (stored.record.archivedAt === null) return this.bundle(stored);
+    stored.record = {
+      ...stored.record,
+      archivedAt: null,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.persist();
+    this.emitSession(stored);
+    return this.bundle(stored);
+  }
+
   /**
    * Reads canonical Markdown from AGY's own local store. A revived or already
    * bound session can read directly. A fresh session must supply its exact
@@ -1689,17 +2190,25 @@ export class AgentCommunicationService implements AgentCommunicationPort {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(stored.record.id)) {
       throw new Error('Refusing to delete a session with an unsafe identifier');
     }
-    const profileId = stored.record.provisionalIdentity.connectionProfileId;
+    await this.assertNoForeignSessionLease(stored.record.id);
+    const profileId = this.profileIdForSession(stored);
     // Forget the session before touching the host. Killing its tmux session
     // ends the follow stream, whose completion handlers report the death as an
     // error and emit one last update — arriving after the UI had already
     // dropped the row and putting it straight back. Their `sessions.get()`
     // guard only works if the record is gone first.
+    this.tombstones.set(stored.record.id, {
+      deletedAt: new Date().toISOString(),
+      mutationId: randomUUID(),
+    });
+    this.pendingDeletions.add(stored.record.id);
     this.sessions.delete(stored.record.id);
     this.completing.delete(stored.record.id);
     // The ACP child is a local process the tmux teardown below never touches;
     // without this, every deleted session left its agent running until quit.
     this.options.acp?.stop(stored.record.id);
+    await this.releaseSessionLease(stored.record.id);
+    this.managedSessionIds.delete(stored.record.id);
     await this.persist();
     this.events.onSessionDeleted({
       sessionId: stored.record.id,
@@ -2551,6 +3060,8 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
       host: stored.host,
       project: stored.project,
       cwd: stored.record.cwd,
+      projectId: stored.record.projectId,
+      archivedAt: stored.record.archivedAt,
       interactionMode: stored.interactionMode,
       status: stored.record.status,
       unread: 0,
@@ -2656,40 +3167,433 @@ mv "$session_dir/metadata.json.tmp" "$session_dir/metadata.json"
   }
 
   private assertSessionConnected(stored: StoredAgentSession): void {
-    this.assertConnected(stored.record.provisionalIdentity.connectionProfileId);
+    if (stored.record.archivedAt !== null) {
+      throw new Error('Restore this archived conversation before using it');
+    }
+    const profileId = this.profileIdForSession(stored);
+    this.assertConnected(profileId);
     if (stored.record.status === 'exited') {
       throw new Error('Agent tmux session has exited');
+    }
+    if (
+      stored.record.status === 'disconnected' ||
+      stored.record.status === 'error'
+    ) {
+      throw new Error('Resume this Agent session before using it');
     }
   }
 
   private requireSession(sessionId: string): StoredAgentSession {
+    this.refreshFromDiskSync();
     const stored = this.sessions.get(sessionId);
     if (stored === undefined) throw new Error(`unknown agent session: ${sessionId}`);
     return stored;
   }
 
+  private hostIdFor(profileId: string): string {
+    const profile = this.options.profileStore.get(profileId);
+    if (profile === undefined) throw new Error(`unknown profile: ${profileId}`);
+    const fingerprint =
+      this.options.getHostFingerprint(profileId) ?? `${profile.host}:${profile.port}`;
+    return `${profile.username}@${fingerprint}`;
+  }
+
+  private belongsToProfile(stored: StoredAgentSession, profileId: string): boolean {
+    const storedHostId = stored.record.provisionalIdentity.hostId;
+    return storedHostId === undefined
+      ? stored.record.provisionalIdentity.connectionProfileId === profileId
+      : storedHostId === this.hostIdFor(profileId);
+  }
+
+  private profileIdForSession(stored: StoredAgentSession): string {
+    if (
+      this.activeProfileId !== null &&
+      this.belongsToProfile(stored, this.activeProfileId)
+    ) {
+      return this.activeProfileId;
+    }
+    return stored.record.provisionalIdentity.connectionProfileId;
+  }
+
+  private decodeStore(value: unknown): {
+    sessions: Map<string, StoredAgentSession>;
+    tombstones: Map<string, SessionTombstone>;
+  } | null {
+    if (
+      !isRecord(value) ||
+      (value.version !== 1 && value.version !== STORE_VERSION) ||
+      !Array.isArray(value.sessions)
+    ) {
+      return null;
+    }
+    const sessions = new Map<string, StoredAgentSession>();
+    for (const entry of value.sessions) {
+      const parsed = parseStoredSession(entry);
+      if (parsed !== null) sessions.set(parsed.record.id, parsed);
+    }
+    const tombstones = new Map<string, SessionTombstone>();
+    if (isRecord(value.tombstones)) {
+      for (const [sessionId, entry] of Object.entries(value.tombstones)) {
+        if (
+          isRecord(entry) &&
+          typeof entry.deletedAt === 'string' &&
+          typeof entry.mutationId === 'string'
+        ) {
+          tombstones.set(sessionId, {
+            deletedAt: entry.deletedAt,
+            mutationId: entry.mutationId,
+          });
+          sessions.delete(sessionId);
+        }
+      }
+    }
+    return { sessions, tombstones };
+  }
+
+  private compareStored(
+    left: StoredAgentSession,
+    right: StoredAgentSession,
+  ): number {
+    const time = left.record.updatedAt.localeCompare(right.record.updatedAt);
+    if (time !== 0) return time;
+    return (left.registryMutationId ?? '').localeCompare(
+      right.registryMutationId ?? '',
+    );
+  }
+
+  /**
+   * Pulls atomically-written changes from another client before list or a
+   * session mutation. Locally dirty records stay in memory until their queued
+   * write runs; clean records adopt the newest host copy.
+   */
+  private refreshFromDiskSync(): void {
+    let decoded: ReturnType<AgentCommunicationService['decodeStore']>;
+    try {
+      decoded = this.decodeStore(
+        JSON.parse(readFileSync(this.options.storePath, 'utf8')) as unknown,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      this.events.onError({
+        message: `Unable to refresh the host session registry: ${this.errorMessage(error)}`,
+      });
+      return;
+    }
+    if (decoded === null) {
+      this.events.onError({
+        message: 'Unable to refresh the host session registry because its format is invalid',
+      });
+      return;
+    }
+    for (const [sessionId, tombstone] of decoded.tombstones) {
+      this.tombstones.set(sessionId, tombstone);
+      this.sessions.delete(sessionId);
+      this.persistedSnapshots.delete(sessionId);
+    }
+    for (const [sessionId, remote] of decoded.sessions) {
+      if (this.tombstones.has(sessionId)) continue;
+      const local = this.sessions.get(sessionId);
+      const localDirty =
+        local !== undefined &&
+        this.persistedSnapshots.get(sessionId) !== JSON.stringify(local);
+      if (
+        local === undefined ||
+        (!localDirty && this.compareStored(remote, local) > 0)
+      ) {
+        this.sessions.set(sessionId, remote);
+        this.persistedSnapshots.set(sessionId, JSON.stringify(remote));
+      }
+    }
+  }
+
+  private sessionLeasePath(sessionId: string): string {
+    const safeName = Buffer.from(sessionId, 'utf8').toString('base64url');
+    return path.join(`${this.options.storePath}.leases`, `${safeName}.json`);
+  }
+
+  /**
+   * Gives one CozyPad host process exclusive ownership of a live ACP child.
+   * The registry lock protects disk updates; this separate lease prevents two
+   * clients from sending turns to two processes bound to the same conversation.
+   */
+  private async claimSessionLease(sessionId: string): Promise<void> {
+    if (this.heldSessionLeases.has(sessionId)) return;
+    const leasePath = this.sessionLeasePath(sessionId);
+    await fs.mkdir(path.dirname(leasePath), { recursive: true });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+      try {
+        handle = await fs.open(leasePath, 'wx');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      if (handle !== null) {
+        let written = false;
+        try {
+          await handle.writeFile(
+            JSON.stringify({
+              owner: this.leaseOwner,
+              pid: process.pid,
+              sessionId,
+              acquiredAt: new Date().toISOString(),
+            }),
+            'utf8',
+          );
+          written = true;
+        } finally {
+          await handle.close();
+          if (!written) await fs.rm(leasePath, { force: true }).catch(() => undefined);
+        }
+        this.heldSessionLeases.add(sessionId);
+        this.startLeaseHeartbeat();
+        return;
+      }
+
+      const lease = await this.readSessionLease(sessionId);
+      if (lease?.owner === this.leaseOwner) {
+        this.heldSessionLeases.add(sessionId);
+        this.startLeaseHeartbeat();
+        return;
+      }
+      if (lease !== null && Date.now() - lease.mtimeMs <= 30_000) {
+        throw new Error(
+          'This Agent session is active in another CozyPad client. Disconnect or stop it there before continuing here.',
+        );
+      }
+      // A crashed host cannot release its lease. Only reap it after a second
+      // stat proves no heartbeat arrived while we were inspecting it.
+      try {
+        const before = await fs.stat(leasePath);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        const after = await fs.stat(leasePath);
+        if (before.mtimeMs !== after.mtimeMs) continue;
+        await fs.rm(leasePath, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    throw new Error('Unable to acquire ownership of this Agent session');
+  }
+
+  private async assertNoForeignSessionLease(sessionId: string): Promise<void> {
+    if (this.heldSessionLeases.has(sessionId)) return;
+    const lease = await this.readSessionLease(sessionId);
+    if (lease === null || Date.now() - lease.mtimeMs > 30_000) return;
+    if (lease.owner !== this.leaseOwner) {
+      throw new Error(
+        'This Agent session is active in another CozyPad client. Disconnect or stop it there before continuing here.',
+      );
+    }
+  }
+
+  private async readSessionLease(
+    sessionId: string,
+  ): Promise<{ owner?: string; mtimeMs: number } | null> {
+    const leasePath = this.sessionLeasePath(sessionId);
+    try {
+      const [raw, stat] = await Promise.all([
+        fs.readFile(leasePath, 'utf8'),
+        fs.stat(leasePath),
+      ]);
+      let owner: string | undefined;
+      try {
+        const parsed = JSON.parse(raw) as { owner?: unknown };
+        if (typeof parsed.owner === 'string') owner = parsed.owner;
+      } catch {
+        // An invalid live lease still belongs to somebody until it becomes
+        // stale; treating it as free would defeat exclusivity.
+      }
+      return { ...(owner === undefined ? {} : { owner }), mtimeMs: stat.mtimeMs };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  private startLeaseHeartbeat(): void {
+    if (this.leaseHeartbeat !== null) return;
+    this.leaseHeartbeat = setInterval(() => {
+      void this.heartbeatSessionLeases();
+    }, 10_000);
+    this.leaseHeartbeat.unref();
+  }
+
+  private async heartbeatSessionLeases(): Promise<void> {
+    if (this.leaseHeartbeatRunning) return;
+    this.leaseHeartbeatRunning = true;
+    try {
+      const now = new Date();
+      for (const sessionId of [...this.heldSessionLeases]) {
+        try {
+          const lease = await this.readSessionLease(sessionId);
+          if (lease?.owner !== this.leaseOwner) {
+            this.heldSessionLeases.delete(sessionId);
+            this.options.acp?.stop(sessionId);
+            this.events.onError({
+              sessionId,
+              message: 'This Agent session lost its cross-client ownership lease and was stopped.',
+            });
+            continue;
+          }
+          await fs.utimes(this.sessionLeasePath(sessionId), now, now);
+        } catch {
+          this.heldSessionLeases.delete(sessionId);
+          this.options.acp?.stop(sessionId);
+          this.events.onError({
+            sessionId,
+            message: 'Unable to renew this Agent session ownership; the process was stopped to prevent duplicate clients.',
+          });
+        }
+      }
+    } finally {
+      this.leaseHeartbeatRunning = false;
+      if (this.heldSessionLeases.size === 0 && this.leaseHeartbeat !== null) {
+        clearInterval(this.leaseHeartbeat);
+        this.leaseHeartbeat = null;
+      }
+    }
+  }
+
+  private async releaseSessionLease(sessionId: string): Promise<void> {
+    if (!this.heldSessionLeases.delete(sessionId)) return;
+    const lease = await this.readSessionLease(sessionId).catch(() => null);
+    if (lease?.owner === this.leaseOwner) {
+      await fs.rm(this.sessionLeasePath(sessionId), { force: true }).catch(() => undefined);
+    }
+    if (this.heldSessionLeases.size === 0 && this.leaseHeartbeat !== null) {
+      clearInterval(this.leaseHeartbeat);
+      this.leaseHeartbeat = null;
+    }
+  }
+
+  private releaseSessionLeaseSoon(sessionId: string): void {
+    this.leaseReleaseQueue = this.leaseReleaseQueue
+      .catch(() => undefined)
+      .then(() => this.releaseSessionLease(sessionId));
+    void this.leaseReleaseQueue.catch(() => undefined);
+  }
+
+  private async acquireStoreLock(): Promise<() => Promise<void>> {
+    const lockPath = `${this.options.storePath}.lock`;
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      try {
+        await fs.mkdir(lockPath);
+        return async () => {
+          await fs.rmdir(lockPath).catch(() => undefined);
+        };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        try {
+          const stat = await fs.stat(lockPath);
+          if (Date.now() - stat.mtimeMs > 30_000) {
+            await fs.rmdir(lockPath);
+            continue;
+          }
+        } catch {
+          continue;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error('Timed out waiting for the host session registry lock');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25 + Math.random() * 50));
+      }
+    }
+  }
+
   private persist(): Promise<void> {
-    const payload: PersistedAgentStore = {
-      version: STORE_VERSION,
-      sessions: [...this.sessions.values()],
-    };
-    const raw = JSON.stringify(payload, null, 2);
     this.persistQueue = this.persistQueue
       // One failed write must not poison the chain: `.then` on a rejected
-      // promise never runs, so without this every later persist would fail
-      // forever after a single transient error.
+      // promise never runs, so without this every later persist would fail.
       .catch(() => undefined)
       .then(async () => {
         await fs.mkdir(path.dirname(this.options.storePath), { recursive: true });
-        const temp = `${this.options.storePath}.tmp`;
-        await fs.writeFile(temp, raw, 'utf8');
+        const changed = new Set<string>();
+        for (const [sessionId, stored] of this.sessions) {
+          if (this.persistedSnapshots.get(sessionId) === JSON.stringify(stored)) {
+            continue;
+          }
+          stored.registryMutationId = randomUUID();
+          changed.add(sessionId);
+        }
+
+        const release = await this.acquireStoreLock();
         try {
-          await fs.rename(temp, this.options.storePath);
-        } catch {
-          // Windows: a virus scanner or indexer briefly holding either file
-          // makes rename throw EPERM; one retry after a beat resolves it.
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          await fs.rename(temp, this.options.storePath);
+          let disk = {
+            sessions: new Map<string, StoredAgentSession>(),
+            tombstones: new Map<string, SessionTombstone>(),
+          };
+          try {
+            const raw = await fs.readFile(this.options.storePath, 'utf8');
+            const decoded = this.decodeStore(JSON.parse(raw) as unknown);
+            if (decoded === null) {
+              throw new Error(
+                'Refusing to overwrite an invalid host session registry',
+              );
+            }
+            disk = decoded;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
+
+          for (const [sessionId, tombstone] of disk.tombstones) {
+            if (!this.tombstones.has(sessionId)) {
+              this.tombstones.set(sessionId, tombstone);
+            }
+          }
+          for (const sessionId of this.pendingDeletions) {
+            if (!this.tombstones.has(sessionId)) {
+              this.tombstones.set(sessionId, {
+                deletedAt: new Date().toISOString(),
+                mutationId: randomUUID(),
+              });
+            }
+          }
+
+          const merged = new Map(disk.sessions);
+          for (const [sessionId, local] of this.sessions) {
+            if (this.tombstones.has(sessionId)) continue;
+            const remote = merged.get(sessionId);
+            if (
+              remote === undefined ||
+              changed.has(sessionId) ||
+              this.compareStored(local, remote) >= 0
+            ) {
+              merged.set(sessionId, local);
+            }
+          }
+          for (const sessionId of this.tombstones.keys()) {
+            merged.delete(sessionId);
+          }
+
+          const payload: PersistedAgentStore = {
+            version: STORE_VERSION,
+            sessions: [...merged.values()],
+            tombstones: Object.fromEntries(this.tombstones),
+          };
+          const temp = `${this.options.storePath}.tmp-${process.pid}-${randomUUID()}`;
+          let committed = false;
+          try {
+            await fs.writeFile(temp, JSON.stringify(payload, null, 2), 'utf8');
+            try {
+              await fs.rename(temp, this.options.storePath);
+            } catch {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              await fs.rename(temp, this.options.storePath);
+            }
+            committed = true;
+          } finally {
+            if (!committed) await fs.rm(temp, { force: true }).catch(() => undefined);
+          }
+
+          this.sessions = merged;
+          this.persistedSnapshots.clear();
+          for (const [sessionId, stored] of merged) {
+            this.persistedSnapshots.set(sessionId, JSON.stringify(stored));
+          }
+          this.pendingDeletions.clear();
+        } finally {
+          await release();
         }
       });
     return this.persistQueue;

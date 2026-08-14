@@ -27,6 +27,8 @@ export interface TransportPort {
   writeFile(path: string, data: Uint8Array): Promise<void>;
 
   // 原生與 SFTP 檔案系統 API
+  /** Resolves home aliases, relative segments, and symlinks on the target host. */
+  fsRealpath(path: string): Promise<string>;
   fsList(path: string): Promise<DirectoryListing>;
   fsReadText(path: string, maxBytes: number, offset: number): Promise<string>;
   fsReadBytes(path: string, maxBytes: number): Promise<string>;

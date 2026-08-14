@@ -5,6 +5,7 @@ import {
   ApplicationMenuRequestSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
+  ArchiveAgentSessionRequestSchema,
   AnswerAgentQuestionRequestSchema,
   DeclineAgentQuestionRequestSchema,
   ConnectRequestSchema,
@@ -155,7 +156,11 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
     onConnectionState: (event) => {
       send(IpcChannels.connectionState, event);
       if (event.state === 'connected') {
-        void agentCommunication?.connected(event.profileId);
+        void agentCommunication?.connected(event.profileId).catch((error: unknown) => {
+          send(IpcChannels.agentCommunicationError, {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
         telemetry.start(event.profileId, (snapshot) =>
           send(IpcChannels.telemetryUpdated, snapshot),
         );
@@ -434,6 +439,22 @@ export function registerIpc(services: IpcServices, win: BrowserWindow): void {
       throw new Error('Agent communication is unavailable in mock desktop mode');
     }
     return agentCommunication.revive(AgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionArchive, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.archive(ArchiveAgentSessionRequestSchema.parse(raw));
+  });
+
+  ipcMain.handle(IpcChannels.agentSessionRestore, (event, raw: unknown) => {
+    assertSender(event);
+    if (agentCommunication === null) {
+      throw new Error('Agent communication is unavailable in mock desktop mode');
+    }
+    return agentCommunication.restore(AgentSessionRequestSchema.parse(raw));
   });
 
   ipcMain.handle(IpcChannels.agentSessionRename, (event, raw: unknown) => {

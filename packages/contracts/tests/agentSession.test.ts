@@ -16,6 +16,7 @@ const RECORD: RemoteAgentSessionRecord = {
   cwd: '~/projects/seg-train',
   title: 'Starting…',
   status: 'starting',
+  archivedAt: null,
   tmuxCreatedEpoch: 1753760000,
   createdAt: 't0',
   updatedAt: 't0',
@@ -84,9 +85,19 @@ describe('agentSessionKey (SPEC_V3 Gate A)', () => {
     agentConversationId: 'conv-abc',
   };
 
+  it('profile aliases for the same host resolve to the same session key', () => {
+    expect(agentSessionKey(base)).toBe(
+      agentSessionKey({ ...base, connectionProfileId: 'phone-profile' }),
+    );
+  });
+
   it('same conversation id on different hosts does not collide', () => {
     expect(agentSessionKey(base)).not.toBe(
-      agentSessionKey({ ...base, connectionProfileId: 'p2' }),
+      agentSessionKey({
+        ...base,
+        connectionProfileId: 'p2',
+        remoteHostFingerprint: 'another-host',
+      }),
     );
   });
 

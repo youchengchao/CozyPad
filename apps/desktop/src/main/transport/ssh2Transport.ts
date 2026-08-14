@@ -5,6 +5,7 @@ import type {
   DirectoryListing,
   TerminalOpenRequest,
 } from '@cozypad/contracts';
+import { quoteShellArg } from '@cozypad/contracts';
 import type { TransportEvents, TransportPort } from './TransportPort';
 import { connectRemoteNodeHost } from './remoteNodeHost';
 import type {
@@ -301,24 +302,27 @@ export class Ssh2Transport implements TransportPort {
     const client = this.client;
     if (!client) throw new Error('not connected');
     const terminalId = `ssh-term-${this.nextTerminalId++}`;
-    const shellPty = {
+    const commandPty = {
       term: 'xterm-256color',
       cols: request.cols,
       rows: request.rows,
-    };
-    const commandPty = {
-      ...shellPty,
       width: 0,
       height: 0,
     };
+    const cwdPrefix =
+      request.cwd === '~'
+        ? 'cd -- "$HOME" || exit 1'
+        : request.cwd.startsWith('~/')
+          ? `cd -- "$HOME"/${quoteShellArg(request.cwd.slice(2))} || exit 1`
+          : `cd -- ${quoteShellArg(request.cwd)} || exit 1`;
+    const terminalCommand =
+      command === undefined
+        ? `${cwdPrefix}\nexec "\${SHELL:-/bin/sh}" -l`
+        : `${cwdPrefix}\n${command}`;
     const stream = await new Promise<Ssh2ShellStreamLike>((resolve, reject) => {
       const done = (error: Error | undefined, terminalStream: Ssh2ShellStreamLike) =>
         error ? reject(error) : resolve(terminalStream);
-      if (command === undefined) {
-        client.shell(shellPty, done);
-      } else {
-        client.exec(command, { pty: commandPty }, done);
-      }
+      client.exec(terminalCommand, { pty: commandPty }, done);
     });
     this.terminals.set(terminalId, stream);
     stream.on('data', (chunk) =>
@@ -373,6 +377,10 @@ export class Ssh2Transport implements TransportPort {
       state,
       ...(error === undefined ? {} : { error }),
     });
+  }
+
+  async fsRealpath(inputPath: string): Promise<string> {
+    return this.requireHost().fsRealpath(inputPath);
   }
 
   async fsList(dirPath: string): Promise<DirectoryListing> {

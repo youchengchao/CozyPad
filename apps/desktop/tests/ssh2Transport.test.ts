@@ -387,24 +387,58 @@ describe('Ssh2Transport', () => {
     ]);
   });
 
-  it('opens a shell with the requested PTY size', async () => {
+  it('opens a login shell in the requested working directory and PTY size', async () => {
     const { transport, client } = await connectedTransport();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 120, rows: 30 });
-    const request = client.shellRequests[0]!;
-    expect(request.options).toEqual({ term: 'xterm-256color', cols: 120, rows: 30 });
+    const openPromise = transport.openTerminal({
+      profileId: 'p1',
+      cwd: "/srv/team's project",
+      cols: 120,
+      rows: 30,
+    });
+    const request = client.execRequests[0]!;
+    expect(request.command).toBe(
+      `cd -- '/srv/team'"'"'s project' || exit 1\nexec "\${SHELL:-/bin/sh}" -l`,
+    );
+    expect(request.options).toEqual({
+      pty: {
+        term: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        width: 0,
+        height: 0,
+      },
+    });
     request.callback(undefined, new FakeShellStream());
     await expect(openPromise).resolves.toMatch(/^ssh-term-/);
+  });
+
+  it('expands the default workspace home before opening a terminal', async () => {
+    const { transport, client } = await connectedTransport();
+    const openPromise = transport.openTerminal({
+      profileId: 'p1',
+      cwd: '~',
+      cols: 80,
+      rows: 24,
+    });
+    const request = client.execRequests.at(-1)!;
+    expect(request.command).toBe(
+      'cd -- "$HOME" || exit 1\nexec "${SHELL:-/bin/sh}" -l',
+    );
+    request.callback(undefined, new FakeShellStream());
+    await openPromise;
   });
 
   it('starts a terminal command directly on an explicitly allocated PTY', async () => {
     const { transport, client } = await connectedTransport();
     const openPromise = transport.openTerminal(
-      { profileId: 'p1', cols: 132, rows: 44 },
+      { profileId: 'p1', cwd: '/srv/project', cols: 132, rows: 44 },
       "tmux -L 'cozypad' attach-session -t '$0'",
     );
     expect(client.shellRequests).toHaveLength(0);
     const request = client.execRequests[0]!;
-    expect(request.command).toBe("tmux -L 'cozypad' attach-session -t '$0'");
+    expect(request.command).toBe(
+      "cd -- '/srv/project' || exit 1\ntmux -L 'cozypad' attach-session -t '$0'",
+    );
     expect(request.options).toEqual({
       pty: {
         term: 'xterm-256color',
@@ -421,8 +455,8 @@ describe('Ssh2Transport', () => {
   it('forwards PTY output bytes exactly, including split UTF-8 chunks', async () => {
     const { transport, client, recorder } = await connectedTransport();
     const stream = new FakeShellStream();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 });
-    client.shellRequests[0]!.callback(undefined, stream);
+    const openPromise = transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 });
+    client.execRequests[0]!.callback(undefined, stream);
     const terminalId = await openPromise;
 
     stream.emitData(sshFixtures.ansiColorBytes);
@@ -440,8 +474,8 @@ describe('Ssh2Transport', () => {
   it('forwards stderr output into the same terminal stream', async () => {
     const { transport, client, recorder } = await connectedTransport();
     const stream = new FakeShellStream();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 });
-    client.shellRequests[0]!.callback(undefined, stream);
+    const openPromise = transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 });
+    client.execRequests[0]!.callback(undefined, stream);
     const terminalId = await openPromise;
     stream.emitStderr(sshFixtures.promptBytes);
     expect(recorder.outputs[0]).toEqual({ terminalId, data: sshFixtures.promptBytes });
@@ -450,8 +484,8 @@ describe('Ssh2Transport', () => {
   it('writes input bytes to the shell stream', async () => {
     const { transport, client } = await connectedTransport();
     const stream = new FakeShellStream();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 });
-    client.shellRequests[0]!.callback(undefined, stream);
+    const openPromise = transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 });
+    client.execRequests[0]!.callback(undefined, stream);
     const terminalId = await openPromise;
     const input = new TextEncoder().encode('nvidia-smi\r');
     transport.writeTerminal(terminalId, input);
@@ -461,8 +495,8 @@ describe('Ssh2Transport', () => {
   it('maps resize onto setWindow(rows, cols, ...)', async () => {
     const { transport, client } = await connectedTransport();
     const stream = new FakeShellStream();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 });
-    client.shellRequests[0]!.callback(undefined, stream);
+    const openPromise = transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 });
+    client.execRequests[0]!.callback(undefined, stream);
     const terminalId = await openPromise;
     transport.resizeTerminal(terminalId, 150, 45);
     expect(stream.windows).toEqual([[45, 150, 0, 0]]);
@@ -471,8 +505,8 @@ describe('Ssh2Transport', () => {
   it('reports terminal close exactly once', async () => {
     const { transport, client, recorder } = await connectedTransport();
     const stream = new FakeShellStream();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 });
-    client.shellRequests[0]!.callback(undefined, stream);
+    const openPromise = transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 });
+    client.execRequests[0]!.callback(undefined, stream);
     const terminalId = await openPromise;
     stream.emitClose();
     stream.emitClose();
@@ -482,8 +516,8 @@ describe('Ssh2Transport', () => {
   it('closes terminals and reports disconnected when the connection drops', async () => {
     const { transport, client, recorder } = await connectedTransport();
     const stream = new FakeShellStream();
-    const openPromise = transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 });
-    client.shellRequests[0]!.callback(undefined, stream);
+    const openPromise = transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 });
+    client.execRequests[0]!.callback(undefined, stream);
     const terminalId = await openPromise;
 
     await transport.disconnect();
@@ -502,7 +536,7 @@ describe('Ssh2Transport', () => {
   it('refuses to open terminals when not connected', async () => {
     const transport = new Ssh2Transport({ getProfile: () => PROFILE });
     await expect(
-      transport.openTerminal({ profileId: 'p1', cols: 80, rows: 24 }),
+      transport.openTerminal({ profileId: 'p1', cwd: '/srv/project', cols: 80, rows: 24 }),
     ).rejects.toThrow('not connected');
   });
 

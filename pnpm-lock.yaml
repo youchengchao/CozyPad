@@ -184,9 +184,15 @@ importers:
       '@capacitor/core':
         specifier: ^8.4.2
         version: 8.4.2
+      '@capacitor/ios':
+        specifier: 8.4.2
+        version: 8.4.2(@capacitor/core@8.4.2)
       '@cozypad/app':
         specifier: workspace:*
         version: link:../app
+      '@cozypad/capacitor-ios-native':
+        specifier: workspace:*
+        version: link:../../packages/capacitor-ios-native
     devDependencies:
       '@capacitor/cli':
         specifier: ^8.4.2
@@ -242,6 +248,8 @@ importers:
       vitest:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@26.1.2)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.9))
+
+  packages/capacitor-ios-native: {}
 
   packages/contracts:
     dependencies:
@@ -354,6 +362,11 @@ packages:
 
   '@capacitor/core@8.4.2':
     resolution: {integrity: sha512-fQPRb3JXRaU2pnufDUvqOjhsrYxDQeFRZyaj/sHydIUxD2NxOGHKMpmKUdI+U4OOmKuGZyvRpi7TSJU+7Bjbmg==}
+
+  '@capacitor/ios@8.4.2':
+    resolution: {integrity: sha512-ClVzIjK++yRjsRPOpdEzhsZfbHfoEc0f4M6vD0v7sWh0qcoF6NkxNAeHpWTn4OPJpJfpGGoYsq+IfEHrYyBiWA==}
+    peerDependencies:
+      '@capacitor/core': ^8.4.0
 
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
@@ -1320,10 +1333,12 @@ packages:
   '@xmldom/xmldom@0.8.13':
     resolution: {integrity: sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -3657,6 +3672,10 @@ snapshots:
   '@capacitor/core@8.4.2':
     dependencies:
       tslib: 2.8.1
+
+  '@capacitor/ios@8.4.2(@capacitor/core@8.4.2)':
+    dependencies:
+      '@capacitor/core': 8.4.2
 
   '@chevrotain/types@11.1.2': {}
 

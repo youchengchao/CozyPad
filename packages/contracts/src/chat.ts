@@ -43,6 +43,13 @@ export const AgentSessionSummarySchema = z.object({
   host: z.string().min(1),
   project: z.string().min(1),
   cwd: z.string().min(1),
+  /**
+   * Host-canonical workspace identity. Older clients only persisted `cwd`, so
+   * this remains optional on the wire during the store migration.
+   */
+  projectId: z.string().min(1).optional(),
+  /** Archive is a visibility/lifecycle dimension, never a runtime status. */
+  archivedAt: z.string().min(1).nullable().optional(),
   interactionMode: AgentInteractionModeSchema.optional(),
   status: AgentSessionStatusSchema,
   configOptions: z.array(AgentConfigOptionSchema).optional(),

@@ -42,7 +42,10 @@ export class RoutingTransport implements TransportPort {
     // a later exec run somewhere the user is no longer looking at. The old
     // host is dropped under *its own* id — reporting it under the new one made
     // the UI read the switch as the new connection immediately dropping.
-    if (this.active !== target && this.activeProfileId !== null) {
+    if (
+      this.activeProfileId !== null &&
+      (this.active !== target || this.activeProfileId !== profileId)
+    ) {
       await this.active.disconnect(this.activeProfileId).catch(() => undefined);
     }
     this.active = target;
@@ -71,6 +74,10 @@ export class RoutingTransport implements TransportPort {
 
   writeFile(path: string, data: Uint8Array): Promise<void> {
     return this.active.writeFile(path, data);
+  }
+
+  fsRealpath(path: string): Promise<string> {
+    return this.active.fsRealpath(path);
   }
 
   fsList(path: string): Promise<DirectoryListing> {

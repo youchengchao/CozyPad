@@ -145,6 +145,10 @@ class FakeTransport {
     return Promise.resolve();
   }
 
+  fsRealpath(inputPath: string): Promise<string> {
+    return Promise.resolve(inputPath);
+  }
+
   openTerminal(request: unknown, command?: string): Promise<string> {
     this.terminalCommands.push(
       command === undefined ? { request } : { request, command },
@@ -252,8 +256,24 @@ describe('AgentCommunicationService', () => {
   let acpPrompts: { sessionId: string; text: string }[];
   /** Set by a test that needs delivery to fail. */
   let acpPromptError: Error | null;
+  let storedDiscovery: (
+    agentKind: string,
+    homeDirectory: string,
+  ) => Promise<
+    Array<{
+      sessionId: string;
+      cwd: string;
+      title?: string;
+      updatedAt?: string;
+    }>
+  >;
   let acpRuntime: {
     has(sessionId: string): boolean;
+    discover?(
+      agentKind: string,
+      cwd: string,
+      remote?: boolean,
+    ): Promise<Array<{ sessionId: string; cwd: string; title?: string; updatedAt?: string }>>;
     start(
       sessionId: string,
       cwd: string,
@@ -287,6 +307,7 @@ describe('AgentCommunicationService', () => {
     tmux = new FakeTmux();
     acpPrompts = [];
     acpPromptError = null;
+    storedDiscovery = async () => [];
     acpRuntime = {
       has: () => true,
       start: async () => ({
@@ -327,6 +348,8 @@ describe('AgentCommunicationService', () => {
       // The remote case has its own describe at the end of this file.
       isLocalHost: () => true,
       acp: acpRuntime,
+      discoverStoredSessions: (agentKind, homeDirectory) =>
+        storedDiscovery(agentKind, homeDirectory),
     });
     await service.connected('profile-1');
   });
@@ -350,6 +373,268 @@ describe('AgentCommunicationService', () => {
       title: 'Ablation study',
     });
   }
+
+  it('uses the host-canonical workspace for tmux and session identity', async () => {
+    vi.spyOn(transport, 'fsRealpath').mockResolvedValue('/srv/canonical-project');
+
+    const bundle = await service.create({
+      profileId: 'profile-1',
+      agentKind: 'claude',
+      cwd: '/srv/link/../project',
+    });
+
+    expect(tmux.created[0]?.cwd).toBe('/srv/canonical-project');
+    expect(bundle.session.cwd).toBe('/srv/canonical-project');
+    expect(bundle.session.projectId).toBe('/srv/canonical-project');
+  });
+
+  it('registers ACP-native conversations so archive covers pre-existing sessions', async () => {
+    const boundRuntime = Object.assign(acpRuntime, { spawnReady: true });
+    boundRuntime.discover = async function (this: typeof boundRuntime) {
+      // AcpAgentRuntime.discover reads its spawn functions from `this`. This
+      // catches service code that extracts the method and invokes it unbound.
+      expect(this).toBe(boundRuntime);
+      expect(this.spawnReady).toBe(true);
+      return [
+        {
+          sessionId: 'native-conversation-1',
+          cwd: '/srv/native-project',
+          title: 'Existing native conversation',
+          updatedAt: '2026-08-14T12:00:00.000Z',
+        },
+      ];
+    };
+
+    await service.detect({ profileId: 'profile-1', agentKind: 'claude' });
+    const listed = service.list({ profileId: 'profile-1', archive: 'all' });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.session).toMatchObject({
+      title: 'Existing native conversation',
+      cwd: '/srv/native-project',
+      status: 'exited',
+      conversationBound: true,
+    });
+    await expect(
+      service.archive({ sessionId: listed[0]!.session.id }),
+    ).resolves.toMatchObject({ session: { archivedAt: expect.any(String) } });
+  });
+
+  it('rescans native conversations when a cached agent is selected again', async () => {
+    let discovery = 0;
+    acpRuntime.discover = async () => {
+      discovery += 1;
+      return [
+        {
+          sessionId: `native-conversation-${discovery}`,
+          cwd: `/srv/native-project-${discovery}`,
+          updatedAt: `2026-08-14T1${discovery}:00:00.000Z`,
+        },
+      ];
+    };
+
+    await service.detect({ profileId: 'profile-1', agentKind: 'codex' });
+    await service.detect({ profileId: 'profile-1', agentKind: 'codex' });
+
+    expect(discovery).toBe(2);
+    expect(
+      service
+        .list({ profileId: 'profile-1', archive: 'all' })
+        .filter((bundle) => bundle.session.agentKind === 'codex'),
+    ).toHaveLength(2);
+  });
+
+  it('imports AGY home-store conversations without relying on ACP session/list', async () => {
+    storedDiscovery = async (agentKind, homeDirectory) => {
+      expect(agentKind).toBe('agy');
+      expect(homeDirectory).toBe('/home/researcher');
+      return [
+        {
+          sessionId: '00000000-0000-0000-0000-000000000123',
+          cwd: homeDirectory,
+          title: 'AGY conversation · 2026-08-14 12:00 UTC',
+          updatedAt: '2026-08-14T12:00:00.000Z',
+        },
+      ];
+    };
+
+    await service.detect({ profileId: 'profile-1', agentKind: 'agy' });
+
+    expect(
+      service
+        .list({ profileId: 'profile-1', archive: 'all' })
+        .find((bundle) => bundle.session.agentKind === 'agy')?.session,
+    ).toMatchObject({
+      title: 'AGY conversation · 2026-08-14 12:00 UTC',
+      cwd: '/home/researcher',
+      conversationBound: true,
+    });
+  });
+
+  it('drops native discovery that finishes after the host disconnects', async () => {
+    type NativeSession = {
+      sessionId: string;
+      cwd: string;
+      title?: string;
+      updatedAt?: string;
+    };
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let finishDiscovery!: (sessions: NativeSession[]) => void;
+    storedDiscovery = () => {
+      markStarted();
+      return new Promise<NativeSession[]>((resolve) => {
+        finishDiscovery = resolve;
+      });
+    };
+
+    const detection = service.detect({ profileId: 'profile-1', agentKind: 'agy' });
+    await started;
+    service.disconnected('profile-1');
+    finishDiscovery([
+      {
+        sessionId: '00000000-0000-0000-0000-000000000999',
+        cwd: '/home/researcher',
+      },
+    ]);
+    await detection;
+    await service.connected('profile-1');
+
+    expect(
+      service
+        .list({ profileId: 'profile-1', archive: 'all' })
+        .some(
+          (bundle) =>
+            bundle.session.title === 'Imported AGY conversation' &&
+            bundle.session.conversationBound,
+        ),
+    ).toBe(false);
+  });
+
+  it('archives the full conversation and restores it without auto-starting', async () => {
+    const bundle = await createSession();
+
+    const archived = await service.archive({ sessionId: bundle.session.id });
+    expect(archived.session.archivedAt).not.toBeNull();
+    expect(archived.session.status).toBe('exited');
+    expect(service.list({ profileId: 'profile-1' })).toEqual([]);
+    expect(
+      service.list({ profileId: 'profile-1', archive: 'archived' }),
+    ).toHaveLength(1);
+
+    const restored = await service.restore({ sessionId: bundle.session.id });
+    expect(restored.session.archivedAt).toBeNull();
+    expect(restored.session.status).toBe('exited');
+    expect(service.list({ profileId: 'profile-1' })).toHaveLength(1);
+  });
+
+  it('merges concurrent clients so neither host session is lost', async () => {
+    const profiles = new MemoryProfileStore([
+      {
+        id: 'profile-1',
+        name: 'Research box alias',
+        host: 'lab.example',
+        port: 22,
+        username: 'researcher',
+        authMethod: 'password',
+        hasPassword: true,
+        credentialPersisted: false,
+      },
+    ]);
+    const second = new AgentCommunicationService({
+      transport: transport as unknown as TransportPort,
+      tmux,
+      profileStore: profiles,
+      storePath: path.join(tempDirectory, 'sessions.json'),
+      getHostFingerprint: () => 'SHA256:test',
+      isLocalHost: () => true,
+      acp: acpRuntime,
+    });
+    await second.load();
+    await second.connected('profile-1');
+
+    const [firstCreated, secondCreated] = await Promise.all([
+      service.create({
+        profileId: 'profile-1',
+        agentKind: 'claude',
+        cwd: '/srv/deep-learning',
+        title: 'Client one',
+      }),
+      second.create({
+        profileId: 'profile-1',
+        agentKind: 'claude',
+        cwd: '/srv/deep-learning',
+        title: 'Client two',
+      }),
+    ]);
+
+    const listed = service.list({ profileId: 'profile-1', archive: 'all' });
+    expect(listed.map((entry) => entry.session.id).sort()).toEqual(
+      [firstCreated.session.id, secondCreated.session.id].sort(),
+    );
+
+    await service.shutdown('profile-1');
+    expect(
+      second
+        .list({ profileId: 'profile-1', archive: 'all' })
+        .find((entry) => entry.session.id === secondCreated.session.id)?.session
+        .status,
+    ).toBe('ready');
+  });
+
+  it('prevents two clients from driving the same live Agent conversation', async () => {
+    const profiles = new MemoryProfileStore([
+      {
+        id: 'profile-1',
+        name: 'Research box alias',
+        host: 'lab.example',
+        port: 22,
+        username: 'researcher',
+        authMethod: 'password',
+        hasPassword: true,
+        credentialPersisted: false,
+      },
+    ]);
+    const second = new AgentCommunicationService({
+      transport: transport as unknown as TransportPort,
+      tmux,
+      profileStore: profiles,
+      storePath: path.join(tempDirectory, 'sessions.json'),
+      getHostFingerprint: () => 'SHA256:test',
+      isLocalHost: () => true,
+      acp: { ...acpRuntime, has: () => false },
+    });
+    await second.load();
+    await second.connected('profile-1');
+    const created = await createSession();
+
+    await expect(
+      second.send({
+        sessionId: created.session.id,
+        text: 'race this turn',
+        attachmentIds: [],
+      }),
+    ).rejects.toThrow('active in another CozyPad client');
+    expect(acpPrompts).toEqual([]);
+
+    await service.shutdown('profile-1');
+    await second.revive({ sessionId: created.session.id });
+    await expect(
+      second.send({
+        sessionId: created.session.id,
+        text: 'after ownership was released',
+        attachmentIds: [],
+      }),
+    ).resolves.toBeUndefined();
+    expect(acpPrompts).toEqual([
+      {
+        sessionId: created.session.id,
+        text: 'after ownership was released',
+      },
+    ]);
+  });
 
 
   it('deletes the tmux session, remote metadata, and persisted session record', async () => {
@@ -429,6 +714,9 @@ describe('AgentCommunicationService', () => {
       onError: (event) => errors.push(event.message),
     });
     service.disconnected('profile-1');
+    expect(
+      service.list({ profileId: 'profile-1', archive: 'all' }),
+    ).toEqual([]);
 
     const result = await service.delete({ sessionId: bundle.session.id });
 

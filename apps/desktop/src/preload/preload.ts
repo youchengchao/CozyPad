@@ -10,6 +10,7 @@ import {
   AgentSessionDeletedEventSchema,
   AgentSessionListRequestSchema,
   AgentSessionRequestSchema,
+  ArchiveAgentSessionRequestSchema,
   AgentTimelineChangedEventSchema,
   AnswerAgentQuestionRequestSchema,
   DeclineAgentQuestionRequestSchema,
@@ -235,6 +236,22 @@ const bridge: PlatformBridge = {
     AgentSessionBundleSchema.parse(
       await ipcRenderer.invoke(
         IpcChannels.agentSessionRevive,
+        AgentSessionRequestSchema.parse(request),
+      ),
+    ),
+
+  archiveAgentSession: async (request) =>
+    AgentSessionBundleSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentSessionArchive,
+        ArchiveAgentSessionRequestSchema.parse(request),
+      ),
+    ),
+
+  restoreAgentSession: async (request) =>
+    AgentSessionBundleSchema.parse(
+      await ipcRenderer.invoke(
+        IpcChannels.agentSessionRestore,
         AgentSessionRequestSchema.parse(request),
       ),
     ),

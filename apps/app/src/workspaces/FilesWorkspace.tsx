@@ -51,6 +51,9 @@ const FILES_SIDEBAR_STORAGE_KEY = 'cozypad-files-sidebar-width';
 
 interface FilesWorkspaceProps {
   connected: boolean;
+  profileId: string | null;
+  workspaceCwd: string | null;
+  onWorkspaceCwdChange(cwd: string): void;
 }
 
 type DialogState =
@@ -106,7 +109,12 @@ function TreeRow({
   );
 }
 
-export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
+export function FilesWorkspace({
+  connected,
+  profileId,
+  workspaceCwd,
+  onWorkspaceCwdChange,
+}: FilesWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [homePath, setHomePath] = useState<string | null>(null);
@@ -129,7 +137,6 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [pwd, setPwd] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dialogInput, setDialogInput] = useState('');
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -286,17 +293,24 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
       setCurrentPath(null);
       setChildren({});
       setFileTabs(EMPTY_FILE_TABS);
-      setPwd(null);
       return;
     }
-    void loadDir('~').then((listing) => {
-      if (listing !== null) {
-        setCurrentPath(listing.path);
-        setHomePath(listing.path);
-        setPwd(listing.path);
-      }
+    const requested = workspaceCwd ?? '~';
+    void loadDir('~').then(async (home) => {
+      if (home === null) return;
+      setHomePath(home.path);
+      const listing =
+        requested === '~' || requested === home.path
+          ? home
+          : await loadDir(requested);
+      const resolved = listing ?? home;
+      setCurrentPath(resolved.path);
+      onWorkspaceCwdChange(resolved.path);
     });
-  }, [connected, loadDir]);
+    // PWD changes made inside this workspace should update the marker without
+    // restarting navigation. Reinitialize only when the connected host changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, profileId, loadDir, onWorkspaceCwdChange]);
 
   /** symlink：指向目錄就跳過去，指向檔案就開目標。 */
   const followSymlink = (
@@ -620,7 +634,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
     action.catch(report).finally(() => setBusy(false));
   };
 
-  const currentDir = currentPath ?? pwd ?? '~';
+  const currentDir = currentPath ?? workspaceCwd ?? '~';
 
   const closeFileMenu = () => {
     mobileMenuRef.current?.removeAttribute('open');
@@ -696,7 +710,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
                 {item.executable === true && item.type === 'f' ? (
                   <span className="tree-badge tree-badge-exec">x</span>
                 ) : null}
-                {item.path === pwd ? <span className="pwd-badge">pwd</span> : null}
+                {item.path === workspaceCwd ? <span className="pwd-badge">pwd</span> : null}
               </>
             )}
           </TreeRow>
@@ -794,7 +808,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
         copyToClipboardText(relativePath(item), '已複製相對路徑');
         return;
       case 'setPwd':
-        setPwd(item.path);
+        onWorkspaceCwdChange(item.path);
         showFlash('已設定 pwd');
         return;
       case 'download':
@@ -881,13 +895,13 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             >
               / Root
             </button>
-            {pwd !== null ? (
+            {workspaceCwd !== null ? (
               <button
                 type="button"
-                aria-current={pwd === currentPath ? 'location' : undefined}
+                aria-current={workspaceCwd === currentPath ? 'location' : undefined}
                 onClick={() => {
                   closeFileMenu();
-                  void openPath(pwd);
+                  void openPath(workspaceCwd);
                 }}
               >
                 ↦ pwd
@@ -948,8 +962,8 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
           >
             / Root
           </button>
-          {pwd !== null && pwd !== currentPath ? (
-            <button onClick={() => void openPath(pwd)} title="切換到 pwd">
+          {workspaceCwd !== null && workspaceCwd !== currentPath ? (
+            <button onClick={() => void openPath(workspaceCwd)} title="切換到 pwd">
               ↦ pwd
             </button>
           ) : null}
@@ -1145,7 +1159,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
               {flash ? <span className="flash">{flash}</span> : null}
               <div className="files-actions">
                 {selected.type === 'd' ? (
-                  <button onClick={() => setPwd(selected.path)}>Set pwd</button>
+                  <button onClick={() => onWorkspaceCwdChange(selected.path)}>Set pwd</button>
                 ) : null}
                 {draft ? (
                   <button className={dirty ? 'primary' : ''} disabled={busy} onClick={saveDraft}>
@@ -1218,7 +1232,7 @@ export function FilesWorkspace({ connected }: FilesWorkspaceProps) {
             ) : selected.type === 'd' ? (
               <div className="placeholder">
                 <p>{children[selected.path]?.length ?? '…'} 個項目</p>
-                <p className="hint">pwd: {pwd ?? '—'}</p>
+                <p className="hint">pwd: {workspaceCwd ?? '—'}</p>
               </div>
             ) : activeTab?.loading ? (
               <div className="placeholder">

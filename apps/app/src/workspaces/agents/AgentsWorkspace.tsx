@@ -6,7 +6,6 @@ import type {
   AgentSessionSummary,
   ChatItem,
   ConnectionState,
-  DeleteScopeResult,
   RemoteFileItem,
   SlashCommand,
 } from '@cozypad/contracts';
@@ -101,45 +100,21 @@ const STATUS_LABEL: Record<AgentSessionStatus, string> = {
 };
 
 /** SPEC 1136-1144: one bucket per 3.4.13 status family, none folded away. */
-type SessionBucket = 'running' | 'needsInput' | 'idle' | 'exited' | 'error';
+type SessionBucket =
+  | 'running'
+  | 'needsInput'
+  | 'ready'
+  | 'offline'
+  | 'exited'
+  | 'error';
 
 const BUCKET_LABEL: Record<SessionBucket, string> = {
   running: 'running',
   needsInput: 'needs input',
-  idle: 'idle',
+  ready: 'ready',
+  offline: 'offline',
   exited: 'exited',
   error: 'error',
-};
-
-/** SPEC 1496-1508: every delete scope names itself and its actual impact. */
-const DELETE_SCOPE_COPY: Record<
-  DeleteScopeResult['scope'],
-  { label: string; impact: string }
-> = {
-  localIndex: {
-    label: '本機索引與 Timeline',
-    impact: '從 CozyPad 移除，無法復原',
-  },
-  process: { label: 'Agent Process（tmux session）', impact: '立即終止' },
-  remoteEvents: {
-    label: '遠端事件記錄',
-    impact: '刪除主機上的事件與紀錄，無法復原',
-  },
-  remoteAttachments: {
-    label: '遠端附件暫存',
-    impact: '刪除主機上的附件暫存，無法復原',
-  },
-  nativeConversation: {
-    label: 'Agent 原生對話',
-    impact: 'Agent 不支援刪除；會保留在 Agent 自己的儲存中',
-  },
-};
-
-const DELETE_OUTCOME_LABEL: Record<DeleteScopeResult['outcome'], string> = {
-  done: '完成',
-  skipped: '未執行',
-  unsupported: '不支援',
-  failed: '失敗',
 };
 
 /**
@@ -208,8 +183,9 @@ function sessionBucket(status: AgentSessionStatus): SessionBucket {
   // disconnected one inside "idle" looked healthy — both unfindable.
   if (status === 'waiting_approval') return 'needsInput';
   if (status === 'exited') return 'exited';
-  if (status === 'error' || status === 'disconnected') return 'error';
-  return 'idle';
+  if (status === 'disconnected') return 'offline';
+  if (status === 'error') return 'error';
+  return 'ready';
 }
 
 const SLASH_COMMAND_DESCRIPTIONS: Record<string, string> = {
@@ -320,7 +296,8 @@ function SessionListItem({
         {session.host} · {session.project}
       </span>
       <span className="session-footer">
-        <span className={`chip chip-${status}`}>
+        <span className={`session-status session-status-${status}`}>
+          <span className="session-status-dot" aria-hidden="true" />
           {resuming ? 'resuming…' : STATUS_LABEL[status]}
         </span>
         <span className="session-time">{formatTime(session.updatedAt)}</span>
@@ -391,6 +368,7 @@ interface AgentsWorkspaceProps {
   connectionState?: ConnectionState;
   reconnect?: { attempt: number; secondsLeft: number } | null;
   profileId: string | null;
+  workspaceCwd?: string | null;
 }
 
 export function AgentsWorkspace({
@@ -398,6 +376,7 @@ export function AgentsWorkspace({
   connectionState,
   reconnect,
   profileId,
+  workspaceCwd = null,
 }: AgentsWorkspaceProps) {
   const bridge = useMemo(() => getBridge(), []);
   const [agent, setAgent] = useState<AgentKind>('claude');
@@ -415,52 +394,13 @@ export function AgentsWorkspace({
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
   const attachmentSendInFlight = useRef(new Set<string>());
   const retryInFlightRef = useRef(new Set<string>());
-
-  const prevConnectedRef = useRef(connected);
-  useEffect(() => {
-    if (prevConnectedRef.current && !connected) {
-      setTimelines((current) => {
-        let changed = false;
-        const next = { ...current };
-        for (const [sId, items] of Object.entries(next)) {
-          let itemChanged = false;
-          const updatedItems = items.map((item) => {
-            if (item.kind === 'message' && item.streaming) {
-              itemChanged = true;
-              return { ...item, streaming: false, interrupted: true };
-            }
-            if (item.kind === 'tool_call' && item.status === 'running') {
-              itemChanged = true;
-              return {
-                ...item,
-                status: 'error' as const,
-                output:
-                  (item.output ? item.output + '\n' : '') +
-                  '[連線中斷 — Agent 執行已中斷]',
-              };
-            }
-            return item;
-          });
-          if (itemChanged) {
-            changed = true;
-            next[sId] = [
-              ...updatedItems,
-              {
-                kind: 'notice',
-                id: `notice-disrupt-${Date.now()}`,
-                // Required by NoticeItemSchema, and it was missing: this notice
-                // would have failed to parse on its way to or from the store.
-                timestamp: new Date().toISOString(),
-                text: '⚡ 連線中斷 — Agent 執行已中斷',
-              },
-            ];
-          }
-        }
-        return changed ? next : current;
-      });
-    }
-    prevConnectedRef.current = connected;
-  }, [connected]);
+  // Async IPC responses and pushed events can arrive one turn after a host has
+  // disconnected. Read this ref at delivery time so stale data never repaints
+  // an offline panel.
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
+  const profileIdRef = useRef(profileId);
+  profileIdRef.current = profileId;
   /** SPEC 318-331: prompts whose delivery outcome is overdue, per session. */
   const [sendUnconfirmed, setSendUnconfirmed] = useState<
     Record<string, { text: string }>
@@ -512,20 +452,13 @@ export function AgentsWorkspace({
   const [createOpen, setCreateOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState('');
   const [launchMode, setLaunchMode] = useState('default');
-  const [createCwd, setCreateCwd] = useState('$HOME');
-  const [directoryJump, setDirectoryJump] = useState('$HOME');
+  const [createCwd, setCreateCwd] = useState('~');
+  const [directoryJump, setDirectoryJump] = useState('~');
   const [directoryItems, setDirectoryItems] = useState<RemoteFileItem[]>([]);
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [directoryTruncated, setDirectoryTruncated] = useState(false);
   const [renameSession, setRenameSession] = useState<AgentSessionSummary | null>(
-    null,
-  );
-  const [deleteOutcome, setDeleteOutcome] = useState<{
-    title: string;
-    scopes: DeleteScopeResult[];
-  } | null>(null);
-  const [deleteSession, setDeleteSession] = useState<AgentSessionSummary | null>(
     null,
   );
   const [sessionMenu, setSessionMenu] = useState<{
@@ -535,7 +468,40 @@ export function AgentsWorkspace({
   } | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [bucketFilter, setBucketFilter] = useState<SessionBucket | 'all'>('all');
+  const [workspaceScope, setWorkspaceScope] = useState<'current' | 'all'>('all');
+  const [archiveFilter, setArchiveFilter] = useState<
+    'active' | 'archived' | 'all'
+  >('active');
   const [resuming, setResuming] = useState<Record<string, boolean>>({});
+  const agentMenuRef = useRef<HTMLDetailsElement>(null);
+  const closeAgentMenu = useCallback(() => {
+    if (agentMenuRef.current !== null) agentMenuRef.current.open = false;
+  }, []);
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      const menu = agentMenuRef.current;
+      if (
+        menu?.open === true &&
+        event.target instanceof Node &&
+        !menu.contains(event.target)
+      ) {
+        menu.open = false;
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      const menu = agentMenuRef.current;
+      if (event.key !== 'Escape' || menu?.open !== true) return;
+      menu.open = false;
+      menu.querySelector<HTMLElement>('summary')?.focus();
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, []);
 
   /* ---- Sidebar drag-to-resize (VS Code style) ---- */
   const SIDEBAR_MIN = 180;
@@ -640,14 +606,66 @@ export function AgentsWorkspace({
     setSendUnconfirmed(drop);
     attachmentSendInFlight.current.delete(sessionId);
     setRenameSession((current) => (current?.id === sessionId ? null : current));
-    setDeleteSession((current) => (current?.id === sessionId ? null : current));
     setSessionMenu((current) =>
       current?.session.id === sessionId ? null : current,
     );
   }, []);
 
+  /**
+   * A disconnected host has no readable Agent state. Drop every host-derived
+   * value instead of keeping a desktop-side preview cache alive in the panel.
+   */
+  const clearHostData = useCallback(() => {
+    for (const pending of Object.values(sendTimersRef.current)) {
+      window.clearTimeout(pending.timer);
+    }
+    sendTimersRef.current = {};
+    attachmentSendInFlight.current.clear();
+    retryInFlightRef.current.clear();
+    selectedSessionIdRef.current = null;
+    loadedProfileId.current = null;
+
+    setSessions([]);
+    setTimelines({});
+    setInstallations({});
+    setSessionView(createAgentSessionViewState());
+    setMobilePane('sessions');
+    setDrafts({});
+    setAttachments((current) => {
+      for (const items of Object.values(current)) {
+        for (const attachment of items) {
+          if (attachment.previewUrl !== undefined) {
+            URL.revokeObjectURL(attachment.previewUrl);
+          }
+        }
+      }
+      return {};
+    });
+    setUploading({});
+    setSendUnconfirmed({});
+    setInterrupting({});
+    setUnreadIds({});
+    setResuming({});
+    setRenameSession(null);
+    setSessionMenu(null);
+    setCreateOpen(false);
+    setCreateTitle('');
+    setLaunchMode('default');
+    setCreateCwd('~');
+    setDirectoryJump('~');
+    setDirectoryItems([]);
+    setDirectoryLoading(false);
+    setDirectoryError(null);
+    setDirectoryTruncated(false);
+    setBusy(false);
+    setLoading(false);
+    setError(null);
+    closeAgentMenu();
+  }, [closeAgentMenu, setError]);
+
   useEffect(() => {
     const unsubscribeSession = bridge.onAgentSessionChanged(({ session }) => {
+      if (!connectedRef.current) return;
       if (forgotten.current.has(session.id)) return;
       setSessions((current) => {
         const exists = current.some((candidate) => candidate.id === session.id);
@@ -665,6 +683,7 @@ export function AgentsWorkspace({
     });
     const unsubscribeTimeline = bridge.onAgentTimelineChanged(
       ({ sessionId, items }) => {
+        if (!connectedRef.current) return;
         // SPEC 1514-1515: late events must not resurrect a deleted session.
         if (forgotten.current.has(sessionId)) return;
         setTimelines((current) => ({ ...current, [sessionId]: items }));
@@ -696,9 +715,13 @@ export function AgentsWorkspace({
       },
     );
     const unsubscribeDeleted = bridge.onAgentSessionDeleted(
-      ({ sessionId, agentKind }) => forgetSession(sessionId, agentKind),
+      ({ sessionId, agentKind }) => {
+        if (!connectedRef.current) return;
+        forgetSession(sessionId, agentKind);
+      },
     );
     const unsubscribeError = bridge.onAgentCommunicationError((event) => {
+      if (!connectedRef.current) return;
       // A deletion that succeeded locally must not re-surface as red text.
       if (event.sessionId !== undefined && forgotten.current.has(event.sessionId)) {
         return;
@@ -718,8 +741,8 @@ export function AgentsWorkspace({
   }, [sessions]);
 
   useEffect(() => {
-    if (profileId === null) {
-      setLoading(false);
+    if (!connected || profileId === null) {
+      clearHostData();
       return;
     }
     let cancelled = false;
@@ -729,35 +752,13 @@ export function AgentsWorkspace({
       setTimelines({});
       setSessionView(createAgentSessionViewState());
     }
-    if (!connected) {
-      // SPEC 256-262/1512: saved sessions are previewable and manageable
-      // without a process — and without a connection. The store lives on
-      // this side; only agent detection needs the host.
-      setLoading(true);
-      void bridge
-        .listAgentSessions({ profileId })
-        .then((bundles) => {
-          if (cancelled) return;
-          setSessions(bundles.map((bundle) => bundle.session));
-          setTimelines(
-            Object.fromEntries(
-              bundles.map((bundle) => [bundle.session.id, bundle.items]),
-            ),
-          );
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
     setLoading(true);
     setError(null);
-    void Promise.all([
-      bridge.listAgentSessions({ profileId }),
-      ...AGENTS.map(async ({ kind }) => {
+    // Detection may import native conversations. Finish all discovery first,
+    // then list, otherwise a fast list races ahead and the new rows only show
+    // up on the next polling interval.
+    void Promise.all(
+      AGENTS.map(async ({ kind }) => {
         try {
           return await bridge.detectAgent({ profileId, agentKind: kind });
         } catch (detectionError) {
@@ -774,15 +775,11 @@ export function AgentsWorkspace({
           } satisfies AgentInstallation;
         }
       }),
-    ])
-      .then(([bundles, ...detected]) => {
-        if (cancelled) return;
-        setSessions(bundles.map((bundle) => bundle.session));
-        setTimelines(
-          Object.fromEntries(
-            bundles.map((bundle) => [bundle.session.id, bundle.items]),
-          ),
-        );
+    )
+      .then(async (detected) => {
+        if (cancelled || !connectedRef.current || profileIdRef.current !== profileId) {
+          return;
+        }
         setInstallations(
           Object.fromEntries(
             detected.map((installation) => [
@@ -791,22 +788,190 @@ export function AgentsWorkspace({
             ]),
           ),
         );
+        const bundles = await bridge.listAgentSessions({
+          profileId,
+          archive: 'all',
+        });
+        if (cancelled || !connectedRef.current || profileIdRef.current !== profileId) {
+          return;
+        }
+        setSessions(bundles.map((bundle) => bundle.session));
+        setTimelines(
+          Object.fromEntries(
+            bundles.map((bundle) => [bundle.session.id, bundle.items]),
+          ),
+        );
       })
       .catch((loadError: unknown) => {
-        if (!cancelled) setError(errorText(loadError));
+        if (!cancelled && connectedRef.current && profileIdRef.current === profileId) {
+          setError(errorText(loadError));
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && connectedRef.current && profileIdRef.current === profileId) {
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [bridge, connected, profileId]);
+  }, [bridge, clearHostData, connected, profileId, setError]);
+
+  const refreshAgentSessions = useCallback(
+    async (nextAgent: AgentKind): Promise<void> => {
+      const requestedProfileId = profileId;
+      if (!connectedRef.current || requestedProfileId === null) return;
+      setError(null);
+      try {
+        // Refresh the visible registry immediately on selection. Detection can
+        // import additional native conversations, so list once more after it
+        // completes rather than making the first paint wait on a CLI probe.
+        const firstBundles = await bridge.listAgentSessions({
+          profileId: requestedProfileId,
+          archive: 'all',
+        });
+        if (
+          !connectedRef.current ||
+          profileIdRef.current !== requestedProfileId
+        ) {
+          return;
+        }
+        setSessions(firstBundles.map((bundle) => bundle.session));
+        setTimelines(
+          Object.fromEntries(
+            firstBundles.map((bundle) => [bundle.session.id, bundle.items]),
+          ),
+        );
+
+        let detected: AgentInstallation;
+        try {
+          detected = await bridge.detectAgent({
+            profileId: requestedProfileId,
+            agentKind: nextAgent,
+          });
+        } catch (detectionError) {
+          const detail = errorText(detectionError);
+          detected = {
+            agentKind: nextAgent,
+            installed: false,
+            supportsStructuredOutput: false,
+            supportsResume: false,
+            supportsInteractiveApproval: false,
+            launchModes: [],
+            detectionError: detail,
+            detail,
+          };
+        }
+        if (
+          !connectedRef.current ||
+          profileIdRef.current !== requestedProfileId
+        ) {
+          return;
+        }
+        setInstallations((current) => ({
+          ...current,
+          [nextAgent]: detected,
+        }));
+        const bundles = await bridge.listAgentSessions({
+          profileId: requestedProfileId,
+          archive: 'all',
+        });
+        if (
+          !connectedRef.current ||
+          profileIdRef.current !== requestedProfileId
+        ) {
+          return;
+        }
+        setSessions(bundles.map((bundle) => bundle.session));
+        setTimelines(
+          Object.fromEntries(
+            bundles.map((bundle) => [bundle.session.id, bundle.items]),
+          ),
+        );
+      } catch (refreshError) {
+        if (
+          connectedRef.current &&
+          profileIdRef.current === requestedProfileId
+        ) {
+          setError(errorText(refreshError), null);
+        }
+      }
+    },
+    [bridge, profileId, setError],
+  );
+
+  useEffect(() => {
+    if (!connected || profileId === null) return;
+    let stopped = false;
+    let inFlight = false;
+    const refreshRegistry = async (): Promise<void> => {
+      if (
+        stopped ||
+        inFlight ||
+        !connectedRef.current ||
+        profileIdRef.current !== profileId ||
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const bundles = await bridge.listAgentSessions({
+          profileId,
+          archive: 'all',
+        });
+        if (
+          stopped ||
+          !connectedRef.current ||
+          profileIdRef.current !== profileId
+        ) {
+          return;
+        }
+        setSessions(bundles.map((bundle) => bundle.session));
+        setTimelines((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            bundles.map((bundle) => [bundle.session.id, bundle.items]),
+          ),
+        }));
+      } catch (refreshError) {
+        if (
+          !stopped &&
+          connectedRef.current &&
+          profileIdRef.current === profileId
+        ) {
+          setError(errorText(refreshError), null);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void refreshRegistry(), 4_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refreshRegistry();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [bridge, connected, profileId, setError]);
 
   const searchedSessions = useMemo(
     () =>
       sessions
         .filter((session) => session.agentKind === agent)
+        .filter((session) =>
+          workspaceScope === 'all' || workspaceCwd === null
+            ? true
+            : (session.projectId ?? session.cwd) === workspaceCwd,
+        )
+        .filter((session) => {
+          if (archiveFilter === 'all') return true;
+          const archived = session.archivedAt != null;
+          return archiveFilter === 'archived' ? archived : !archived;
+        })
         .filter((session) =>
           filters[agent] === ''
             ? true
@@ -815,15 +980,16 @@ export function AgentsWorkspace({
                 .includes(filters[agent].toLowerCase()),
         )
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
-    [sessions, agent, filters],
+    [sessions, agent, filters, workspaceScope, workspaceCwd, archiveFilter],
   );
-  // Counted before the bucket filter narrows the list, so every chip shows
+  // Counted before the bucket filter narrows the list, so every menu option shows
   // what it would reveal rather than what currently survives it.
   const bucketCounts = useMemo(() => {
     const counts: Record<SessionBucket, number> = {
       running: 0,
       needsInput: 0,
-      idle: 0,
+      ready: 0,
+      offline: 0,
       exited: 0,
       error: 0,
     };
@@ -848,6 +1014,16 @@ export function AgentsWorkspace({
   const selectedSessionEntered =
     selectedSession !== null &&
     sessionView.entered[agent] === selectedSession.id;
+  useEffect(() => {
+    if (
+      selectedSessionId !== null &&
+      !agentSessions.some((session) => session.id === selectedSessionId)
+    ) {
+      setSessionView((current) =>
+        forgetSessionView(current, agent, selectedSessionId),
+      );
+    }
+  }, [agent, agentSessions, selectedSessionId]);
   useEffect(() => {
     if (selectedSession === null) setMobilePane('sessions');
   }, [selectedSession]);
@@ -937,24 +1113,6 @@ export function AgentsWorkspace({
       }));
     }
   };
-
-
-  const badge = (kind: AgentKind) => {
-    const mine = sessions.filter((session) => session.agentKind === kind);
-    // Same source as the list rows; reading raw session.status here made the
-    // tab dot and the list disagree about the same session.
-    return {
-      waiting: mine.some((session) => session.status === 'waiting_approval'),
-      running: mine.some((session) => session.status === 'running'),
-      // Tracked by the renderer: it is this window's reading position, not a
-      // fact about the session, so the summary cannot know it.
-      unread: mine.reduce(
-        (sum, session) => sum + (unreadIds[session.id] === undefined ? 0 : 1),
-        0,
-      ),
-    };
-  };
-
   const loadCreateDirectory = async (directory: string) => {
     setDirectoryLoading(true);
     setDirectoryError(null);
@@ -976,7 +1134,7 @@ export function AgentsWorkspace({
   };
 
   const openCreate = () => {
-    const initialDirectory = selectedSession?.cwd ?? '~';
+    const initialDirectory = workspaceCwd ?? '~';
     setCreateCwd(initialDirectory);
     setDirectoryJump(initialDirectory);
     setDirectoryItems([]);
@@ -1050,31 +1208,37 @@ export function AgentsWorkspace({
     }
   };
 
-  const removeSession = async () => {
-    if (deleteSession === null) return;
-    const sessionId = deleteSession.id;
-    const agentKind = deleteSession.agentKind;
-    const title = deleteSession.title;
+  const setArchived = async (
+    session: AgentSessionSummary,
+    archived: boolean,
+  ): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
-      const result = await bridge.deleteAgentSession({ sessionId });
-      // Drop it from the UI here rather than waiting for the change event to
-      // come back. Until the surface unmounts it keeps talking about a session
-      // the host has already forgotten, which surfaced as "unknown agent
-      // session" right after a delete that had in fact worked.
-      forgetSession(sessionId, agentKind);
-      // SPEC 1509-1511: a partial failure must not present as complete —
-      // keep the per-scope report on screen when anything was left behind.
-      if (
-        result.scopes.some(
-          (scope) => scope.outcome === 'failed' || scope.outcome === 'skipped',
-        )
-      ) {
-        setDeleteOutcome({ title, scopes: result.scopes });
+      const bundle = archived
+        ? await bridge.archiveAgentSession({ sessionId: session.id })
+        : await bridge.restoreAgentSession({ sessionId: session.id });
+      setSessions((current) =>
+        current.map((candidate) =>
+          candidate.id === bundle.session.id ? bundle.session : candidate,
+        ),
+      );
+      setTimelines((current) => ({
+        ...current,
+        [bundle.session.id]: bundle.items,
+      }));
+      if (archived) {
+        setSessionView((current) =>
+          forgetSessionView(current, session.agentKind, session.id),
+        );
+        setMobilePane('sessions');
+      } else if (archiveFilter === 'archived') {
+        // Restoring moves this conversation out of the archived-only view.
+        // Follow it back to Active instead of leaving an invisible selection.
+        setArchiveFilter('active');
       }
-    } catch (deleteError) {
-      setError(errorText(deleteError));
+    } catch (archiveError) {
+      setError(errorText(archiveError), session.id);
     } finally {
       setBusy(false);
     }
@@ -1300,7 +1464,7 @@ export function AgentsWorkspace({
     if (profileId === null) return;
     setError(null);
     try {
-      const bundles = await bridge.listAgentSessions({ profileId });
+      const bundles = await bridge.listAgentSessions({ profileId, archive: 'all' });
       const bundle = bundles.find(
         (candidate) => candidate.session.id === sessionId,
       );
@@ -1525,49 +1689,34 @@ export function AgentsWorkspace({
     }
   };
 
+  const unreadCount = sessions.reduce(
+    (count, session) =>
+      session.agentKind === agent && unreadIds[session.id] === true
+        ? count + 1
+        : count,
+    0,
+  );
+
   return (
     <div
       className={`agents-workspace mobile-pane-${mobilePane}${
         bridge.kind === 'capacitor' ? ' native-mobile' : ''
       }`}
     >
-      <div className="agent-tabs">
-        {AGENTS.map(({ kind, label }) => {
-          const info = badge(kind);
-          return (
-            <button
-              key={kind}
-              className={`agent-tab${agent === kind ? ' agent-tab-active' : ''}`}
-              onClick={() => {
-                setAgent(kind);
-                setMobilePane('sessions');
-              }}
-            >
-              {label}
-              {info.waiting ? (
-                <span className="dot dot-approval" title="needs input" />
-              ) : null}
-              {info.running ? (
-                <span className="dot dot-running" title="running" />
-              ) : null}
-              {info.unread > 0 ? (
-                <span className="unread">{info.unread}</span>
-              ) : null}
-            </button>
-          );
-        })}
-        <button
-          className="agent-tab agent-tab-disabled"
-          title="Custom adapter SDK 尚未開放"
-        >
-          ＋
-        </button>
-      </div>
-
-      <details className="agent-landscape-menu">
+      <details ref={agentMenuRef} className="agent-landscape-menu">
         <summary aria-label="Agent session menu">
-          <span>{AGENTS.find((entry) => entry.kind === agent)?.label}</span>
-          <span aria-hidden="true">&#9776;</span>
+          <span className="agent-menu-hamburger" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="agent-menu-title">Sessions</span>
+          <span className="agent-menu-context">
+            {AGENTS.find((entry) => entry.kind === agent)?.label} /{' '}
+            {workspaceScope === 'current' ? 'current workspace' : 'all workspaces'} /{' '}
+            {archiveFilter}
+            {unreadCount === 0 ? '' : ` / ${unreadCount} unread`}
+          </span>
         </summary>
         <div className="agent-landscape-menu-panel">
           <label>
@@ -1576,8 +1725,11 @@ export function AgentsWorkspace({
               aria-label="Select agent"
               value={agent}
               onChange={(event) => {
-                setAgent(event.target.value as AgentKind);
+                const nextAgent = event.target.value as AgentKind;
+                setAgent(nextAgent);
                 setMobilePane('sessions');
+                closeAgentMenu();
+                void refreshAgentSessions(nextAgent);
               }}
             >
               {AGENTS.map(({ kind, label }) => (
@@ -1588,25 +1740,45 @@ export function AgentsWorkspace({
             </select>
           </label>
           <label>
-            <span>Find session</span>
-            <input
-              type="search"
-              aria-label="Find session"
-              placeholder="Filter sessions..."
-              value={filters[agent]}
-              onChange={(event) =>
-                setFilters((current) => ({ ...current, [agent]: event.target.value }))
-              }
-            />
+            <span>Workspace</span>
+            <select
+              aria-label="Session workspace"
+              value={workspaceScope}
+              onChange={(event) => {
+                setWorkspaceScope(event.target.value as 'current' | 'all');
+                closeAgentMenu();
+              }}
+            >
+              <option value="current">Current workspace</option>
+              <option value="all">All workspaces</option>
+            </select>
           </label>
           <label>
-            <span>Status</span>
+            <span>Archive</span>
+            <select
+              aria-label="Session archive state"
+              value={archiveFilter}
+              onChange={(event) => {
+                setArchiveFilter(
+                  event.target.value as 'active' | 'archived' | 'all',
+                );
+                closeAgentMenu();
+              }}
+            >
+              <option value="active">Active</option>
+              <option value="archived">Archived</option>
+              <option value="all">Active and archived</option>
+            </select>
+          </label>
+          <label>
+            <span>Runtime status</span>
             <select
               aria-label="Session status"
               value={bucketFilter}
-              onChange={(event) =>
-                setBucketFilter(event.target.value as SessionBucket | 'all')
-              }
+              onChange={(event) => {
+                setBucketFilter(event.target.value as SessionBucket | 'all');
+                closeAgentMenu();
+              }}
             >
               <option value="all">all</option>
               {(Object.keys(BUCKET_LABEL) as SessionBucket[]).map((bucket) => (
@@ -1616,7 +1788,26 @@ export function AgentsWorkspace({
               ))}
             </select>
           </label>
-          <button type="button" disabled={!canCreate || busy} onClick={openCreate}>
+          <label className="agent-menu-search">
+            <span>Find session</span>
+            <input
+              type="search"
+              aria-label="Find session"
+              placeholder="Title, host, or workspace"
+              value={filters[agent]}
+              onChange={(event) =>
+                setFilters((current) => ({ ...current, [agent]: event.target.value }))
+              }
+            />
+          </label>
+          <button
+            type="button"
+            disabled={!canCreate || busy}
+            onClick={() => {
+              closeAgentMenu();
+              openCreate();
+            }}
+          >
             New session
           </button>
         </div>
@@ -1629,7 +1820,16 @@ export function AgentsWorkspace({
         </div>
       ) : null}
 
-      {connected && (loading || installation === undefined) ? (
+      {!connected ? (
+        <div className="agent-disconnected-empty" role="status">
+          <strong>{reconnect ? '連線中斷 — 正在重連中' : '尚未連線'}</strong>
+          <p>
+            {reconnect
+              ? `${reconnect.secondsLeft}s 後進行第 ${reconnect.attempt} 次重連嘗試；重新連線前不會讀取或顯示 Agent sessions。`
+              : '連線到主機後才會讀取 Agent sessions。斷線期間不保留或顯示主機內容。'}
+          </p>
+        </div>
+      ) : loading || installation === undefined ? (
         <div className="agent-setup">
           <h2>正在偵測 {AGENTS.find((entry) => entry.kind === agent)?.label}</h2>
           <p>
@@ -1641,33 +1841,7 @@ export function AgentsWorkspace({
       ) : (
         <div className={`agent-panes mobile-pane-${mobilePane}`} ref={panesRef}>
           <aside className="session-sidebar" style={{ width: clamp(sidebarWidth) }}>
-            {/*
-              SPEC 1057/256-262: neither a missing connection nor an
-              unavailable agent may hide the workspace — saved sessions
-              preview without a process. The banner names the reason;
-              entering and creating stay gated elsewhere.
-            */}
-            {!connected ? (
-              <div
-                className={`agent-availability-banner${
-                  reconnect
-                    ? ' agent-availability-reconnecting'
-                    : ''
-                }`}
-                role="status"
-              >
-                <strong>
-                  {reconnect
-                    ? '連線中斷 — 正在重連中'
-                    : '尚未連線'}
-                </strong>
-                <p>
-                  {reconnect
-                    ? `${reconnect.secondsLeft}s 後進行第 ${reconnect.attempt} 次重連嘗試`
-                    : '已保存的 sessions 仍可瀏覽、預覽、改名與刪除；連線後才能進入或新建。Agent 對話會在遠端指定路徑建立 tmux session。'}
-                </p>
-              </div>
-            ) : agentDetectionFailed ? (
+            {agentDetectionFailed ? (
               <div className="agent-availability-banner" role="status">
                 <strong>
                   {AGENTS.find((entry) => entry.kind === agent)?.label} 偵測失敗
@@ -1740,45 +1914,6 @@ export function AgentsWorkspace({
                 </p>
               </div>
             ) : null}
-            <div className="session-filter-wrapper">
-              <span className="session-filter-icon" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="11" cy="11" r="8" />
-                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                </svg>
-              </span>
-              <input
-                className="session-filter"
-                placeholder="Filter sessions..."
-                value={filters[agent]}
-                onChange={(event) =>
-                  setFilters((current) => ({
-                    ...current,
-                    [agent]: event.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div className="session-bucket-filter" role="radiogroup" aria-label="Session status filter">
-              {(['all', 'running', 'needsInput', 'idle', 'exited', 'error'] as const).map((bucket) => (
-                <button
-                  key={bucket}
-                  role="radio"
-                  aria-checked={bucketFilter === bucket}
-                  className={`session-bucket${
-                    bucketFilter === bucket ? ' session-bucket-active' : ''
-                  }`}
-                  onClick={() => setBucketFilter(bucket)}
-                >
-                  {bucket === 'all' ? '全部' : BUCKET_LABEL[bucket]}
-                  {bucket === 'all' ? null : (
-                    <span className="session-bucket-count">
-                      {bucketCounts[bucket]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
             <div className="session-list">
               {agentSessions.map((session) => {
                 const status = session.status;
@@ -1812,7 +1947,11 @@ export function AgentsWorkspace({
                     </svg>
                   </div>
                   <p className="zero-session-text">
-                    No active sessions. Create a new session to get started.
+                    {archiveFilter === 'archived'
+                      ? 'No archived sessions in this view.'
+                      : archiveFilter === 'all'
+                        ? 'No sessions in this view.'
+                        : 'No active sessions. Create a new session to get started.'}
                   </p>
                   <button
                     className="zero-session-cta"
@@ -1895,6 +2034,16 @@ export function AgentsWorkspace({
                           ? ' · 用量未知'
                           : ` · 用量 in ${lastUsage.inputTokens.toLocaleString()} / out ${lastUsage.outputTokens.toLocaleString()} tokens`}
                     </span>
+                  </div>
+                  <div
+                    className={`session-status session-status-${selectedSession.status}`}
+                    aria-label={`Session status: ${STATUS_LABEL[selectedSession.status]}`}
+                  >
+                    <span className="session-status-dot" aria-hidden="true" />
+                    <span>{STATUS_LABEL[selectedSession.status]}</span>
+                    {selectedSession.archivedAt == null ? null : (
+                      <span className="session-archive-label">archived</span>
+                    )}
                   </div>
                   {selectedSessionEntered ? (
                     <div className="chat-session-actions">
@@ -2003,17 +2152,34 @@ export function AgentsWorkspace({
                     )}
                     <div className="session-resume-bar">
                       <span>
-                        已選取但尚未進入。按 Resume 後才會連回這個 session，並顯示訊息與附件輸入區。
+                        {selectedSession.archivedAt == null
+                          ? '已選取但尚未進入。按 Resume 後才會連回這個 session，並顯示訊息與附件輸入區。'
+                          : '這段完整對話已封存。Restore 只會把它放回 Active，不會自動啟動 Agent。'}
                       </span>
-                      <span className={`chip chip-${selectedSession.status}`}>
+                      <span className={`session-status session-status-${selectedSession.status}`}>
+                        <span className="session-status-dot" aria-hidden="true" />
                         {STATUS_LABEL[selectedSession.status]}
                       </span>
                       <button
                         className="composer-send"
-                        disabled={!connected || resuming[selectedSession.id] === true}
-                        onClick={() => void resumeSession(selectedSession)}
+                        disabled={
+                          !connected ||
+                          busy ||
+                          resuming[selectedSession.id] === true
+                        }
+                        onClick={() =>
+                          void (selectedSession.archivedAt == null
+                            ? resumeSession(selectedSession)
+                            : setArchived(selectedSession, false))
+                        }
                       >
-                        {resuming[selectedSession.id] === true ? 'Resuming…' : 'Resume'}
+                        {selectedSession.archivedAt != null
+                          ? busy
+                            ? 'Restoring…'
+                            : 'Restore'
+                          : resuming[selectedSession.id] === true
+                            ? 'Resuming…'
+                            : 'Resume'}
                       </button>
                     </div>
                   </>
@@ -2151,21 +2317,45 @@ export function AgentsWorkspace({
           title={sessionMenu.session.title}
           subtitle={sessionMenu.session.cwd}
           actions={[
-            { id: 'rename', label: 'Rename' },
             {
-              id: 'delete',
-              label: 'Delete',
-              danger: true,
+              id: 'rename',
+              label: 'Rename',
+              disabled: !connected || busy,
+              hint: connected ? undefined : 'Reconnect to the session host first',
+            },
+            {
+              id: sessionMenu.session.archivedAt == null ? 'archive' : 'restore',
+              label:
+                sessionMenu.session.archivedAt == null
+                  ? 'Archive conversation'
+                  : 'Restore conversation',
               separatorBefore: true,
-              disabled: busy,
+              disabled:
+                !connected ||
+                busy ||
+                sessionMenu.session.status === 'starting' ||
+                sessionMenu.session.status === 'running' ||
+                sessionMenu.session.status === 'waiting_approval',
+              hint:
+                !connected
+                  ? 'Reconnect to the session host first'
+                  : sessionMenu.session.status === 'starting' ||
+                sessionMenu.session.status === 'running' ||
+                sessionMenu.session.status === 'waiting_approval'
+                  ? 'Stop the active run first'
+                  : sessionMenu.session.archivedAt == null
+                    ? 'Keeps the full conversation and removes it from Active'
+                    : 'Returns it to Active without starting an agent',
             },
           ]}
           onSelect={(actionId) => {
             if (actionId === 'rename') {
               setRenameSession(sessionMenu.session);
               setRenameTitle(sessionMenu.session.title);
-            } else if (actionId === 'delete') {
-              setDeleteSession(sessionMenu.session);
+            } else if (actionId === 'archive') {
+              void setArchived(sessionMenu.session, true);
+            } else if (actionId === 'restore') {
+              void setArchived(sessionMenu.session, false);
             }
           }}
           onClose={() => setSessionMenu(null)}
@@ -2338,97 +2528,6 @@ export function AgentsWorkspace({
               >
                 Save
               </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {deleteSession !== null ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="modal modal-narrow" role="dialog" aria-modal="true">
-            <div className="modal-head">
-              <h2>Delete conversation?</h2>
-              <button className="modal-close" onClick={() => setDeleteSession(null)}>
-                ×
-              </button>
-            </div>
-            <p>
-              <strong>{deleteSession.title}</strong>
-              <span className="delete-session-meta">
-                {AGENTS.find((entry) => entry.kind === deleteSession.agentKind)
-                  ?.label ?? deleteSession.agentKind}
-                {' · '}
-                {deleteSession.host}
-                {' · '}
-                <span className="mono">{deleteSession.cwd}</span>
-              </span>
-            </p>
-            <ul className="delete-scope-list">
-              {(
-                [
-                  'localIndex',
-                  'process',
-                  'remoteEvents',
-                  'remoteAttachments',
-                  'nativeConversation',
-                ] as const
-              ).map((scope) => (
-                <li key={scope}>
-                  <strong>{DELETE_SCOPE_COPY[scope].label}</strong>
-                  <span>{DELETE_SCOPE_COPY[scope].impact}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="hint">
-              Files in <span className="mono">{deleteSession.cwd}</span> are not
-              deleted. This action cannot be undone.
-            </p>
-            <div className="modal-actions">
-              <button disabled={busy} onClick={() => setDeleteSession(null)}>
-                Cancel
-              </button>
-              <button
-                className="danger"
-                disabled={busy}
-                onClick={() => void removeSession()}
-              >
-                {busy ? 'Deleting…' : 'Delete session'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {deleteOutcome !== null ? (
-        <div className="modal-overlay" role="presentation">
-          <div className="modal modal-narrow" role="dialog" aria-modal="true">
-            <div className="modal-head">
-              <h2>刪除結果：{deleteOutcome.title}</h2>
-              <button className="modal-close" onClick={() => setDeleteOutcome(null)}>
-                ×
-              </button>
-            </div>
-            <p className="hint">
-              本機索引已移除，但部分範圍未完成；殘留項目如下。
-            </p>
-            <ul className="delete-scope-list">
-              {deleteOutcome.scopes.map((scope) => (
-                <li key={scope.scope} className={`delete-scope-${scope.outcome}`}>
-                  <strong>
-                    {DELETE_SCOPE_COPY[scope.scope].label} —{' '}
-                    {DELETE_OUTCOME_LABEL[scope.outcome]}
-                  </strong>
-                  <span>
-                    {scope.detail ?? ''}
-                    {scope.residualPath === undefined ? null : (
-                      <span className="mono"> · {scope.residualPath}</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <div className="modal-actions">
-              <button onClick={() => setDeleteOutcome(null)}>關閉</button>
             </div>
           </div>
         </div>

@@ -149,6 +149,8 @@ async function execute(request: HostRpcRequest): Promise<unknown> {
         Buffer.from(stringParam(params, 'data'), 'base64'),
       );
       return undefined;
+    case 'fsRealpath':
+      return host.fsRealpath(stringParam(params, 'inputPath'));
     case 'fsList':
       return host.fsList(stringParam(params, 'dirPath'));
     case 'fsReadText':

@@ -21,6 +21,20 @@ afterEach(async () => {
 });
 
 describe('NodeHostRuntime filesystem safety', () => {
+  it('returns one canonical workspace identity for relative segments', async () => {
+    const runtime = new NodeHostRuntime();
+    const directory = await temporaryDirectory();
+    const nested = path.join(directory, 'workspace');
+    await mkdir(nested);
+
+    await expect(
+      runtime.fsRealpath(path.join(nested, '..', 'workspace')),
+    ).resolves.toBe(await runtime.fsRealpath(nested));
+    await expect(runtime.fsList(path.join(nested, '.'))).resolves.toMatchObject({
+      path: await runtime.fsRealpath(nested),
+    });
+  });
+
   it('creates only a new direct child of an existing directory', async () => {
     const runtime = new NodeHostRuntime();
     const directory = await temporaryDirectory();

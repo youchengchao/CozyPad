@@ -7,9 +7,9 @@ import type { ConnectionProfile } from '@cozypad/contracts';
 import { TmuxRuntime } from '@cozypad/tmux-runtime';
 import {
   AgentCommunicationService,
-  type AgentCommunicationPort,
 } from '../main/agentCommunicationService';
 import { AcpAgentRuntime } from '../main/acp/acpAgentRuntime';
+import { discoverStoredAgentSessions } from '../main/nativeConversationDiscovery';
 import type { AcpChild, AcpLaunchSpec } from '../main/acp/acpProcess';
 import type { ProfileStorePort } from '../main/profileStore';
 import { LocalTransport } from '../main/transport/localTransport';
@@ -46,6 +46,9 @@ type AgentMethod =
   | 'listAgentSessions'
   | 'createAgentSession'
   | 'reviveAgentSession'
+  | 'archiveAgentSession'
+  | 'restoreAgentSession'
+  | 'importAgentSessions'
   | 'renameAgentSession'
   | 'deleteAgentSession'
   | 'uploadAgentAttachments'
@@ -197,7 +200,7 @@ async function spawnHostAgent(
 }
 
 async function dispatch(
-  service: AgentCommunicationPort,
+  service: AgentCommunicationService,
   method: AgentMethod,
   params: any,
 ): Promise<unknown> {
@@ -210,6 +213,15 @@ async function dispatch(
       return service.create(params);
     case 'reviveAgentSession':
       return service.revive(params);
+    case 'archiveAgentSession':
+      return service.archive(params);
+    case 'restoreAgentSession':
+      return service.restore(params);
+    case 'importAgentSessions':
+      return service.importHostSessions(
+        params.profileId,
+        Array.isArray(params.sessions) ? params.sessions : [],
+      );
     case 'renameAgentSession':
       return service.rename(params);
     case 'deleteAgentSession':
@@ -270,7 +282,9 @@ async function startAgentHost(): Promise<void> {
       tmux,
       profileStore: profileStoreFor(config),
       storePath: path.join(os.homedir(), '.cozypad', 'agent-sessions.json'),
+      hostScopedStore: true,
       acp,
+      discoverStoredSessions: discoverStoredAgentSessions,
       getHostFingerprint: () => config.fingerprint,
       isLocalHost: () => false,
     });
@@ -321,9 +335,12 @@ async function startAgentHost(): Promise<void> {
       })();
     });
     input.on('close', () => {
-      acp.stopAll();
-      hostRuntime.stopExecs();
-      process.exitCode = 0;
+      void (async () => {
+        await service.shutdown(config.profileId);
+        acp.stopAll();
+        hostRuntime.stopExecs();
+        process.exitCode = 0;
+      })();
     });
     send({ type: 'ready' });
   } catch (error) {

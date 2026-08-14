@@ -51,6 +51,9 @@ describe('remote Node host runner', () => {
 
     try {
       await host.ping();
+      await expect(host.fsRealpath(path.join(directory, '.'))).resolves.toBe(
+        await host.fsRealpath(directory),
+      );
       await host.fsCreate(directory, 'note.txt', 'file');
       await host.fsWrite(
         path.join(directory, 'note.txt'),

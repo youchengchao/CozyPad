@@ -173,7 +173,7 @@ describe('TmuxRuntime', () => {
 function record(
   overrides: Partial<RemoteAgentSessionRecord> & { tmuxSessionId: string },
 ): RemoteAgentSessionRecord {
-  const { tmuxSessionId, ...rest } = overrides;
+  const { tmuxSessionId, archivedAt = null, ...rest } = overrides;
   return {
     id: `local-${tmuxSessionId}`,
     identity: null,
@@ -188,6 +188,7 @@ function record(
     cwd: '~/projects',
     title: 'session',
     status: 'running',
+    archivedAt,
     tmuxCreatedEpoch: 1000,
     createdAt: 't0',
     updatedAt: 't0',

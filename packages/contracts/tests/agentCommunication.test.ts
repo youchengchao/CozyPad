@@ -1,15 +1,59 @@
 import { describe, expect, it } from 'vitest';
 import {
   AgentSessionDeletedEventSchema,
+  AgentSessionListRequestSchema,
+  ArchiveAgentSessionRequestSchema,
   ChatItemSchema,
   CreateAgentSessionRequestSchema,
   MAX_AGENT_ATTACHMENT_BYTES,
   MAX_AGENT_ATTACHMENTS,
   SendAgentMessageRequestSchema,
   UploadAgentAttachmentsRequestSchema,
+  TerminalOpenRequestSchema,
 } from '../src';
 
 describe('agent communication attachment contracts', () => {
+  it('queries active, archived, or all sessions within an optional project', () => {
+    expect(
+      AgentSessionListRequestSchema.parse({
+        profileId: 'profile-1',
+        projectId: '/srv/project',
+        archive: 'archived',
+      }),
+    ).toEqual({
+      profileId: 'profile-1',
+      projectId: '/srv/project',
+      archive: 'archived',
+    });
+    expect(
+      AgentSessionListRequestSchema.parse({ profileId: 'legacy-profile' }),
+    ).toEqual({ profileId: 'legacy-profile' });
+  });
+
+  it('requires an explicit terminal cwd and supports stop-and-archive', () => {
+    expect(
+      TerminalOpenRequestSchema.parse({
+        profileId: 'profile-1',
+        cwd: '/srv/project',
+        cols: 100,
+        rows: 30,
+      }).cwd,
+    ).toBe('/srv/project');
+    expect(() =>
+      TerminalOpenRequestSchema.parse({
+        profileId: 'profile-1',
+        cols: 100,
+        rows: 30,
+      }),
+    ).toThrow();
+    expect(
+      ArchiveAgentSessionRequestSchema.parse({
+        sessionId: 'session-1',
+        stopActive: true,
+      }),
+    ).toMatchObject({ stopActive: true });
+  });
+
   it('persists attachment metadata with a user timeline message', () => {
     expect(
       ChatItemSchema.parse({

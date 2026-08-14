@@ -93,7 +93,12 @@ export class LocalAgentRuntime {
 exec ${options.argv.map((argument) => quoteShellArg(argument)).join(' ')}`;
 
     const terminalId = await this.host.openTerminal(
-      { profileId: 'local-machine', cols: this.size.cols, rows: this.size.rows },
+      {
+        profileId: 'local-machine',
+        cwd,
+        cols: this.size.cols,
+        rows: this.size.rows,
+      },
       command,
     );
     // `$N` mirrors tmux's identifier shape so ids stay distinguishable in logs.
@@ -116,7 +121,12 @@ exec ${options.argv.map((argument) => quoteShellArg(argument)).join(' ')}`;
     const command = `cd ${quoteShellArg(session.cwd)} || exit 1
 exec ${argv.map((argument) => quoteShellArg(argument)).join(' ')}`;
     session.terminalId = await this.host.openTerminal(
-      { profileId: 'local-machine', cols: this.size.cols, rows: this.size.rows },
+      {
+        profileId: 'local-machine',
+        cwd: session.cwd,
+        cols: this.size.cols,
+        rows: this.size.rows,
+      },
       command,
     );
     session.argv = argv;

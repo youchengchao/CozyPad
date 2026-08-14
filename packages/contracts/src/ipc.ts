@@ -51,6 +51,8 @@ export const IpcChannels = {
   agentSessionsList: 'cozypad:agent:sessions:list',
   agentSessionCreate: 'cozypad:agent:session:create',
   agentSessionRevive: 'cozypad:agent:session:revive',
+  agentSessionArchive: 'cozypad:agent:session:archive',
+  agentSessionRestore: 'cozypad:agent:session:restore',
   agentSessionRename: 'cozypad:agent:session:rename',
   agentSessionDelete: 'cozypad:agent:session:delete',
   agentAttachmentsUpload: 'cozypad:agent:attachments:upload',

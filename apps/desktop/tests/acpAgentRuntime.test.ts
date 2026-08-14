@@ -109,6 +109,59 @@ describe('ACP process routing', () => {
     expect(remoteSpawn).toHaveBeenCalledOnce();
     expect(remoteSpawn.mock.calls[0]?.[0].cwd).toBe('/d/projects/research');
   });
+
+  it('discovers every page of native sessions and always closes the probe', async () => {
+    const kill = vi.fn();
+    const listSessions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            sessionId: 'native-1',
+            cwd: '/workspace/one',
+            title: 'First native session',
+            updatedAt: '2026-08-14T10:00:00.000Z',
+          },
+        ],
+        nextCursor: 'page-2',
+      })
+      .mockResolvedValueOnce({
+        sessions: [{ sessionId: 'native-2', cwd: '/workspace/two' }],
+      });
+    const child: AcpChild = {
+      handle: {
+        initialize: async () => ({
+          protocolVersion: 1,
+          agentCapabilities: { sessionCapabilities: { list: {} } },
+          authMethods: [],
+        }),
+        listSessions,
+      } as never,
+      kill,
+      onExit: () => undefined,
+    };
+    const runtime = new AcpAgentRuntime(
+      {
+        onTimeline: () => undefined,
+        onPermission: () => new Promise<string | null>(() => undefined),
+        onError: () => undefined,
+      },
+      () => child,
+    );
+
+    await expect(runtime.discover('claude', '/workspace')).resolves.toEqual([
+      {
+        sessionId: 'native-1',
+        cwd: '/workspace/one',
+        title: 'First native session',
+        updatedAt: '2026-08-14T10:00:00.000Z',
+      },
+      { sessionId: 'native-2', cwd: '/workspace/two' },
+    ]);
+    expect(listSessions).toHaveBeenNthCalledWith(1, {});
+    expect(listSessions).toHaveBeenNthCalledWith(2, { cursor: 'page-2' });
+    expect(kill).toHaveBeenCalledOnce();
+  });
 });
 
 const permissionRequest = (title: string): unknown => ({

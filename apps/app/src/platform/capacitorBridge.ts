@@ -79,7 +79,11 @@ interface SshPlugin {
     timeoutMs?: number;
     streamId?: string;
   }): Promise<{ output: string }>;
-  openTerminal(options: { cols: number; rows: number }): Promise<{ terminalId: string }>;
+  openTerminal(options: {
+    cwd: string;
+    cols: number;
+    rows: number;
+  }): Promise<{ terminalId: string }>;
   writeTerminal(options: { terminalId: string; dataBase64: string }): Promise<void>;
   resizeTerminal(options: { terminalId: string; cols: number; rows: number }): Promise<void>;
   closeTerminal(options: { terminalId: string }): Promise<void>;
@@ -603,7 +607,11 @@ export function createCapacitorBridge(
     },
 
     async openTerminal(request) {
-      return ssh.openTerminal({ cols: request.cols, rows: request.rows });
+      return ssh.openTerminal({
+        cwd: request.cwd,
+        cols: request.cols,
+        rows: request.rows,
+      });
     },
 
     writeTerminal(input) {
@@ -743,6 +751,14 @@ export function createCapacitorBridge(
     reviveAgentSession: async (request) =>
       AgentSessionBundleSchema.parse(
         await callAgent('reviveAgentSession', request),
+      ),
+    archiveAgentSession: async (request) =>
+      AgentSessionBundleSchema.parse(
+        await callAgent('archiveAgentSession', request),
+      ),
+    restoreAgentSession: async (request) =>
+      AgentSessionBundleSchema.parse(
+        await callAgent('restoreAgentSession', request),
       ),
     renameAgentSession: (request) =>
       callAgent<void>('renameAgentSession', request),

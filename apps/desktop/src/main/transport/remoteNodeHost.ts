@@ -80,6 +80,7 @@ export interface RemoteHostRuntime {
     signal?: AbortSignal,
   ): Promise<string>;
   writeFile(filePath: string, data: Uint8Array): Promise<void>;
+  fsRealpath(inputPath: string): Promise<string>;
   fsList(dirPath: string): Promise<DirectoryListing>;
   fsReadText(filePath: string, maxBytes: number, offset: number): Promise<string>;
   fsReadBytes(filePath: string, maxBytes: number): Promise<string>;
@@ -240,6 +241,10 @@ export class RemoteNodeHostClient implements RemoteHostRuntime {
       filePath,
       data: Buffer.from(data).toString('base64'),
     });
+  }
+
+  fsRealpath(inputPath: string): Promise<string> {
+    return this.request('fsRealpath', { inputPath });
   }
 
   fsList(dirPath: string): Promise<DirectoryListing> {

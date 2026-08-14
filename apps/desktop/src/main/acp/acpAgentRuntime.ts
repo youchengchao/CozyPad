@@ -160,6 +160,24 @@ function offersResume(capabilities: unknown): boolean {
   );
 }
 
+function offersList(capabilities: unknown): boolean {
+  if (typeof capabilities !== 'object' || capabilities === null) return false;
+  const sessions = (capabilities as { sessionCapabilities?: unknown })
+    .sessionCapabilities;
+  return (
+    typeof sessions === 'object' &&
+    sessions !== null &&
+    (sessions as { list?: unknown }).list != null
+  );
+}
+
+export interface AcpDiscoveredSession {
+  sessionId: string;
+  cwd: string;
+  title?: string;
+  updatedAt?: string;
+}
+
 /** The config options an open-session response carried, if any. */
 function configOptionsOf(response: unknown): unknown {
   return (response as Record<string, unknown> | null)?.['configOptions'] ?? [];
@@ -252,6 +270,50 @@ export class AcpAgentRuntime {
 
   has(sessionId: string): boolean {
     return this.#sessions.has(sessionId);
+  }
+
+  async discover(
+    agentKind: string,
+    cwd: string,
+    remote = false,
+  ): Promise<AcpDiscoveredSession[]> {
+    const launch = remote ? this.spawnRemote : this.spawn;
+    if (launch === undefined) return [];
+    const child = await launch(this.createLaunchSpec(agentKind, cwd), {
+      onSessionUpdate: () => undefined,
+      requestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
+    });
+    try {
+      const initialized = await child.handle.initialize();
+      if (!offersList(initialized.agentCapabilities)) return [];
+      const discovered: AcpDiscoveredSession[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page += 1) {
+        const response = await child.handle.listSessions(
+          cursor === undefined ? {} : { cursor },
+        );
+        for (const session of response.sessions) {
+          discovered.push({
+            sessionId: session.sessionId,
+            cwd: session.cwd,
+            ...(session.title == null || session.title === ''
+              ? {}
+              : { title: session.title }),
+            ...(session.updatedAt == null || session.updatedAt === ''
+              ? {}
+              : { updatedAt: session.updatedAt }),
+          });
+        }
+        const next = response.nextCursor ?? undefined;
+        if (next === undefined || seenCursors.has(next)) break;
+        seenCursors.add(next);
+        cursor = next;
+      }
+      return discovered;
+    } finally {
+      child.kill();
+    }
   }
 
   itemsFor(sessionId: string): readonly ChatItem[] {

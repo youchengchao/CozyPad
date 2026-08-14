@@ -54,7 +54,7 @@ describe('Challenger 1 M4 Empirical Suite - Connection Disruption & Error States
           profileId="profile-1"
         />,
       );
-      expect(html).toContain('agent-availability-reconnecting');
+      expect(html).toContain('agent-disconnected-empty');
       expect(html).toContain('12s 後進行第 3 次重連嘗試');
     });
 
@@ -67,8 +67,9 @@ describe('Challenger 1 M4 Empirical Suite - Connection Disruption & Error States
           profileId="profile-1"
         />,
       );
-      expect(html).toContain('agent-availability-banner');
+      expect(html).toContain('agent-disconnected-empty');
       expect(html).toContain('尚未連線');
+      expect(html).not.toContain('session-sidebar');
     });
   });
 

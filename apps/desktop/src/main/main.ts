@@ -26,8 +26,9 @@ import type { RemoteFilesPort } from '@cozypad/remote-services';
 import { HostKeyGate, KnownHostsStore } from './hostKeys';
 import { AgentCommunicationService } from './agentCommunicationService';
 import { AcpAgentRuntime } from './acp/acpAgentRuntime';
-import { spawnSshAcpAgent } from './acp/sshAcpProcess';
 import type { AgentCommunicationPort } from './agentCommunicationService';
+import { RemoteAgentHostClient } from './remoteAgentHostClient';
+import { RoutingAgentCommunication } from './routingAgentCommunication';
 import { registerIpc } from './ipc';
 import { ProfileStore, ProfileStoreWithLocal } from './profileStore';
 import type { ProfileCrypto, ProfileStorePort } from './profileStore';
@@ -40,11 +41,11 @@ import {
   isLocalProfile,
 } from './transport/localTransport';
 import { LocalAgentRuntime } from './localAgentRuntime';
-import { RoutingAgentRuntime } from './routingAgentRuntime';
 import {
   latestAgyConversationId,
   readAgyTranscript,
 } from './agyTranscript';
+import { discoverStoredAgentSessions } from './nativeConversationDiscovery';
 import { RoutingTransport } from './transport/routingTransport';
 import type { TransportPort } from './transport/TransportPort';
 
@@ -176,12 +177,12 @@ async function createServices(
   // tmux settings and the session watcher describe a remote host only, so they
   // keep talking to the real tmux rather than to the router.
   const remoteTmux = new TmuxRuntime(exec, TMUX_SOCKET);
-  const tmux = new RoutingAgentRuntime(remoteTmux, localRuntime);
-  // Agents that speak ACP run as child processes here. The runtime is built
-  // before the service so the service can send through it.
+  let localAgentCommunication!: AgentCommunicationService;
+  // Only local agents run as children of Electron. SSH agents are owned by the
+  // target-side host process, exactly like mobile clients.
   const acp = new AcpAgentRuntime({
     onTimeline: (sessionId, items) => {
-      agentCommunication.replaceTimeline(sessionId, items);
+      localAgentCommunication.replaceTimeline(sessionId, items);
     },
     // Waits for the user, forever, on purpose.
     //
@@ -195,26 +196,23 @@ async function createServices(
     // `AcpAgentRuntime.stop`, so nothing is left hanging.
     onPermission: () => new Promise<string | null>(() => undefined),
     onCommands: (sessionId, commands) => {
-      agentCommunication.setSlashCommands(sessionId, commands);
+      localAgentCommunication.setSlashCommands(sessionId, commands);
     },
     // Adapters report identity here — agy names its conversation id on every
     // prompt response — and binding it is what a later Resume continues from.
     onPromptMeta: (sessionId, meta) => {
-      agentCommunication.notePromptMeta(sessionId, meta);
+      localAgentCommunication.notePromptMeta(sessionId, meta);
     },
     onExit: (sessionId, detail) => {
-      agentCommunication.noteAgentExit(sessionId, detail);
+      localAgentCommunication.noteAgentExit(sessionId, detail);
     },
     onError: (sessionId, message) => {
       console.error('[cozypad] acp session', sessionId, message);
     },
-  },
-  undefined,
-  (spec, handlers) => spawnSshAcpAgent(sshTransport, spec, handlers),
-  );
-  const agentCommunication = new AgentCommunicationService({
-    transport,
-    tmux,
+  });
+  localAgentCommunication = new AgentCommunicationService({
+    transport: localTransport,
+    tmux: localRuntime,
     profileStore,
     storePath: path.join(app.getPath('userData'), 'agent-sessions.json'),
     acp,
@@ -229,17 +227,17 @@ async function createServices(
         : knownHosts.get(profile.host, profile.port);
     },
     attachExisting: (sessionId) => {
-      const terminalId = tmux.terminalFor(sessionId);
+      const terminalId = localRuntime.terminalFor(sessionId);
       // The viewer shares the session's console, so closing the view must not
       // end the agent behind it.
       if (terminalId !== undefined) localTransport.protectTerminal(terminalId);
       return terminalId;
     },
-    isLocalHost: (profileId) => isLocalProfile(profileId),
-    onHostChanged: (profileId) => tmux.useLocal(isLocalProfile(profileId)),
+    isLocalHost: () => true,
     getLatestLocalAgyConversationId: (window) => latestAgyConversationId(window),
     readLocalAgyTranscript: (conversationId) =>
       readAgyTranscript(conversationId),
+    discoverStoredSessions: discoverStoredAgentSessions,
     onStoreRecovered: ({ reason, backupPath }) => {
       startupWarnings.push(
         backupPath === null
@@ -248,6 +246,20 @@ async function createServices(
       );
     },
   });
+  const remoteAgentCommunication = new RemoteAgentHostClient(
+    sshTransport,
+    profileStore,
+    (profileId) => {
+      const profile = profileStore.get(profileId);
+      return profile === undefined
+        ? undefined
+        : knownHosts.get(profile.host, profile.port);
+    },
+  );
+  const agentCommunication = new RoutingAgentCommunication(
+    localAgentCommunication,
+    remoteAgentCommunication,
+  );
   // The agent subsystem must not be able to take the rest of the app with it.
   // `MainServices.agentCommunication` is already nullable and `registerIpc`
   // already handles null by rejecting agent calls with a reason — but until now
@@ -380,7 +392,7 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
         bridge.onTerminalOutput((event) => chunks.push(event.dataBase64));
         await bridge.connect({ profileId: 'local-machine' });
         const { terminalId } = await bridge.openTerminal({
-          profileId: 'local-machine', cols: 80, rows: 24,
+          profileId: 'local-machine', cwd: '~', cols: 80, rows: 24,
         });
         await new Promise((resolve) => setTimeout(resolve, 500));
         bridge.writeTerminal({ terminalId, dataBase64: btoa('echo cozypad-smoke-ok\\r') });

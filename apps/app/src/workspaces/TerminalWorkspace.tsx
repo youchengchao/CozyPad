@@ -6,6 +6,13 @@ import type { TerminalHandle, TerminalModifiers } from '../components/TerminalVi
 interface TerminalWorkspaceProps {
   connected: boolean;
   profileId: string | null;
+  workspaceCwd?: string | null;
+}
+
+interface TerminalTab {
+  id: number;
+  /** Captured at creation; changing the workspace PWD does not move this tab. */
+  cwd: string;
 }
 
 const QUICK_COMMANDS: { label: string; command: string }[] = [
@@ -23,8 +30,12 @@ const QUICK_COMMANDS: { label: string; command: string }[] = [
   { label: 'Python 版本', command: 'python -V' },
 ];
 
-export function TerminalWorkspace({ connected, profileId }: TerminalWorkspaceProps) {
-  const [tabs, setTabs] = useState<number[]>([]);
+export function TerminalWorkspace({
+  connected,
+  profileId,
+  workspaceCwd = null,
+}: TerminalWorkspaceProps) {
+  const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [active, setActive] = useState<number | null>(null);
   const [quickOpen, setQuickOpen] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
@@ -43,16 +54,16 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
 
   const addTab = () => {
     const id = nextId.current++;
-    setTabs((current) => [...current, id]);
+    setTabs((current) => [...current, { id, cwd: workspaceCwd ?? '~' }]);
     setActive(id);
   };
 
   const closeTab = (id: number) => {
     handles.current.delete(id);
     setTabs((current) => {
-      const remaining = current.filter((tab) => tab !== id);
+      const remaining = current.filter((tab) => tab.id !== id);
       setActive((activeId) =>
-        activeId === id ? (remaining[remaining.length - 1] ?? null) : activeId,
+        activeId === id ? (remaining[remaining.length - 1]?.id ?? null) : activeId,
       );
       return remaining;
     });
@@ -86,11 +97,11 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
   return (
     <div className="terminal-workspace">
       <div className="tab-bar">
-        {tabs.map((id, index) => (
+        {tabs.map((tab, index) => (
           <div
-            key={id}
-            className={`tab${active === id ? ' tab-active' : ''}`}
-            onClick={() => setActive(id)}
+            key={tab.id}
+            className={`tab${active === tab.id ? ' tab-active' : ''}`}
+            onClick={() => setActive(tab.id)}
           >
             <span>Terminal {index + 1}</span>
             <button
@@ -98,7 +109,7 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
               title="Close"
               onClick={(event) => {
                 event.stopPropagation();
-                closeTab(id);
+                closeTab(tab.id);
               }}
             >
               ×
@@ -133,21 +144,22 @@ export function TerminalWorkspace({ connected, profileId }: TerminalWorkspacePro
               <p className="hint">按上方 ＋ 開新分頁。</p>
             </div>
           ) : null}
-          {tabs.map((id) => (
-            <div key={id} className="terminal-pane" hidden={active !== id}>
+          {tabs.map((tab) => (
+            <div key={tab.id} className="terminal-pane" hidden={active !== tab.id}>
               <TerminalView
                 profileId={profileId}
+                cwd={tab.cwd}
                 // 遠端 session 結束（exit、tmux kill-session、process 死亡）時
                 // 本地分頁一併關閉，不留下空殼。
-                onExit={() => closeTab(id)}
+                onExit={() => closeTab(tab.id)}
                 onNotify={(message) => {
                   setToast(message);
                   setTimeout(() => setToast(null), 1600);
                 }}
                 onModifiersChange={setModifiers}
                 onHandle={(handle) => {
-                  if (handle) handles.current.set(id, handle);
-                  else handles.current.delete(id);
+                  if (handle) handles.current.set(tab.id, handle);
+                  else handles.current.delete(tab.id);
                 }}
               />
             </div>

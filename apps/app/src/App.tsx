@@ -35,6 +35,57 @@ import {
 
 type WorkspaceId = 'agents' | 'research' | 'terminal' | 'files' | 'monitor' | 'settings';
 
+const WORKSPACE_CWDS_STORAGE_KEY = 'cozypad-workspace-cwds-v1';
+
+const CONNECTION_STATE_LABEL: Record<ConnectionState, string> = {
+  disconnected: 'Offline',
+  connecting: 'Connecting',
+  connected: 'Connected',
+  error: 'Connection error',
+};
+
+function workspaceHostKey(profile: ConnectionProfile | null): string | null {
+  if (profile === null) return null;
+  return profile.isLocal === true
+    ? 'local'
+    : `ssh:${profile.username}@${profile.host.toLowerCase()}:${profile.port}`;
+}
+
+function loadWorkspaceCwds(): {
+  values: Record<string, string>;
+  warning: string | null;
+} {
+  if (typeof window === 'undefined') return { values: {}, warning: null };
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_CWDS_STORAGE_KEY);
+    if (raw === null) return { values: {}, warning: null };
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        values: {},
+        warning: 'Workspace PWD settings were invalid and were reset.',
+      };
+    }
+    const entries = Object.entries(parsed);
+    const valid = entries.filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === 'string' && entry[1].trim() !== '',
+    );
+    return {
+      values: Object.fromEntries(valid),
+      warning:
+        valid.length === entries.length
+          ? null
+          : 'Some invalid Workspace PWD settings were ignored.',
+    };
+  } catch {
+    return {
+      values: {},
+      warning: 'Workspace PWD settings could not be read and were reset.',
+    };
+  }
+}
+
 const NAV_ITEMS: { id: WorkspaceId; label: string; icon: () => React.ReactElement }[] = [
   { id: 'agents', label: 'Agents', icon: () => <AgentsIcon /> },
   { id: 'research', label: 'Research', icon: () => <ResearchIcon /> },
@@ -46,10 +97,12 @@ const NAV_ITEMS: { id: WorkspaceId; label: string; icon: () => React.ReactElemen
 
 export function App() {
   const bridge = useMemo(() => getBridge(), []);
+  const initialWorkspaceCwds = useMemo(loadWorkspaceCwds, []);
   const [workspace, setWorkspace] = useState<WorkspaceId>('agents');
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [state, setState] = useState<ConnectionState>('disconnected');
+  const [switching, setSwitching] = useState(false);
   /** Which host is actually in use, as opposed to which one is highlighted. */
   const [connectedId, setConnectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,13 +111,35 @@ export function App() {
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptEvent | null>(null);
   const [hostKeyResponding, setHostKeyResponding] = useState(false);
   const [hostKeyResponseError, setHostKeyResponseError] = useState<string | null>(null);
-  const [startupWarnings, setStartupWarnings] = useState<string[]>([]);
+  const [startupWarnings, setStartupWarnings] = useState<string[]>(
+    initialWorkspaceCwds.warning === null
+      ? []
+      : [initialWorkspaceCwds.warning],
+  );
   const [tmuxStatus, setTmuxStatus] = useState<TmuxStatus | null>(null);
   const [tmuxPromptDismissed, setTmuxPromptDismissed] = useState(false);
   const [reconnect, setReconnect] = useState<{
     attempt: number;
     secondsLeft: number;
   } | null>(null);
+  const [workspaceCwds, setWorkspaceCwds] = useState(
+    initialWorkspaceCwds.values,
+  );
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        WORKSPACE_CWDS_STORAGE_KEY,
+        JSON.stringify(workspaceCwds),
+      );
+    } catch {
+      setStartupWarnings((current) =>
+        current.includes('Workspace PWD could not be saved on this device.')
+          ? current
+          : [...current, 'Workspace PWD could not be saved on this device.'],
+      );
+    }
+  }, [workspaceCwds]);
 
   const manualDisconnect = useRef(true);
   const wasConnected = useRef(false);
@@ -119,7 +194,9 @@ export function App() {
 
   useEffect(() => {
     void bridge.getAppInfo().then((info) => {
-      setStartupWarnings(info.startupWarnings ?? []);
+      setStartupWarnings((current) => [
+        ...new Set([...(info.startupWarnings ?? []), ...current]),
+      ]);
     });
   }, [bridge]);
 
@@ -200,6 +277,7 @@ export function App() {
         wasConnected.current = true;
         attempts.current = 0;
         setConnectedId(event.profileId);
+        setSwitching(false);
         clearTimers();
         setReconnect(null);
       }
@@ -232,7 +310,25 @@ export function App() {
 
   const selectedProfile = profiles.find((profile) => profile.id === selectedId) ?? null;
   const connectedProfile =
-    profiles.find((profile) => profile.id === connectedId) ?? selectedProfile;
+    profiles.find((profile) => profile.id === connectedId) ?? null;
+  const statusProfile =
+    connectedProfile ??
+    (state === 'connecting' || state === 'error' ? selectedProfile : null);
+  const connectedHostKey = workspaceHostKey(
+    connectedId === null ? null : connectedProfile,
+  );
+  const workspaceCwd =
+    connectedHostKey === null ? null : (workspaceCwds[connectedHostKey] ?? null);
+  const setWorkspaceCwd = useCallback(
+    (cwd: string) => {
+      if (connectedHostKey === null || cwd.trim() === '') return;
+      setWorkspaceCwds((current) => ({
+        ...current,
+        [connectedHostKey]: cwd,
+      }));
+    },
+    [connectedHostKey],
+  );
 
   const handleConnect = () => {
     if (!selectedProfile) return;
@@ -253,7 +349,28 @@ export function App() {
     if (connectedId !== null && connectedId !== selectedProfile.id) {
       clearTimers();
       setReconnect(null);
-      void bridge.disconnect({ profileId: connectedId });
+      manualDisconnect.current = true;
+      wasConnected.current = false;
+      connectInFlight.current = true;
+      setSwitching(true);
+      const previousProfileId = connectedId;
+      void bridge
+        .disconnect({ profileId: previousProfileId })
+        .then(() => {
+          connectInFlight.current = false;
+          doConnect(selectedProfile.id);
+        })
+        .catch((switchError: unknown) => {
+          connectInFlight.current = false;
+          setSwitching(false);
+          setState('error');
+          setError(
+            switchError instanceof Error
+              ? switchError.message
+              : String(switchError),
+          );
+        });
+      return;
     }
     doConnect(selectedProfile.id);
   };
@@ -263,6 +380,7 @@ export function App() {
     manualDisconnect.current = true;
     wasConnected.current = false;
     connectInFlight.current = false;
+    setSwitching(false);
     clearTimers();
     setReconnect(null);
     setHostKeyPrompt(null);
@@ -330,9 +448,10 @@ export function App() {
       <header className="topbar">
         <select
           className="profile-select"
+          aria-label="Connection target"
           value={selectedId ?? ''}
           onChange={(event) => setSelectedId(event.target.value)}
-          disabled={state === 'connected' || state === 'connecting'}
+          disabled={state === 'connecting' || switching}
         >
           {profiles.length === 0 ? <option value="">（無連線設定）</option> : null}
           {profiles.map((profile) => (
@@ -348,21 +467,37 @@ export function App() {
         >
           ⚙
         </button>
-        <span className={`status status-${state}`}>{state}</span>
-        <span
-          className={`mode-tag${
-            connectedProfile?.isLocal === true ? ' mode-local' : ' mode-ssh'
+        <div
+          className={`connection-status connection-status-${state}`}
+          role="status"
+          aria-live="polite"
+          aria-label={`${CONNECTION_STATE_LABEL[state]}${
+            statusProfile === null ? '' : `: ${statusProfile.name}`
           }`}
         >
-          {connectedProfile?.isLocal === true ? 'LOCAL' : 'SSH'}
-        </span>
+          <span className="connection-status-dot" aria-hidden="true" />
+          <strong>{CONNECTION_STATE_LABEL[state]}</strong>
+          {statusProfile !== null ? (
+            <>
+              <span className="connection-status-separator" aria-hidden="true">/</span>
+              <span className="connection-status-target">{statusProfile.name}</span>
+              <span className="connection-status-transport">
+                {statusProfile.isLocal === true
+                  ? 'local'
+                  : `SSH · ${statusProfile.username}@${statusProfile.host}:${statusProfile.port}`}
+              </span>
+            </>
+          ) : null}
+        </div>
         <span className="spacer" />
         {/*
           Being connected to one host must never hide the way to reach another.
           Picking a different host from the list turns this into the action that
           switches to it; Disconnect only applies to the host in use.
         */}
-        {state === 'connecting' ? (
+        {switching ? (
+          <button disabled>Switching…</button>
+        ) : state === 'connecting' ? (
           <button onClick={handleDisconnect}>Cancel</button>
         ) : state === 'connected' && selectedId === connectedId ? (
           <button onClick={handleDisconnect}>Disconnect</button>
@@ -433,7 +568,8 @@ export function App() {
               connected={state === 'connected'}
               connectionState={state}
               reconnect={reconnect}
-              profileId={selectedId}
+              profileId={connectedId}
+              workspaceCwd={workspaceCwd}
             />
           </section>
           <section className="workspace-page" hidden={workspace !== 'research'}>
@@ -442,16 +578,22 @@ export function App() {
           <section className="workspace-page" hidden={workspace !== 'terminal'}>
             <TerminalWorkspace
               connected={state === 'connected'}
-              profileId={selectedId}
+              profileId={connectedId}
+              workspaceCwd={workspaceCwd}
             />
           </section>
           <section className="workspace-page" hidden={workspace !== 'files'}>
-            <FilesWorkspace connected={state === 'connected'} />
+            <FilesWorkspace
+              connected={state === 'connected'}
+              profileId={connectedId}
+              workspaceCwd={workspaceCwd}
+              onWorkspaceCwdChange={setWorkspaceCwd}
+            />
           </section>
           <section className="workspace-page" hidden={workspace !== 'monitor'}>
             <MonitorWorkspace
               connected={state === 'connected'}
-              host={selectedProfile ? `${selectedProfile.username}@${selectedProfile.host}` : null}
+              host={connectedProfile ? `${connectedProfile.username}@${connectedProfile.host}` : null}
             />
           </section>
           <section className="workspace-page" hidden={workspace !== 'settings'}>

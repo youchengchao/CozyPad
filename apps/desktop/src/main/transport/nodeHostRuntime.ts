@@ -166,8 +166,12 @@ export class NodeHostRuntime {
     await fs.writeFile(filePath, data);
   }
 
+  async fsRealpath(inputPath: string): Promise<string> {
+    return fs.realpath(path.resolve(resolveHome(inputPath)));
+  }
+
   async fsList(dirPath: string): Promise<DirectoryListing> {
-    const resolvedPath = path.resolve(resolveHome(dirPath));
+    const resolvedPath = await this.fsRealpath(dirPath);
     const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
     const limit = 2000;
     const truncated = entries.length > limit;

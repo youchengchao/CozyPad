@@ -129,7 +129,7 @@ describe('local transport', () => {
       // which is exactly the property a remote pty provides and a plain pipe
       // does not.
       const terminalId = await transport.openTerminal(
-        { profileId: LOCAL_PROFILE.id, cols: 100, rows: 30 },
+        { profileId: LOCAL_PROFILE.id, cwd: process.cwd(), cols: 100, rows: 30 },
         'clear; echo terminal-ready',
       );
       await settle(4000);
@@ -149,6 +149,7 @@ describe('local transport', () => {
       const { transport, output } = connected();
       const terminalId = await transport.openTerminal({
         profileId: LOCAL_PROFILE.id,
+        cwd: process.cwd(),
         cols: 100,
         rows: 30,
       });

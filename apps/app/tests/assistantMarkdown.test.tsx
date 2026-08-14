@@ -4,9 +4,23 @@ import { describe, expect, it } from 'vitest';
 import {
   AssistantMarkdown,
   normalizeHackmdDisplayMath,
+  pathTargetOf,
 } from '../src/workspaces/agents/AssistantMarkdown';
 
 describe('AssistantMarkdown', () => {
+  it('dispatches host file paths but leaves web links and anchors alone', () => {
+    expect(pathTargetOf('FILE:///home/researcher/note.md')).toBe(
+      'FILE:///home/researcher/note.md',
+    );
+    expect(pathTargetOf('C:\\Users\\researcher\\note.md')).toBe(
+      'C:\\Users\\researcher\\note.md',
+    );
+    expect(pathTargetOf('src/note.md')).toBe('src/note.md');
+    expect(pathTargetOf('https://example.com/note.md')).toBeNull();
+    expect(pathTargetOf('mailto:test@example.com')).toBeNull();
+    expect(pathTargetOf('#section')).toBeNull();
+  });
+
   it('renders inline and display equations through KaTeX', () => {
     const html = renderToStaticMarkup(
       <AssistantMarkdown>

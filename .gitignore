@@ -48,8 +48,12 @@ lib/graphify-out/
 .codex/
 .gemini/
 .claude/
-.github/
 .probe/
+/.cozypad/
+
+# Generated native copies of the remote Agent host.
+/apps/mobile/android/app/src/main/assets/cozypad/remote-agent-host.cjs
+/packages/capacitor-ios-native/Sources/CozypadCapacitorIosNative/Resources/remote-agent-host.cjs
 
 # Session/process records: kept locally, not part of the product.
 /DEVELOPMENT_GUIDE.md

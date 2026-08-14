@@ -705,6 +705,7 @@ class SshPlugin : Plugin() {
     fun openTerminal(call: PluginCall) {
         val cols = call.getInt("cols") ?: 80
         val rows = call.getInt("rows") ?: 24
+        val cwd = call.getString("cwd") ?: return call.reject("cwd is required")
         val ssh = client ?: return call.reject("not connected")
 
         try {
@@ -713,6 +714,14 @@ class SshPlugin : Plugin() {
             val shell = session.startShell()
             val terminalId = "mobile-term-${terminalIds.incrementAndGet()}"
             shells[terminalId] = ShellSession(session, shell, shell.outputStream)
+            val cwdCommand = when {
+                cwd == "~" -> "cd -- \"\$HOME\" || exit 1"
+                cwd.startsWith("~/") ->
+                    "cd -- \"\$HOME\"/${quoteForShell(cwd.removePrefix("~/"))} || exit 1"
+                else -> "cd -- ${quoteForShell(cwd)} || exit 1"
+            }
+            shell.outputStream.write("$cwdCommand\n".toByteArray())
+            shell.outputStream.flush()
 
             // PTY 位元組原樣以 base64 送給 JS，維持 binary-safe。
             thread(name = "cozypad-ssh-pty-$terminalId") {
@@ -748,6 +757,9 @@ class SshPlugin : Plugin() {
             call.reject(error.message ?: "open terminal failed", error)
         }
     }
+
+    private fun quoteForShell(value: String): String =
+        "'" + value.replace("'", "'\"'\"'") + "'"
 
     @PluginMethod
     fun writeTerminal(call: PluginCall) {

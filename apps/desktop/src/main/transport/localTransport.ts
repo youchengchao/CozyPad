@@ -28,6 +28,14 @@ export function isLocalProfile(profileId: string): boolean {
   return profileId === LOCAL_PROFILE.id;
 }
 
+function resolveLocalCwd(cwd: string): string {
+  if (cwd === '~') return os.homedir();
+  if (cwd.startsWith('~/') || cwd.startsWith('~\\')) {
+    return path.join(os.homedir(), cwd.slice(2));
+  }
+  return path.resolve(cwd);
+}
+
 /**
  * Windows has no `fork`, so an interactive program only gets a real terminal
  * through a pseudo-console. `conhost --headless` is one: it takes an explicit
@@ -126,7 +134,7 @@ export class LocalTransport implements TransportPort {
         '--',
         ...target,
       ],
-      { windowsHide: true },
+      { windowsHide: true, cwd: resolveLocalCwd(request.cwd) },
     );
 
     const emit = (chunk: Buffer) => {
@@ -206,6 +214,11 @@ export class LocalTransport implements TransportPort {
     this.protectedTerminals.delete(terminalId);
     this.buffers.delete(terminalId);
     terminal.kill();
+  }
+
+  async fsRealpath(inputPath: string): Promise<string> {
+    this.assertConnected();
+    return this.host.fsRealpath(inputPath);
   }
 
   async fsList(dirPath: string): Promise<DirectoryListing> {

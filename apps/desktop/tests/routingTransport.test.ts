@@ -33,6 +33,10 @@ class RecordingTransport implements TransportPort {
     this.calls.push(`write:${path}`);
     return Promise.resolve();
   }
+  fsRealpath(path: string): Promise<string> {
+    this.calls.push(`fsRealpath:${path}`);
+    return Promise.resolve(path);
+  }
   fsList(path: string): Promise<DirectoryListing> {
     this.calls.push(`fsList:${path}`);
     return Promise.resolve({ path, items: [], truncated: false });
@@ -148,17 +152,32 @@ describe('transport routing', () => {
     expect(ssh.calls).toEqual(['connect:ssh-profile']);
   });
 
+  it('disconnects one SSH profile before connecting another SSH profile', async () => {
+    const { routing, ssh } = router();
+
+    await routing.connect('ssh-profile-one');
+    await routing.connect('ssh-profile-two');
+
+    expect(ssh.calls).toEqual([
+      'connect:ssh-profile-one',
+      'disconnect:ssh-profile-one',
+      'connect:ssh-profile-two',
+    ]);
+  });
+
   it('routes a terminal by the id that opened it', async () => {
     const { routing, ssh, local } = router();
     await routing.connect('ssh-profile');
 
     const remote = await routing.openTerminal({
       profileId: 'ssh-profile',
+      cwd: '/srv/project',
       cols: 80,
       rows: 24,
     });
     const here = await routing.openTerminal({
       profileId: LOCAL_PROFILE.id,
+      cwd: process.cwd(),
       cols: 80,
       rows: 24,
     });

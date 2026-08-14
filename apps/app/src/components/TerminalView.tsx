@@ -73,6 +73,7 @@ async function handleTerminalContextMenu(
 
 interface TerminalViewProps {
   profileId: string;
+  cwd: string;
   onExit?: () => void;
   onHandle?: (handle: TerminalHandle | null) => void;
   onNotify?: (message: string) => void;
@@ -81,6 +82,7 @@ interface TerminalViewProps {
 
 export function TerminalView({
   profileId,
+  cwd,
   onExit,
   onHandle,
   onNotify,
@@ -245,6 +247,7 @@ export function TerminalView({
 
     const opening = bridge.openTerminal({
       profileId,
+      cwd,
       cols: term.cols,
       rows: term.rows,
     });
@@ -308,7 +311,7 @@ export function TerminalView({
       if (terminalId) void bridge.closeTerminal({ terminalId });
       term.dispose();
     };
-  }, [profileId]);
+  }, [cwd, profileId]);
 
   return <div className="terminal-host" ref={containerRef} />;
 }

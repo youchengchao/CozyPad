@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { AgentsWorkspace } from '../AgentsWorkspace';
 import { ChatTimeline } from '../ChatTimeline';
 import type { ChatItem } from '@cozypad/contracts';
@@ -34,9 +36,10 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
       />,
     );
 
-    expect(html).toContain('agent-availability-reconnecting');
+    expect(html).toContain('agent-disconnected-empty');
     expect(html).toContain('連線中斷 — 正在重連中');
     expect(html).toContain('5s 後進行第 2 次重連嘗試');
+    expect(html).not.toContain('session-sidebar');
   });
 
   it('renders reconnect status pill in session header when reconnecting', () => {
@@ -48,7 +51,7 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
       />,
     );
 
-    expect(html).toContain('agent-availability-banner');
+    expect(html).toContain('agent-disconnected-empty');
     expect(html).toContain('連線中斷 — 正在重連中');
   });
 
@@ -62,8 +65,46 @@ describe('Milestone 4 - Connection Disruption & Reconnect Status Indicators', ()
       />,
     );
 
-    expect(html).toContain('agent-availability-banner');
+    expect(html).toContain('agent-disconnected-empty');
     expect(html).toContain('尚未連線');
+    expect(html).toContain('斷線期間不保留或顯示主機內容');
+    expect(html).not.toContain('session-sidebar');
+  });
+
+  it('hard-clears host data and never lists sessions while disconnected', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../AgentsWorkspace.tsx'),
+      'utf8',
+    );
+    const guardStart = source.indexOf('if (!connected || profileId === null)');
+    const connectedLoadStart = source.indexOf('let cancelled = false', guardStart);
+    const disconnectedBranch = source.slice(guardStart, connectedLoadStart);
+
+    expect(guardStart).toBeGreaterThan(-1);
+    expect(disconnectedBranch).toContain('clearHostData();');
+    expect(disconnectedBranch).not.toContain('listAgentSessions');
+    expect(source).toContain('if (!connectedRef.current) return;');
+    expect(source).toContain('void refreshAgentSessions(nextAgent);');
+    expect(source).toContain("useState<'current' | 'all'>('all')");
+  });
+
+  it('always renders the unified hamburger session menu', () => {
+    const html = renderToStaticMarkup(
+      <AgentsWorkspace
+        connected={false}
+        connectionState="disconnected"
+        reconnect={null}
+        profileId="profile-1"
+      />,
+    );
+
+    expect(html).toContain('<details class="agent-landscape-menu">');
+    expect(html).toContain('class="agent-menu-hamburger"');
+    expect(html).toContain('aria-label="Select agent"');
+    expect(html).toContain('aria-label="Session workspace"');
+    expect(html).toContain('aria-label="Session archive state"');
+    expect(html).toContain('aria-label="Session status"');
+    expect(html).not.toContain('agent-tabs');
   });
 
   it('renders interrupted badge when chat message is marked interrupted', () => {

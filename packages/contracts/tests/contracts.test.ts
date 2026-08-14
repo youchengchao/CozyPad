@@ -82,8 +82,13 @@ describe('ConnectionProfileSchema', () => {
 describe('terminal schemas', () => {
   it('accepts a valid open request', () => {
     expect(
-      TerminalOpenRequestSchema.parse({ profileId: 'p1', cols: 120, rows: 30 }),
-    ).toEqual({ profileId: 'p1', cols: 120, rows: 30 });
+      TerminalOpenRequestSchema.parse({
+        profileId: 'p1',
+        cwd: '/srv/project',
+        cols: 120,
+        rows: 30,
+      }),
+    ).toEqual({ profileId: 'p1', cwd: '/srv/project', cols: 120, rows: 30 });
   });
 
   it('rejects non-integer dimensions', () => {
